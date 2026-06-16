@@ -1,0 +1,73 @@
+Metadata-Version: 2.4
+Name: hokage
+Version: 0.1.0
+Summary: Personal AI commander orchestrating specialist trading bots
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+
+# Hokage
+
+Personal AI commander. Users interact only with Hokage; Hokage orchestrates all specialist bots.
+
+## Workflow
+
+```
+Research → Strategy → Backtest → Risk → Execution (Paper) → Improvement → Repeat → Execution (Live)
+```
+
+Paper and live execution share the same strategy engine. Live promotion requires user confirmation, risk validation, and broker connectivity validation — all enforced by Hokage before Execution Bot enters live mode.
+
+## Bots
+
+| Bot | Role | Status |
+|-----|------|--------|
+| **Hokage** | Commander — routing, memory, sole user interface | Active (planned) |
+| **Research Bot** | Market and domain research | **Implemented** |
+| **Strategy Bot** | Strategy design and refinement | Active (planned) |
+| **Backtest Bot** | Historical validation | Active (planned) |
+| **Risk Bot** | Pre-execution risk assessment and live gate validation | Active (planned) |
+| **Execution Bot** | Paper and live trading (shared strategy engine) | Active (planned) |
+| **Improvement Bot** | Feedback loop and iteration | Active (planned) |
+| **Portfolio Manager** | Multi-strategy portfolio allocation and rebalancing | Future placeholder |
+
+## Research Bot
+
+The Research Bot accepts a query, searches configured sources, and produces a structured `ResearchReport` for Strategy Bot.
+
+```python
+from pathlib import Path
+
+from bots.research import JsonReportWriter, ResearchBot, ResearchQuery
+
+# Sources are injected adapters implementing ResearchSource (integrations/data/, etc.)
+bot = ResearchBot(
+    sources=[my_market_source, my_news_source],
+    report_writer=JsonReportWriter(Path("data/research")),
+)
+
+report = bot.research(ResearchQuery(text="EUR/USD macro outlook"))
+print(report.executive_summary)
+```
+
+See [src/bots/research/README.md](src/bots/research/README.md) for module layout and extension points.
+
+## Development
+
+Requires Python 3.11+.
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+pip install -e ".[dev]"
+pytest
+```
+
+## Structure
+
+See [docs/architecture/overview.md](docs/architecture/overview.md) for the full folder map.
+
+## Status
+
+**Phase:** Foundation — Research Bot implemented. Commander and remaining bots are planned.

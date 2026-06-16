@@ -1,0 +1,25 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data (keep folder READMEs)
+data/*
+!data/README.md
+logs/*
+!logs/README.md
+*.log
+
+# Python (future)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

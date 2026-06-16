@@ -1,0 +1,12 @@
+README.md
+pyproject.toml
+src/bots/__init__.py
+src/bots/research/__init__.py
+src/bots/research/interfaces.py
+src/bots/research/models.py
+src/bots/research/research_bot.py
+src/hokage.egg-info/PKG-INFO
+src/hokage.egg-info/SOURCES.txt
+src/hokage.egg-info/dependency_links.txt
+src/hokage.egg-info/requires.txt
+src/hokage.egg-info/top_level.txt

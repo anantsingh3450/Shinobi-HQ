@@ -1,0 +1,34 @@
+# Hokage master configuration (template — not active yet)
+
+hokage:
+  name: Hokage
+  default_execution_mode: paper  # paper | live
+
+workflow:
+  require_paper_before_live: true
+  improvement_loop_enabled: true
+  pipeline:
+    - research
+    - strategy
+    - backtest
+    - risk
+    - execution
+    - improvement
+
+live_gates:
+  require_user_confirmation: true
+  require_risk_validation: true
+  require_broker_connectivity: true
+
+logging:
+  level: info
+  directory: ../logs
+
+bots:
+  research: { enabled: true }
+  strategy: { enabled: true }
+  backtest: { enabled: true }
+  risk: { enabled: true }
+  execution: { enabled: true }
+  improvement: { enabled: true }
+  portfolio: { enabled: false }  # future placeholder
