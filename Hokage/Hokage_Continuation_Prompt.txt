@@ -1,0 +1,103 @@
+You are continuing development of Hokage, an AI trading command ecosystem.
+
+PROJECT STATUS: PHASE 1 & 2 COMPLETE ✅
+
+VERIFIED COMPLETION:
+
+PHASE 1: CORE BOT ECOSYSTEM ✅ (100%)
+- ResearchBot (DummyResearchSource)
+- StrategyBot (HeuristicStrategyGenerator)
+- BacktestBot (HeuristicBacktestEngine) with gating
+- RiskBot (CompositeRiskManager) with gating
+- ExecutionBot (PaperEngine) with persistence
+- PortfolioBot (Account model) with persistence
+- Full pipeline: Research → Strategy → Backtest → Risk → Execution → Portfolio
+- Risk gating: Blocks if max drawdown exceeded or position size too large
+- Trade persistence: data/paper_trades/trades.jsonl
+- Account persistence: data/portfolio/account_paper.json
+
+Test Status: 6/6 integration tests passing
+Command: "full-trade EUR/USD momentum strategy" → complete end-to-end execution
+
+PHASE 2: DASHBOARD FOUNDATION ✅ (100%)
+- DashboardService (read-only)
+- Flask REST API (6 endpoints under /api/v1)
+- PortfolioOverview, PositionSnapshot, TradeSnapshot, AccountMetrics
+- Zero dependencies on Phase 1 bots
+- Architecture ready for future web UI
+
+Test Status: 12/12 dashboard tests passing
+
+COMBINED TEST RESULTS: 72/72 passing ✅
+
+NEXT PHASE: Phase 3 - Real Market Data (PLANNED)
+
+PHASE 3 DESIGN (NOT YET IMPLEMENTED):
+
+Goal: Replace MockPriceSource and DummyResearchSource with real data architecture
+
+Architecture:
+- Provider-agnostic: supports multiple implementations
+- MockMarketDataProvider (Phase 1 extended, backward compatible)
+- KiteMarketDataProvider (Phase 4 primary, will require Kite account)
+- AlphaVantageProvider (Phase 3 optional, free tier available)
+
+Key Design:
+- Factory pattern: select provider via HOKAGE_MARKET_DATA_MODE env var
+- Phase 4 integration: change ONE line of config, zero orchestrator changes
+- Tax interfaces: TaxProvider, TaxEvent, TaxLedger (design only, deferred implementation)
+
+Phase 3 Implementation Order:
+1. Create models.py (Candle, Quote, OHLCV)
+2. Create MarketDataProvider interface
+3. Create ProviderFactory + ProviderConfig
+4. Extend MockMarketDataProvider with new methods
+5. Implement AlphaVantageProvider (optional)
+6. Create tax interfaces (no implementation)
+7. Unit tests for factory and providers
+8. Validate Phase 1+2 tests still passing
+
+Estimated Time: 13 hours
+
+ARCHITECTURE RULES (ENFORCE):
+- Business logic belongs inside bots, not orchestrator
+- All dependencies via dependency injection
+- Protocol-based (duck typing), no concrete deps in bots
+- Clean architecture: domain models, adapters, interfaces separated
+- All trades must be traceable to source data (provenance)
+
+KNOWN STATE:
+
+Files with verified working code:
+- src/hokage/orchestrator/pipeline.py (full 6-stage pipeline)
+- src/hokage/router/command_router.py ("full-trade" command)
+- src/bots/*/  (all 6 bots complete)
+- src/hokage/dashboard/ (complete with API)
+- data/paper_trades/trades.jsonl (exists, contains executed trades)
+- data/portfolio/account_paper.json (exists, contains updated account state)
+
+Pipeline execution verified with:
+- Full integration test: "full-trade EUR/USD momentum strategy"
+- Risk gating blocks bad proposals
+- Portfolio persists after each trade
+- Dashboard API queries persisted data
+
+Do NOT:
+- Rebuild Phase 1 bots
+- Redesign architecture
+- Generate replacement code for working modules
+- Restart analysis or planning
+- Reread entire repository (use PROJECT_STATE.md instead)
+
+NEXT SESSION SHOULD:
+1. Proceed directly to Phase 3A (data models)
+2. Use PROJECT_STATE.md and Decisions.md as source of truth
+3. Create minimal files (factory, interfaces, models)
+4. Preserve all 72 passing tests
+5. Report completion status after each task
+
+Report status only:
+- What was inspected
+- What was changed
+- What tests passed
+- What file comes next

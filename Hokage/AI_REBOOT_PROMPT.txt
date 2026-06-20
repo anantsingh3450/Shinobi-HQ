@@ -1,0 +1,134 @@
+HOKAGE AI REBOOT PROMPT
+
+You are restarting work on Hokage, an AI trading command ecosystem project.
+
+TREAT AS LONG-TERM PROJECT: Do not restart. Do not rebuild. Continue from current state.
+
+CURRENT STATUS: PHASES 1 & 2 COMPLETE ✅ | PHASE 3 READY
+
+═══════════════════════════════════════════════════════════════
+
+PHASE 1: CORE BOT ECOSYSTEM ✅ COMPLETE
+
+Verified Complete (72/72 tests passing):
+✅ ResearchBot → DummyResearchSource → ResearchReport
+✅ StrategyBot → HeuristicStrategyGenerator → StrategyProposal
+✅ BacktestBot → HeuristicBacktestEngine → BacktestResult (GATE)
+✅ RiskBot → CompositeRiskManager → RiskVerdict (GATE)
+✅ ExecutionBot → PaperEngine + JsonTradeStore → TradeRecord (PERSIST)
+✅ PortfolioBot → Account + JsonPortfolioStore → Updated Account (PERSIST)
+
+Pipeline: Research → Strategy → Backtest → Risk (GATE) → Execution → Portfolio (PERSIST)
+
+Data Files:
+- Trades: data/paper_trades/trades.jsonl ✅ (verified existing)
+- Account: data/portfolio/account_paper.json ✅ (verified existing)
+
+Gating Rules:
+- Backtest: fails if win_rate < 50 or max_drawdown >= 20 → ValueError
+- Risk: rejects if max_drawdown_violation or position_size_violation → ValueError
+
+Command: "full-trade EUR/USD momentum strategy" works end-to-end ✅
+
+═══════════════════════════════════════════════════════════════
+
+PHASE 2: DASHBOARD FOUNDATION ✅ COMPLETE
+
+REST API (6 endpoints):
+- GET /api/v1/portfolio/{account_id}/overview → PortfolioOverview
+- GET /api/v1/portfolio/{account_id}/positions/open → [PositionSnapshot]
+- GET /api/v1/portfolio/{account_id}/positions/all → [PositionSnapshot]
+- GET /api/v1/portfolio/{account_id}/trades?limit=N → [TradeSnapshot]
+- GET /api/v1/portfolio/{account_id}/metrics → AccountMetrics
+- GET /api/v1/health → Status
+
+Implementation: DashboardService (read-only) + Flask API
+Tests: 12/12 dashboard tests passing ✅
+
+═══════════════════════════════════════════════════════════════
+
+PHASE 3: REAL MARKET DATA (PLANNED - DESIGN READY)
+
+Goal: Replace MockPriceSource + DummyResearchSource with real data without breaking Phase 1-2
+
+Architecture (Provider-Agnostic):
+- MarketDataProvider (extends PriceSource)
+  ├── MockMarketDataProvider (Phase 1 extended, backward compatible)
+  ├── AlphaVantageProvider (Phase 3 optional)
+  └── KiteMarketDataProvider (Phase 4 primary)
+
+Factory Pattern: HOKAGE_MARKET_DATA_MODE env var selects implementation
+
+Phase 4 Ready: Just set HOKAGE_MARKET_DATA_MODE=kite → zero orchestrator changes
+
+Tax Architecture (Interfaces Only):
+- TaxProvider, TaxEvent, TaxLedger (design complete, deferred implementation)
+
+═══════════════════════════════════════════════════════════════
+
+ARCHITECTURE CONSTRAINTS (NON-NEGOTIABLE):
+
+1. Hokage is the commander. Bots never talk to users directly.
+2. Business logic lives inside bots, not in orchestrator.
+3. Orchestrator only coordinates workflow.
+4. Clean architecture enforced throughout.
+5. Dependency injection for all bot inputs.
+6. All decisions are traceable.
+7. Protocol-based (duck typing), no concrete deps in bots.
+
+═══════════════════════════════════════════════════════════════
+
+VERIFICATION CHECKLIST (BEFORE PROCEEDING):
+
+□ Start: "python -m pytest tests/ -v" → 72/72 passing
+□ Verify: data/paper_trades/trades.jsonl exists
+□ Verify: data/portfolio/account_paper.json exists
+□ Verify: All 6 bots integrated in pipeline.py
+□ Verify: Risk gating active (check execute_full_pipeline() line 167)
+□ Verify: Portfolio persistence active (check line 189)
+□ Verify: Dashboard API works (check api.py endpoints)
+
+═══════════════════════════════════════════════════════════════
+
+ROADMAP (8 PHASES TOTAL):
+
+Phase 1: Core Bot Ecosystem ✅ COMPLETE
+Phase 2: Dashboard Foundation ✅ COMPLETE
+Phase 3: Real Market Data → NEXT (start immediately)
+Phase 4: Kite Paper Trading Integration
+Phase 5: AI Improvement Layer
+Phase 6: Multi-Agent Commander System
+Phase 7: Autonomous Decision Engine
+Phase 8: Production Deployment
+
+═══════════════════════════════════════════════════════════════
+
+IMMEDIATE ACTIONS (DO THIS FIRST):
+
+1. Verify 72/72 tests passing
+2. Confirm data files exist and contain recent trades
+3. Proceed to Phase 3A: Data Models
+   - Create models.py (Candle, Quote, OHLCV)
+   - Create interfaces.py (MarketDataProvider)
+   - Create factory.py (ProviderFactory, ProviderConfig)
+
+DO NOT:
+- Redesign Phase 1 architecture
+- Rebuild completed bots
+- Generate replacement code for working modules
+- Restart from scratch
+- Speculate about features
+- Modify without validation
+
+USE THESE AS SOURCE OF TRUTH:
+- PROJECT_STATE.md (technical state)
+- Decisions.md (architectural decisions)
+- src/hokage/orchestrator/pipeline.py (pipeline implementation)
+
+ESTIMATED PHASE 3 TIME: ~13 hours
+
+═══════════════════════════════════════════════════════════════
+
+READY TO PROCEED: YES ✅
+
+Next file to edit: src/integrations/data/models.py (create)

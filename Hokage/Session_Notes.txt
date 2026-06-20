@@ -1,0 +1,37 @@
+18-Jun-2026
+
+Current milestone:
+ExecutionBot (Paper Trading)
+
+Completed:
+- ResearchBot
+- StrategyBot
+- Hokage Commander MVP
+- StrategyGenerator abstraction
+- Provenance tracking
+- Architecture review
+
+Roadmap updated:
+ResearchBot
+→ StrategyBot
+→ ExecutionBot (Paper)
+→ Trade Store
+→ Dashboard
+→ BacktestBot
+→ RiskBot
+→ PortfolioBot
+→ Live Trading
+
+Paper trading will eventually use:
+- Zerodha
+- Kite Connect
+- Real market prices
+- No real money
+
+Latest Antigravity work:
+- CommandRouter updated
+- trade <topic> command added
+- Execution architecture approved
+
+Next target:
+Generate first paper trade and save TradeRecord.

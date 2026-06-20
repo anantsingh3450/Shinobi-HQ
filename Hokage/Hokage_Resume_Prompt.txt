@@ -1,0 +1,145 @@
+HOKAGE MASTER RESUME PROMPT
+
+We are continuing the Hokage AI Trading Ecosystem project.
+
+CURRENT STATUS: PHASES 1 & 2 COMPLETE ✅ | PHASE 3 READY
+
+PHASE 1 MILESTONE COMPLETED: Full Bot Ecosystem ✅
+All 6 core bots fully implemented, integrated, and validated end-to-end.
+- Research → Strategy → Backtest → Risk → Execution → Portfolio
+- Risk gating active (blocks bad proposals)
+- Portfolio persistence verified (account_paper.json exists and updates)
+- Trade persistence verified (trades.jsonl contains executed trades)
+- Integration tests: 6/6 passing
+
+PHASE 2 MILESTONE COMPLETED: Dashboard Foundation ✅
+RESTful API for portfolio visualization, zero impact on Phase 1.
+- 6 JSON endpoints under /api/v1
+- PortfolioOverview, Positions, Trades, Metrics
+- Flask-based, extensible for web UI
+- Unit tests: 12/12 passing
+
+COMBINED VALIDATION: 72/72 tests passing ✅
+
+CORE BOT ARCHITECTURE (VERIFIED WORKING):
+
+ResearchBot
+- Input: ResearchQuery (user question text)
+- Adapter: DummyResearchSource (mock findings)
+- Output: ResearchReport (findings + executive summary)
+- Status: ✅ Complete
+
+StrategyBot
+- Input: ResearchReport
+- Adapter: HeuristicStrategyGenerator (keyword-based rules)
+- Output: StrategyProposal (entry/exit rules, confidence)
+- Status: ✅ Complete
+
+BacktestBot
+- Input: StrategyProposal
+- Adapter: HeuristicBacktestEngine (deterministic validation)
+- Output: BacktestResult (win_rate, max_drawdown, passed flag)
+- Gating: Fails if win_rate < 50 or max_drawdown >= 20
+- Status: ✅ Complete
+
+RiskBot
+- Input: Account, StrategyProposal, entry_price
+- Adapter: CompositeRiskManager (MaxDrawdown, MaxPositionSize rules)
+- Output: RiskVerdict (is_approved, reason)
+- Gating: Rejects if account would exceed limits
+- Status: ✅ Complete
+
+ExecutionBot
+- Input: StrategyProposal (approved by Risk)
+- Adapter: PaperEngine (simulated fills) + JsonTradeStore (persistence)
+- Output: TradeRecord (persisted to trades.jsonl)
+- Gating: None (executes after Risk approval)
+- Status: ✅ Complete
+
+PortfolioBot
+- Input: TradeRecord (executed)
+- Adapter: Account model + JsonPortfolioStore (persistence)
+- Output: Updated Account (persisted to account_paper.json)
+- Status: ✅ Complete
+
+PIPELINE EXECUTION (VALIDATED):
+
+Command: "full-trade EUR/USD momentum strategy"
+
+Flow:
+1. Research: DummySource → ResearchReport
+2. Strategy: HeuristicGenerator → StrategyProposal (confidence=0.95)
+3. Backtest: HeuristicEngine → BacktestResult (passed=true, win_rate=78%)
+4. Risk: CompositeManager → RiskVerdict (approved=true)
+5. Execution: PaperEngine → TradeRecord (persisted)
+6. Portfolio: Account.apply_trade() → Updated Account (persisted)
+
+Result: Trade created, persisted, account updated, ready for next trade
+
+NEXT PHASE: Phase 3 - Real Market Data (DESIGN COMPLETE, READY TO BUILD)
+
+ARCHITECTURE (PROVIDER-AGNOSTIC):
+
+Current (Phase 1-2):
+- MockPriceSource: hardcoded static prices
+- DummyResearchSource: mock findings
+
+Phase 3 (PLANNED):
+- MarketDataProvider (extends PriceSource protocol)
+  ├── MockMarketDataProvider (extended from MockPriceSource)
+  ├── AlphaVantageProvider (optional, free tier)
+  └── [Kite integration prepared for Phase 4]
+
+Phase 4 (READY):
+- KiteMarketDataProvider (primary, requires Zerodha account)
+- Just set HOKAGE_MARKET_DATA_MODE=kite and inject credentials
+- Zero changes to orchestrator or bots (factory pattern handles it)
+
+KEY DESIGN DECISION:
+- Kite is PRIMARY provider (production)
+- AlphaVantage is OPTIONAL fallback (testing)
+- Factory pattern: select at instantiation, no hardcoding
+- Phase 4 integration: single line config change
+
+TAX ARCHITECTURE (INTERFACES ONLY, DEFERRED):
+- TaxProvider: converts TradeRecord → TaxEvent
+- TaxEvent: models trade as taxable event (gain_type, holding_period, etc)
+- TaxLedger: persists events for tax reporting
+- Implementation deferred to Phase 4+
+
+COMPLETION METRICS:
+
+✅ 72/72 tests passing (6 Phase 1 integration + 12 Phase 2 dashboard + 54 other unit)
+✅ Full pipeline end-to-end validated with real account state
+✅ Risk gating verified (blocks bad proposals)
+✅ Portfolio persistence verified (account file exists and updates)
+✅ Trade persistence verified (trades file contains executed records)
+✅ Dashboard REST API implemented and tested
+✅ Zero technical debt from incomplete implementation
+
+RISKS: NONE (Low-risk architecture, all changes at adapter layer)
+
+IMMEDIATE NEXT STEPS (Phase 3):
+
+DO NOT:
+- Rebuild Phase 1 bots
+- Redesign orchestrator
+- Modify existing interfaces
+- Rerun full codebase analysis
+
+DO:
+1. Create src/integrations/data/models.py (Candle, Quote, OHLCV)
+2. Create src/integrations/data/interfaces.py (MarketDataProvider)
+3. Create src/integrations/data/factory.py (ProviderFactory, ProviderConfig)
+4. Extend MockMarketDataProvider with candle methods
+5. Create tax interfaces (TaxProvider, TaxEvent, TaxLedger)
+6. Implement AlphaVantageProvider (optional)
+7. Unit tests for factory and providers
+8. Validate 72/72 tests still passing
+9. Report Phase 3 completion
+
+ESTIMATED TIME FOR PHASE 3: ~13 hours
+
+READY TO PROCEED: YES ✅
+
+First action: Begin Phase 3A (data models and interfaces)

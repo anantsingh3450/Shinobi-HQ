@@ -29,6 +29,8 @@ class StrategyProposal:
 
     confidence_score: float
 
+    sources_cited: tuple[str, ...] = field(default_factory=tuple)
+
     generated_at: datetime = field(default_factory=utc_now)
     proposal_id: str = field(default_factory=lambda: str(uuid4()))
 
