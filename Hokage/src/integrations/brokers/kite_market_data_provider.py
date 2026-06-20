@@ -8,9 +8,15 @@ class KiteMarketDataProvider:
     integration. It is intentionally not wired by default in Phase 3A.
     """
 
-    def __init__(self, api_key: str | None = None, access_token: str | None = None) -> None:
-        self.api_key = api_key
-        self.access_token = access_token
+def __init__(
+    self,
+    api_key: str | None = None,
+    access_token: str | None = None,
+) -> None:
+    raise NotImplementedError(
+        "KiteMarketDataProvider is a placeholder integration point. "
+        "Implement Kite API access in Phase 4."
+    )
 
     def get_price(self, market: str) -> float:
         """Retrieve the latest market price for the requested instrument."""
