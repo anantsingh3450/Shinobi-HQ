@@ -25,7 +25,7 @@ from bots.risk.rules import (
 from bots.strategy.generators import HeuristicStrategyGenerator
 from bots.strategy.strategy_bot import StrategyBot
 from integrations.data.dummy_source import DummyResearchSource
-from integrations.data.mock_price_source import MockPriceSource
+from integrations.data.factory import ProviderFactory
 
 _PAPER_TRADES_DIR = Path("data/paper_trades")
 _PORTFOLIO_DIR = Path("data/portfolio")
@@ -56,8 +56,8 @@ class HokageOrchestrator:
             )
         )
 
-        # Shared price source for execution and risk entry price
-        self.price_source = MockPriceSource()
+        # Shared market data provider for execution and risk entry price
+        self.price_source = ProviderFactory.create_market_data_provider()
 
         # Execution phase — engine and store injected via DI
         self.execution_bot = ExecutionBot(
