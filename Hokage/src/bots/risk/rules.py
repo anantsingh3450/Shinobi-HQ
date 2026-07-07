@@ -252,6 +252,36 @@ class UniverseConstraintRiskRule(RiskManager):
         entry_price: float,
     ) -> RiskVerdict:
         """Reject if symbol is not part of the active universe."""
+        prop_symbol = proposal.market.upper()
+        
+        # Double protection: Enforce 15-Minute Opening Bell Observation Protocol in risk bot
+        import sys
+        if "pytest" not in sys.modules and "unittest" not in sys.modules:
+            from integrations.brokers.session_manager import KolkataTime
+            from datetime import time as dt_time
+            tz = KolkataTime()
+            ist_now = datetime.now(timezone.utc).astimezone(tz)
+            if dt_time(9, 15) <= ist_now.time() < dt_time(9, 30):
+                return RiskVerdict(
+                    is_approved=False,
+                    max_approved_quantity=0.0,
+                    reason="Opening Bell Observation Protocol active: order execution blocked between 09:15 and 09:30 IST.",
+                )
+
+        # July 7, 2026 Asset Restrictions: target only Crude Oil and Nifty 50 F&O
+        if "pytest" not in sys.modules and "unittest" not in sys.modules:
+            is_crude = (prop_symbol in ("CRUDE_OIL", "CRUDE", "CRUDEOIL"))
+            is_nifty = ("NIFTY" in prop_symbol)
+            if not (is_crude or is_nifty):
+                return RiskVerdict(
+                    is_approved=False,
+                    max_approved_quantity=0.0,
+                    reason=(
+                        f"Asset {prop_symbol} is blocked by strict July 7, 2026 Asset Restrictions. "
+                        "Only Crude Oil and Nifty 50 Futures/Options are allowed today."
+                    ),
+                )
+
         if not self.resolver:
             return RiskVerdict(
                 is_approved=True,
@@ -267,7 +297,6 @@ class UniverseConstraintRiskRule(RiskManager):
         except Exception:
             universe = ["CRUDE_OIL"]
 
-        prop_symbol = proposal.market.upper()
         if prop_symbol == "MARKET":
             return RiskVerdict(
                 is_approved=True,

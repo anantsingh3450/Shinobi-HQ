@@ -520,6 +520,34 @@ document?.addEventListener("DOMContentLoaded", () => {
                 }
             }
 
+            // Update live indices & commodities prices and changes
+            if (ops.indices) {
+                const updateIndexUI = (key, elemPriceId, elemChangeId) => {
+                    const idxData = ops.indices[key];
+                    if (idxData) {
+                        safeSetText(elemPriceId, idxData.price);
+                        const chgEl = document.getElementById(elemChangeId);
+                        if (chgEl) {
+                            chgEl.textContent = idxData.change;
+                            const isNeg = idxData.change.startsWith("-");
+                            if (isNeg) {
+                                chgEl.className = "hk-badge hk-badge-danger";
+                            } else {
+                                chgEl.className = "hk-badge hk-badge-success";
+                            }
+                        }
+                    }
+                };
+
+                updateIndexUI("NIFTY", "idx-nifty-price", "idx-nifty-change");
+                updateIndexUI("BANKNIFTY", "idx-banknifty-price", "idx-banknifty-change");
+                updateIndexUI("SENSEX", "idx-sensex-price", "idx-sensex-change");
+                updateIndexUI("CRUDE_OIL", "idx-crude-price", "idx-crude-change");
+                updateIndexUI("GOLD", "idx-gold-price", "idx-gold-change");
+                updateIndexUI("SILVER", "idx-silver-price", "idx-silver-change");
+                updateIndexUI("BRENT", "idx-brent-price", "idx-brent-change");
+            }
+
             // Trigger Portfolio Intelligence fetch (Phase 6.7)
             loadPortfolioIntelligenceData();
             
@@ -2565,7 +2593,7 @@ document?.addEventListener("DOMContentLoaded", () => {
     }
 
     function drawIndexSparklines() {
-        const indices = ["nifty", "banknifty", "sensex", "vix", "gold", "crude", "mcx_silver"];
+        const indices = ["nifty", "banknifty", "sensex", "vix", "gold", "crude", "mcx_silver", "brent"];
         indices.forEach(idx => {
             const canvas = document.getElementById(`spark-${idx}`);
             if (!canvas) return;

@@ -30,6 +30,11 @@ _PRICE_TABLE: dict[str, float] = {
     "TCS": 4_100.00,
     "GOLD": 2_350.00,
     "CRUDE": 78.50,
+    "CRUDEOIL": 78.50,
+    "CRUDE_OIL": 78.50,
+    "SILVER": 30.00,
+    "BRENT": 82.00,
+    "BANKNIFTY": 50_000.00,
 }
 
 _DEFAULT_PRICE = 100.0
@@ -48,6 +53,11 @@ _INSTRUMENTS: dict[str, Instrument] = {
     "TCS": Instrument("TCS", AssetClass.INDIAN_EQUITY, Exchange.NSE, "INR", "Tata Consultancy Services"),
     "GOLD": Instrument("GOLD", AssetClass.COMMODITY, Exchange.MCX, "USD", "Gold"),
     "CRUDE": Instrument("CRUDE", AssetClass.COMMODITY, Exchange.MCX, "USD", "Crude Oil"),
+    "CRUDE_OIL": Instrument("CRUDE_OIL", AssetClass.COMMODITY, Exchange.MCX, "USD", "Crude Oil"),
+    "CRUDEOIL": Instrument("CRUDEOIL", AssetClass.COMMODITY, Exchange.MCX, "USD", "Crude Oil"),
+    "SILVER": Instrument("SILVER", AssetClass.COMMODITY, Exchange.MCX, "USD", "Silver"),
+    "BRENT": Instrument("BRENT", AssetClass.COMMODITY, Exchange.MCX, "USD", "Brent Crude Oil"),
+    "BANKNIFTY": Instrument("BANKNIFTY", AssetClass.INDEX, Exchange.NSE, "INR", "NIFTY BANK"),
 }
 
 _INTERVAL_DELTAS: dict[CandleInterval, timedelta] = {
@@ -66,8 +76,11 @@ _YAHOO_MAPPING: dict[str, str] = {
     "TCS": "TCS.NS",
     "GOLD": "GC=F",
     "CRUDE": "CL=F",
-    "MCX_SILVER": "SI=F",
+    "CRUDE_OIL": "CL=F",
+    "CRUDEOIL": "CL=F",
     "SILVER": "SI=F",
+    "BRENT": "BZ=F",
+    "BANKNIFTY": "%5ENSEBANK",
     "EUR/USD": "EURUSD=X",
     "GBP/USD": "GBPUSD=X",
     "USD/JPY": "JPY=X",
@@ -153,6 +166,12 @@ class MockMarketDataProvider:
     def resolve_instrument(self, market: str) -> Instrument:
         """Resolve a market string to a normalized mock instrument."""
         normalized = market.upper().strip()
+        if normalized == "NIFTY 50":
+            normalized = "NIFTY"
+        elif normalized in ("BANK NIFTY", "NIFTY BANK"):
+            normalized = "BANKNIFTY"
+        elif normalized == "BRENT OIL":
+            normalized = "BRENT"
         if normalized in _INSTRUMENTS:
             return _INSTRUMENTS[normalized]
         return Instrument(

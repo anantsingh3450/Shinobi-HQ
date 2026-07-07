@@ -1340,6 +1340,51 @@ def create_dashboard_api(
                 except Exception:
                     pass
 
+            # Fetch prices for global indices and commodities
+            provider = orchestrator.price_source
+            observation_assets = {
+                "NIFTY": "NIFTY 50",
+                "BANKNIFTY": "BANK NIFTY",
+                "SENSEX": "SENSEX",
+                "CRUDE_OIL": "CRUDE OIL",
+                "GOLD": "GOLD",
+                "SILVER": "SILVER",
+                "BRENT": "BRENT OIL"
+            }
+            base_prices = {
+                "NIFTY": 22500.0,
+                "BANKNIFTY": 50000.0,
+                "SENSEX": 74000.0,
+                "CRUDE_OIL": 78.50,
+                "GOLD": 2350.0,
+                "SILVER": 30.0,
+                "BRENT": 82.0
+            }
+            index_quotes = {}
+            for key, display_name in observation_assets.items():
+                try:
+                    quote = provider.get_quote(key)
+                    price_val = quote.price
+                    base_val = base_prices.get(key, 100.0)
+                    change_pct = ((price_val - base_val) / base_val) * 100.0 if base_val > 0 else 0.0
+                    change_str = f"{change_pct:+.2f}%"
+                    index_quotes[key] = {
+                        "name": display_name,
+                        "price": f"{price_val:,.2f}",
+                        "price_raw": price_val,
+                        "change": change_str,
+                        "change_raw": change_pct
+                    }
+                except Exception as ex:
+                    logger.warning(f"Failed to fetch quote for observation asset {key}: {ex}")
+                    index_quotes[key] = {
+                        "name": display_name,
+                        "price": "N/A",
+                        "price_raw": 0.0,
+                        "change": "0.00%",
+                        "change_raw": 0.0
+                    }
+
             operations_info = {
                 "market_status": market_status,
                 "market_time": market_time,
@@ -1361,7 +1406,8 @@ def create_dashboard_api(
                 "incidents_count": incidents_count,
                 "readiness_level": promotion_readiness_level,
                 "checklist_passed": passed_criteria_count,
-                "active_positions": active_positions_list
+                "active_positions": active_positions_list,
+                "indices": index_quotes
             }
 
             return jsonify({

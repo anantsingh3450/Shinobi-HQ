@@ -1334,8 +1334,12 @@ class AutonomousTradingBot:
         ist_now = datetime.now(timezone.utc).astimezone(tz)
         current_date_str = ist_now.strftime("%Y-%m-%d")
 
+        is_observation_window = False
         if not in_pytest:
             from datetime import time as dt_time
+            if dt_time(9, 15) <= ist_now.time() < dt_time(9, 30):
+                is_observation_window = True
+            
             if dt_time(11, 30) <= ist_now.time() <= dt_time(13, 30):
                 logger.info("Chop Window Filter: Midday chop window active (11:30 - 13:30 IST). Fresh breakout entries blocked.")
                 return
@@ -1502,7 +1506,9 @@ class AutonomousTradingBot:
 
         # If general NO TRADE/RISK-OFF triggers are active
         global_blocker = None
-        if risk_off:
+        if is_observation_window:
+            global_blocker = "Opening Bell Observation Protocol: Prohibited from executing entry orders until 09:30 AM IST."
+        elif risk_off:
             global_blocker = "Fast Trading Brain: Cached risk state is RISK-OFF."
         elif preservation_mode == "NO TRADE":
             global_blocker = "Fast Trading Brain: Capital Preservation Mode is NO TRADE."
