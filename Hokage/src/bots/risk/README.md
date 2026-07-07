@@ -12,8 +12,8 @@ Backtest → **Risk** → Execution
 
 - Strategy spec from Strategy Bot
 - Backtest results from Backtest Bot
-- Configured risk limits from `config/bots/risk.yaml` (future)
-- Portfolio context from Portfolio Manager (future — not required for v1)
+- Configured risk limits from the risk manager rules
+- Portfolio context from Portfolio Bot
 
 ## Outputs
 
@@ -29,4 +29,5 @@ Backtest → **Risk** → Execution
 
 Hokage enforces verdicts. Risk Bot does not communicate with the user directly.
 
-No code yet.
+## Implementation
+The Risk Bot is implemented in `risk_bot.py`. It uses a rule manager (`rules.py`) to validate trade sizes and drawdown limits, returning a structured `RiskVerdict`.

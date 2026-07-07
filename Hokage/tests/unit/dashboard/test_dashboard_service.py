@@ -97,7 +97,7 @@ def mock_trade_store() -> MagicMock:
     )
     
     store = MagicMock()
-    store.load_trades.return_value = [trade1, trade2]
+    store.load_all.return_value = [trade1, trade2]
     return store
 
 

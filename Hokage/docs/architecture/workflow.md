@@ -6,10 +6,10 @@
 2. **Strategy** — translate research into a concrete trading strategy spec
 3. **Backtest** — validate the strategy on historical data
 4. **Risk** — assess strategy against risk limits; produce pass/fail for execution
-5. **Execution (Paper)** — run the shared strategy engine in simulated mode
-6. **Improvement** — analyze results, propose changes, update knowledge
-7. **Repeat** — cycle back through Research / Strategy / Backtest / Risk as needed
-8. **Execution (Live)** — deploy to live trading only when all live gates pass
+5. **Execution** — run the trade execution (paper or live broker adaptor)
+6. **Tax** — compute transaction taxes/charges and record to the tax ledger
+7. **Portfolio** — update account portfolio state, cash balance, and open positions
+
 
 ## Gate Rules
 

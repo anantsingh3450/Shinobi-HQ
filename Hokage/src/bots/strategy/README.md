@@ -12,4 +12,5 @@ Translates research into executable strategy specifications.
 - Strategy spec (rules, parameters, universe, timeframe)
 - Consumed by Backtest Bot; reaches Execution Bot after Risk gate pass
 
-No code yet.
+## Implementation
+The Strategy Bot is implemented in `strategy_bot.py`. It uses a strategy generator interface (`interfaces.py`, `generators.py`) to formulate a structured `StrategyProposal`.

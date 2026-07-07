@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import uuid4
-
-
-def utc_now() -> datetime:
-    return datetime.now(UTC)
+from shared.utils import utc_now
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +30,9 @@ class StrategyProposal:
 
     generated_at: datetime = field(default_factory=utc_now)
     proposal_id: str = field(default_factory=lambda: str(uuid4()))
+
+    playbook_id: str | None = None
+    volatility_regime: str | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():

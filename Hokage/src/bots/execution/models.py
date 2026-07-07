@@ -6,14 +6,10 @@ pipeline. They are pure data structures with no external dependencies.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import Enum
 from uuid import uuid4
-
-
-def utc_now() -> datetime:
-    """Return the current UTC timestamp with timezone awareness."""
-    return datetime.now(UTC)
+from shared.utils import utc_now
 
 
 class TradeDirection(Enum):
@@ -23,16 +19,7 @@ class TradeDirection(Enum):
     SHORT = "SHORT"
 
 
-class ExecutionMode(Enum):
-    """Execution environment.
-
-    LIVE mode is defined here for future use but is never activated by the
-    current pipeline. Hokage enforces a three-gate check before any LIVE
-    promotion is permitted.
-    """
-
-    PAPER = "PAPER"
-    LIVE = "LIVE"  # Disabled — do not wire until Hokage live gates are built
+from integrations.brokers.models import ExecutionMode
 
 
 class TradeStatus(Enum):
@@ -79,6 +66,10 @@ class TradeRecord:
 
     mode: ExecutionMode = ExecutionMode.PAPER
     status: TradeStatus = TradeStatus.OPEN
+    friction_metrics: dict[str, Any] | None = None
+    playbook_id: str | None = None
+    volatility_regime: str | None = None
+    failure_reason: str | None = None
 
     executed_at: datetime = field(default_factory=utc_now)
     trade_id: str = field(default_factory=lambda: str(uuid4()))
@@ -92,7 +83,7 @@ class TradeRecord:
             raise ValueError("entry_price must be positive.")
         if self.mode is ExecutionMode.LIVE:
             raise ValueError(
-                "ExecutionMode.LIVE is disabled. Only PAPER mode is permitted."
+                "Live trading capability exists but is not active in the current execution mode."
             )
 
     def to_dict(self) -> dict:
@@ -110,12 +101,17 @@ class TradeRecord:
             "strategy_name": self.strategy_name,
             "sources_cited": list(self.sources_cited),
             "executed_at": self.executed_at.isoformat(),
+            "friction_metrics": self.friction_metrics,
+            "playbook_id": self.playbook_id,
+            "volatility_regime": self.volatility_regime,
+            "failure_reason": self.failure_reason,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> TradeRecord:
         """Deserialize a trade record from a dictionary."""
         from datetime import datetime
+        from typing import Any
 
         return cls(
             trade_id=data["trade_id"],
@@ -130,4 +126,8 @@ class TradeRecord:
             strategy_name=data["strategy_name"],
             sources_cited=tuple(data["sources_cited"]),
             executed_at=datetime.fromisoformat(data["executed_at"]),
+            friction_metrics=data.get("friction_metrics"),
+            playbook_id=data.get("playbook_id"),
+            volatility_regime=data.get("volatility_regime"),
+            failure_reason=data.get("failure_reason"),
         )

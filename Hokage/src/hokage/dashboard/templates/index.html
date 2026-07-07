@@ -1,0 +1,1764 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hokage Commander War Room</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo-container" style="display: flex; align-items: center; gap: 8px; margin-bottom: 0.5rem;">
+                    <svg class="uzumaki-symbol" viewBox="0 0 32 32" width="28" height="28">
+                        <circle cx="16" cy="16" r="14" fill="none" stroke="hsl(355, 85%, 55%)" stroke-width="2.5" />
+                        <path d="M 16 16 A 8 8 0 1 1 12 10 A 6 6 0 1 1 16 12 A 4 4 0 1 1 15 15" fill="none" stroke="hsl(355, 85%, 55%)" stroke-width="2.5" stroke-linecap="round" />
+                    </svg>
+                    <div class="logo">Hokage</div>
+                </div>
+                <div class="version hidden-legacy-header">War Room v5A.3</div>
+            </div>
+            <nav class="nav-menu" style="overflow-y: auto; flex: 1; margin-bottom: 1rem;">
+                <button class="nav-item active" data-tab="home">
+                    <span class="icon">🏰</span> Home
+                </button>
+                <button class="nav-item" data-tab="brain">
+                    <span class="icon">🧠</span> Brain
+                </button>
+                <button class="nav-item" data-tab="markets">
+                    <span class="icon">📈</span> Markets
+                </button>
+                <button class="nav-item" data-tab="portfolio">
+                    <span class="icon">💼</span> Portfolio
+                </button>
+                <button class="nav-item" data-tab="positions">
+                    <span class="icon">📊</span> Positions
+                </button>
+                <button class="nav-item" data-tab="research">
+                    <span class="icon">📖</span> Research
+                </button>
+                <button class="nav-item" data-tab="opportunities">
+                    <span class="icon">🎯</span> Opportunities
+                </button>
+                <button class="nav-item" data-tab="strategy-lab">
+                    <span class="icon">🔬</span> Strategy Lab
+                </button>
+                <button class="nav-item" data-tab="committee">
+                    <span class="icon">🏛️</span> Investment Committee
+                </button>
+                <button class="nav-item" data-tab="risk">
+                    <span class="icon">🛡️</span> Risk Center
+                </button>
+                <button class="nav-item" data-tab="execution">
+                    <span class="icon">🥷</span> Execution Center
+                </button>
+                <button class="nav-item" data-tab="wealth">
+                    <span class="icon">💰</span> Wealth Center
+                </button>
+                <button class="nav-item" data-tab="tax">
+                    <span class="icon">🏛️</span> Tax Intelligence
+                </button>
+                <button class="nav-item" data-tab="journal">
+                    <span class="icon">📝</span> Trade Journal
+                </button>
+                <button class="nav-item" data-tab="no-trade">
+                    <span class="icon">🛑</span> No-Trade Journal
+                </button>
+                <button class="nav-item" data-tab="documents">
+                    <span class="icon">📁</span> Documents
+                </button>
+                <button class="nav-item" data-tab="analytics">
+                    <span class="icon">📊</span> Analytics
+                </button>
+                <button class="nav-item" data-tab="reports">
+                    <span class="icon">📋</span> Reports
+                </button>
+                <button class="nav-item" data-tab="automation">
+                    <span class="icon">⚙️</span> Automation
+                </button>
+                <button class="nav-item" data-tab="settings">
+                    <span class="icon">⚙️</span> Settings
+                </button>
+            </nav>
+            
+            <!-- Broker Connectivity Status Widget (Phase 9 Zerodha Layer) -->
+            <div class="profile-widget" style="padding: 0.75rem; background: rgba(15, 15, 15, 0.75); border-radius: 8px; border: 1px solid rgba(255, 69, 0, 0.25); font-size: 0.8rem; margin: 0 1rem 1rem 1rem; backdrop-filter: blur(18px);">
+                <div style="font-weight: bold; color: var(--color-orange); margin-bottom: 0.4rem; display: flex; align-items: center; gap: 6px;">
+                    <span style="font-size: 1rem;">🔌</span> Broker Status
+                </div>
+                <div style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem;" id="sidebar-broker-status">
+                    Zerodha: <span style="color: var(--color-red); font-weight: 600;">Disconnected</span>
+                </div>
+                <a href="/api/v1/broker/zerodha/login" target="_blank" class="btn-primary-sm" style="display: inline-block; text-align: center; text-decoration: none; font-size: 0.75rem; padding: 0.35rem 0.75rem; width: 100%; border-radius: 4px;">
+                    Authenticate Zerodha
+                </a>
+            </div>
+
+            <div class="sidebar-footer" style="padding-top: 1rem; border-top: 1px solid var(--border-color);">
+                <div class="profile-widget" style="padding: 0.75rem; background: rgba(255, 69, 0, 0.05); border-radius: 6px; border: 1px solid var(--border-color); font-size: 0.8rem; margin-bottom: 0.75rem;">
+                    <div style="font-weight: bold; color: var(--color-orange); text-shadow: 0 0 10px rgba(255,69,0,0.3);">Village Elder</div>
+                    <div style="font-size: 0.7rem; color: var(--text-muted);">Konoha Village | Hokage Active</div>
+                </div>
+                <!-- Will of Fire Quote Panel -->
+                <div class="will-of-fire-quote" style="margin-bottom: 0.75rem; padding: 0.5rem; background: rgba(255,255,255,0.02); border-left: 2px solid var(--color-orange); border-radius: 4px; font-size: 0.7rem; color: var(--text-muted);">
+                    <p style="font-style: italic; margin-bottom: 0.15rem;" id="rotating-quote">"When the tree leaves dance, one shall find flames..."</p>
+                    <span style="font-weight: 600; color: var(--color-orange);">— Lord Third</span>
+                </div>
+                <div class="status-indicator">
+                    <span class="indicator-dot online" style="background-color: var(--color-green); box-shadow: 0 0 8px var(--color-green);"></span>
+                    <span style="font-size: 0.75rem;">Hokage Core Active</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Header -->
+            <header class="main-header" style="display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.5rem; flex-wrap: wrap; gap: 1rem; border-bottom: 1px solid var(--border-color);">
+                <div class="header-title" style="display: flex; align-items: center; gap: 1rem;">
+                    <!-- Leaf Village Icon/Motif SVG -->
+                    <svg class="leaf-headband" viewBox="0 0 120 40" width="100" height="34" style="opacity: 0.95; filter: drop-shadow(0 0 5px rgba(255, 69, 0, 0.4));">
+                        <rect x="10" y="10" width="100" height="20" rx="4" fill="#1e2430" stroke="var(--color-orange)" stroke-width="1.5" />
+                        <circle cx="16" cy="16" r="1.2" fill="#ff4500" />
+                        <circle cx="16" cy="20" r="1.2" fill="#ff4500" />
+                        <circle cx="16" cy="24" r="1.2" fill="#ff4500" />
+                        <circle cx="104" cy="16" r="1.2" fill="#ff4500" />
+                        <circle cx="104" cy="20" r="1.2" fill="#ff4500" />
+                        <circle cx="104" cy="24" r="1.2" fill="#ff4500" />
+                        <path d="M 57 23 C 55 23, 54 21, 55 19 C 56 17, 59 17, 60 19 C 62 21, 61 24, 58 25 C 55 26, 52 24, 52 20 C 52 16, 56 13, 61 14 L 66 11 M 51 22 L 48 24" fill="none" stroke="var(--color-orange)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                    <div style="display: flex; flex-direction: column;">
+                        <h1 id="welcome-message" style="margin: 0; font-family: var(--font-heading); font-size: 1.8rem; font-weight: 700; color: #fff;">Good Morning, Village Elder</h1>
+                        <p class="subtitle" style="margin: 0; font-size: 0.85rem; color: var(--text-muted);">Hokage is live and protecting your capital.</p>
+                    </div>
+                </div>
+
+                <!-- Global Search Bar -->
+                <div style="display: flex; align-items: center; gap: 1rem; flex: 1; max-width: 250px; position: relative;">
+                    <input type="text" id="global-search-input" placeholder="🔍 Search logs and strategies..." style="width: 100%; background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); border-radius: 4px; padding: 0.4rem 0.8rem; color: #fff; font-size: 0.8rem;">
+                    <div id="global-search-results" class="hk-card" style="display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 1000; max-height: 400px; overflow-y: auto; margin-top: 0.5rem; background: rgba(15, 23, 42, 0.95); border: 1px solid var(--color-orange); padding: 0.5rem;">
+                        <div id="search-results-content"></div>
+                    </div>
+                </div>
+
+                <!-- Replay & Time Machine Controls -->
+                <div class="replay-controls-header" style="display: flex; align-items: center; gap: 0.5rem; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); padding: 0.25rem 0.5rem; border-radius: 4px;">
+                    <span style="font-size: 0.7rem; color: var(--color-orange); font-weight: 600; text-transform: uppercase;">Replay:</span>
+                    <input type="date" id="time-machine-date" style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); color: #fff; padding: 0.15rem; font-size: 0.7rem; border-radius: 3px; width: 110px;">
+                    <button id="btn-replay-play" class="btn-primary-sm" style="padding: 0.15rem 0.35rem; font-size: 0.65rem;">▶ Play</button>
+                    <button id="btn-replay-pause" class="btn-primary-sm" style="padding: 0.15rem 0.35rem; font-size: 0.65rem; display: none;">⏸ Pause</button>
+                    <button id="btn-replay-step" class="btn-primary-sm" style="padding: 0.15rem 0.35rem; font-size: 0.65rem;">⏭ Step</button>
+                </div>
+
+                <div class="header-status" style="display: flex; gap: 0.5rem;">
+                    <div class="badge" id="badge-hokage-active" style="background-color: var(--color-green-glow); color: var(--color-green); border-color: var(--color-green); text-shadow: 0 0 10px rgba(57,255,20,0.3); animation: pulse 2s infinite;">HOKAGE IS ACTIVE</div>
+                    <div class="badge mode-badge" id="badge-mode">Mode: READ_ONLY</div>
+                    <div class="badge loop-badge" id="badge-loop">Loop: INACTIVE</div>
+                    <div class="badge venue-badge" id="badge-badge-venue">Venue: paper_main</div>
+                </div>
+            </header>
+
+            <section class="tab-pane active" id="tab-home">
+                <!-- Main Grid Layout -->
+                <div style="display: grid; grid-template-columns: 3fr 1fr; gap: 1.5rem;">
+                    <!-- Left main column -->
+                    <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+                        
+                        <!-- 1. Main Metric Cards Row -->
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem;">
+                            <!-- Card 1: Net Worth -->
+                            <div class="metric-card glass-panel" style="display: flex; flex-direction: column; justify-content: space-between; min-height: 120px; padding: 1rem; border-radius: 12px;">
+                                <div>
+                                    <div class="metric-label" style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted);">Net Worth</div>
+                                    <div class="metric-value text-cyan" id="val-equity" style="font-size: 1.5rem; font-weight: 700; margin: 0.2rem 0; text-shadow: 0 0 10px rgba(255, 69, 0, 0.2);">₹0.00</div>
+                                    <div class="metric-subtext" id="val-cash" style="font-size: 0.7rem; color: var(--text-muted);">Cash: ₹0.00</div>
+                                </div>
+                                <div style="height: 30px; margin-top: 0.5rem; opacity: 0.8;">
+                                    <canvas id="spark-net-worth" style="width: 100%; height: 30px;"></canvas>
+                                </div>
+                            </div>
+                            
+                            <!-- Card 2: Today's P&L -->
+                            <div class="metric-card glass-panel" style="display: flex; flex-direction: column; justify-content: space-between; min-height: 120px; padding: 1rem; border-radius: 12px;">
+                                <div>
+                                    <div class="metric-label" style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted);">Today's P&L</div>
+                                    <div class="metric-value text-green" id="val-pnl-unrealized-pct" style="font-size: 1.5rem; font-weight: 700; margin: 0.2rem 0; text-shadow: 0 0 10px rgba(57, 255, 20, 0.2);">+₹0.00</div>
+                                    <div class="metric-subtext" id="val-drawdown" style="font-size: 0.7rem; color: var(--text-muted);">Max DD: 0.00%</div>
+                                </div>
+                                <div style="font-size: 0.7rem; font-weight: 600; color: var(--text-muted); display: flex; justify-content: space-between; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 0.4rem;">
+                                    <span>Daily Win Rate:</span>
+                                    <span id="val-win-rate" class="text-green">0.00%</span>
+                                </div>
+                            </div>
+                            
+                            <!-- Card 3: Risk Status Circular Gauge -->
+                            <div class="metric-card glass-panel" style="display: flex; align-items: center; justify-content: space-between; min-height: 120px; padding: 1rem; border-radius: 12px;">
+                                <div style="display: flex; flex-direction: column; justify-content: space-between; height: 100%;">
+                                    <div>
+                                        <div class="metric-label" style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted);">Risk Status</div>
+                                        <div class="metric-value text-gold" id="val-trust-score" style="font-size: 1.25rem; font-weight: 700; margin: 0.2rem 0; text-shadow: 0 0 10px rgba(230, 57, 70, 0.2);">24/100</div>
+                                    </div>
+                                    <div style="font-size: 0.75rem; font-weight: bold; color: var(--color-green); text-transform: uppercase; letter-spacing: 0.5px;">LOW RISK</div>
+                                </div>
+                                <div style="position: relative; width: 60px; height: 60px; display: flex; align-items: center; justify-content: center;">
+                                    <svg viewBox="0 0 36 36" width="60" height="60">
+                                        <path d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="3" />
+                                        <path d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="var(--color-orange)" stroke-width="3" stroke-dasharray="24, 100" stroke-linecap="round" />
+                                    </svg>
+                                    <span style="position: absolute; font-size: 0.65rem; font-weight: bold; color: #fff;">24%</span>
+                                </div>
+                            </div>
+                            
+                            <!-- Card 4: Market Status / Regime -->
+                            <div class="metric-card glass-panel" style="display: flex; flex-direction: column; justify-content: space-between; min-height: 120px; padding: 1rem; border-radius: 12px;">
+                                <div>
+                                    <div class="metric-label" style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted);">Market Status</div>
+                                    <div class="metric-value text-cyan" id="decision-status-val" style="font-size: 1.25rem; font-weight: 700; margin: 0.2rem 0; text-shadow: 0 0 10px rgba(255, 69, 0, 0.2);">WATCHING</div>
+                                </div>
+                                <div id="decision-status-reason" style="font-size: 0.65rem; color: var(--text-muted); line-height: 1.3; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">
+                                    Monitoring active universe...
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 2. Center Stream Box: HOKAGE THINKING NOW -->
+                        <div class="glass-panel" style="padding: 1.2rem; border-radius: 12px; border: 1px solid var(--border-color);">
+                            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 0.6rem; margin-bottom: 0.8rem;">
+                                <div style="display: flex; align-items: center;">
+                                    <span class="status-dot-blink" id="warroom-heartbeat" style="display: inline-block; width: 8px; height: 8px; background-color: var(--color-red); box-shadow: 0 0 8px var(--color-red); border-radius: 50%; margin-right: 8px; animation: pulse 1.5s infinite;"></span>
+                                    <strong style="font-size: 0.85rem; letter-spacing: 0.5px; color: #fff;">HOKAGE THINKING NOW</strong>
+                                </div>
+                                <div style="display: flex; gap: 1rem; font-size: 0.75rem; color: var(--text-muted);">
+                                    <span>System Health: <strong id="warroom-health" style="color: var(--color-green);">HEALTHY</strong></span>
+                                    <span>Time: <strong id="warroom-time" style="color: #fff;">--:--:--</strong></span>
+                                    <span>Core State: <strong id="warroom-state-display" style="color: var(--color-orange);">IDLE</strong></span>
+                                </div>
+                            </div>
+                            
+                            <!-- Process wireframe steps slider -->
+                            <div class="timeline-steps-container" style="display: flex; justify-content: space-between; position: relative; padding: 0.5rem 0; overflow-x: auto; gap: 1rem;">
+                                <div style="position: absolute; top: 1.5rem; left: 5%; right: 5%; height: 2px; background: rgba(255,255,255,0.05); z-index: 1;"></div>
+                                <div id="timeline-progress-fill" style="position: absolute; top: 1.5rem; left: 5%; width: 0%; height: 2px; background: var(--color-orange); transition: width 0.5s ease; z-index: 2;"></div>
+                                
+                                <div class="timeline-step active" data-step="START" style="display: flex; flex-direction: column; align-items: center; z-index: 3; position: relative; min-width: 60px;">
+                                    <div class="step-dot" style="width: 20px; height: 20px; border-radius: 50%; background: var(--color-orange); border: 2px solid var(--color-orange); display: flex; align-items: center; justify-content: center; color: #000; font-size: 0.6rem; font-weight: bold;">1</div>
+                                    <span style="font-size: 0.65rem; margin-top: 0.4rem; color: #fff;">Start</span>
+                                </div>
+                                <div class="timeline-step" data-step="MACRO_REGIME" style="display: flex; flex-direction: column; align-items: center; z-index: 3; position: relative; min-width: 60px;">
+                                    <div class="step-dot" style="width: 20px; height: 20px; border-radius: 50%; background: #1a1f29; border: 2px solid #2d3748; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 0.6rem; font-weight: bold;">2</div>
+                                    <span style="font-size: 0.65rem; margin-top: 0.4rem; color: var(--text-muted);">Regime</span>
+                                </div>
+                                <div class="timeline-step" data-step="UNIVERSE_SCAN" style="display: flex; flex-direction: column; align-items: center; z-index: 3; position: relative; min-width: 60px;">
+                                    <div class="step-dot" style="width: 20px; height: 20px; border-radius: 50%; background: #1a1f29; border: 2px solid #2d3748; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 0.6rem; font-weight: bold;">3</div>
+                                    <span style="font-size: 0.65rem; margin-top: 0.4rem; color: var(--text-muted);">Scan</span>
+                                </div>
+                                <div class="timeline-step" data-step="STRATEGY_COMMITTEE" style="display: flex; flex-direction: column; align-items: center; z-index: 3; position: relative; min-width: 60px;">
+                                    <div class="step-dot" style="width: 20px; height: 20px; border-radius: 50%; background: #1a1f29; border: 2px solid #2d3748; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 0.6rem; font-weight: bold;">4</div>
+                                    <span style="font-size: 0.65rem; margin-top: 0.4rem; color: var(--text-muted);">Strategy</span>
+                                </div>
+                                <div class="timeline-step" data-step="INVESTMENT_COMMITTEE" style="display: flex; flex-direction: column; align-items: center; z-index: 3; position: relative; min-width: 60px;">
+                                    <div class="step-dot" style="width: 20px; height: 20px; border-radius: 50%; background: #1a1f29; border: 2px solid #2d3748; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 0.6rem; font-weight: bold;">5</div>
+                                    <span style="font-size: 0.65rem; margin-top: 0.4rem; color: var(--text-muted);">Invest</span>
+                                </div>
+                                <div class="timeline-step" data-step="RISK_COMMITTEE" style="display: flex; flex-direction: column; align-items: center; z-index: 3; position: relative; min-width: 60px;">
+                                    <div class="step-dot" style="width: 20px; height: 20px; border-radius: 50%; background: #1a1f29; border: 2px solid #2d3748; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 0.6rem; font-weight: bold;">6</div>
+                                    <span style="font-size: 0.65rem; margin-top: 0.4rem; color: var(--text-muted);">Risk</span>
+                                </div>
+                                <div class="timeline-step" data-step="EXECUTION" style="display: flex; flex-direction: column; align-items: center; z-index: 3; position: relative; min-width: 60px;">
+                                    <div class="step-dot" style="width: 20px; height: 20px; border-radius: 50%; background: #1a1f29; border: 2px solid #2d3748; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 0.6rem; font-weight: bold;">7</div>
+                                    <span style="font-size: 0.65rem; margin-top: 0.4rem; color: var(--text-muted);">Exec</span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 3. Quick Actions Bar -->
+                        <div class="glass-panel" style="padding: 0.8rem; border-radius: 12px; display: flex; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap;">
+                            <button id="qa-ask-hokage" class="btn-primary-sm" style="flex: 1; padding: 0.6rem; display: flex; align-items: center; justify-content: center; gap: 0.4rem; background: rgba(255, 69, 0, 0.1); border: 1px solid var(--border-color); color: #fff; border-radius: 6px; cursor: pointer; font-size: 0.8rem; font-weight: 600;">
+                                💬 Ask Hokage
+                            </button>
+                            <button id="qa-start-research" class="btn-primary-sm" style="flex: 1; padding: 0.6rem; display: flex; align-items: center; justify-content: center; gap: 0.4rem; background: rgba(255, 69, 0, 0.1); border: 1px solid var(--border-color); color: #fff; border-radius: 6px; cursor: pointer; font-size: 0.8rem; font-weight: 600;">
+                                📖 Start Research
+                            </button>
+                            <button id="qa-scan-markets" class="btn-primary-sm" style="flex: 1; padding: 0.6rem; display: flex; align-items: center; justify-content: center; gap: 0.4rem; background: rgba(255, 69, 0, 0.1); border: 1px solid var(--border-color); color: #fff; border-radius: 6px; cursor: pointer; font-size: 0.8rem; font-weight: 600;">
+                                📈 Scan Markets
+                            </button>
+                            <button id="qa-new-opportunity" class="btn-primary-sm" style="flex: 1; padding: 0.6rem; display: flex; align-items: center; justify-content: center; gap: 0.4rem; background: rgba(255, 69, 0, 0.1); border: 1px solid var(--border-color); color: #fff; border-radius: 6px; cursor: pointer; font-size: 0.8rem; font-weight: 600;">
+                                🎯 New Opportunity
+                            </button>
+                            <button id="qa-upload-document" class="btn-primary-sm" style="flex: 1; padding: 0.6rem; display: flex; align-items: center; justify-content: center; gap: 0.4rem; background: rgba(255, 69, 0, 0.1); border: 1px solid var(--border-color); color: #fff; border-radius: 6px; cursor: pointer; font-size: 0.8rem; font-weight: 600;">
+                                📁 Upload Document
+                            </button>
+                            <button id="qa-voice-command" class="btn-primary-sm" style="flex: 1; padding: 0.6rem; display: flex; align-items: center; justify-content: center; gap: 0.4rem; background: rgba(255, 69, 0, 0.1); border: 1px solid var(--border-color); color: #fff; border-radius: 6px; cursor: pointer; font-size: 0.8rem; font-weight: 600;">
+                                🎙️ Voice Command
+                            </button>
+                        </div>
+                        
+                        <!-- 4. Bottom Widget Panel Grid -->
+                        <div style="display: grid; grid-template-columns: 1.2fr 1fr; gap: 1.5rem;">
+                            <!-- Widget 1: Portfolio Overview Donut -->
+                            <div class="glass-panel" style="padding: 1rem; border-radius: 12px;">
+                                <div class="panel-header" style="margin-bottom: 0.8rem;">
+                                    <h3 style="margin: 0; font-size: 0.95rem; color: var(--color-orange);">Portfolio Overview</h3>
+                                </div>
+                                <div style="display: flex; gap: 1rem; align-items: center; justify-content: space-around;">
+                                    <div style="width: 120px; height: 120px;">
+                                        <canvas id="portfolio-allocation-pie" style="width: 100%; height: 100%;"></canvas>
+                                    </div>
+                                    <div style="display: flex; flex-direction: column; gap: 0.4rem; font-size: 0.75rem;">
+                                        <div style="display: flex; align-items: center; gap: 0.4rem;">
+                                            <span style="display: inline-block; width: 10px; height: 10px; background: var(--color-orange); border-radius: 2px;"></span>
+                                            <span>Equities: <strong id="summary-equity">₹0.00</strong></span>
+                                        </div>
+                                        <div style="display: flex; align-items: center; gap: 0.4rem;">
+                                            <span style="display: inline-block; width: 10px; height: 10px; background: var(--color-red); border-radius: 2px;"></span>
+                                            <span>Cash: <strong id="summary-cash">₹0.00</strong></span>
+                                        </div>
+                                        <div style="display: flex; align-items: center; gap: 0.4rem;">
+                                            <span style="display: inline-block; width: 10px; height: 10px; background: var(--color-green); border-radius: 2px;"></span>
+                                            <span>Trust Stance: <strong id="summary-trust" style="color: var(--color-green);">95/100</strong></span>
+                                        </div>
+                                        <div style="display: flex; align-items: center; gap: 0.4rem;">
+                                            <span style="display: inline-block; width: 10px; height: 10px; background: #fff; border-radius: 2px;"></span>
+                                            <span>Max Drawdown: <strong id="summary-drawdown" style="color: var(--color-red);">0.00%</strong></span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Widget 2: Top Opportunities ranking -->
+                            <div class="glass-panel" style="padding: 1rem; border-radius: 12px; display: flex; flex-direction: column; justify-content: space-between;">
+                                <div class="panel-header" style="margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center;">
+                                    <h3 style="margin: 0; font-size: 0.95rem; color: var(--color-orange);">Top Opportunities</h3>
+                                    <span id="WATCHLIST" class="hk-badge" style="font-size: 0.65rem; background: var(--color-cyan-glow); color: var(--color-cyan); padding: 0.1rem 0.4rem; border-radius: 4px;">Watchlist: Active</span>
+                                </div>
+                                <div class="table-container inline" style="max-height: 120px; overflow-y: auto;">
+                                    <table class="data-table-sm" id="table-radar">
+                                        <thead>
+                                            <tr>
+                                                <th>Asset</th>
+                                                <th>Conviction</th>
+                                                <th>Risk</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="body-radar">
+                                            <tr>
+                                                <td colspan="3" class="empty-state" style="font-size: 0.75rem; text-align: center; color: var(--text-muted); padding: 1rem;">Loading opportunities...</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            
+                            <!-- Widget 3: Positions Summary -->
+                            <div class="glass-panel" style="grid-column: span 2; padding: 1rem; border-radius: 12px;">
+                                <div class="panel-header" style="margin-bottom: 0.8rem;">
+                                    <h3 style="margin: 0; font-size: 0.95rem; color: var(--color-orange);">Positions Summary</h3>
+                                </div>
+                                <div class="table-container inline" style="max-height: 150px; overflow-y: auto;">
+                                    <table class="data-table-sm" id="table-ops-positions">
+                                        <thead>
+                                            <tr>
+                                                <th>Asset</th>
+                                                <th>Side</th>
+                                                <th>Qty</th>
+                                                <th>Entry</th>
+                                                <th>Current</th>
+                                                <th>PnL</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="body-ops-positions">
+                                            <tr>
+                                                <td colspan="6" class="empty-state" style="font-size: 0.75rem; text-align: center; color: var(--text-muted); padding: 1rem;">No active positions.</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            
+                            <!-- Widget 4: Wealth Overview balance monitor -->
+                            <div class="glass-panel" style="grid-column: span 2; padding: 1rem; border-radius: 12px; display: flex; flex-direction: column; gap: 0.8rem;">
+                                <div class="panel-header" style="margin-bottom: 0.4rem;">
+                                    <h3 style="margin: 0; font-size: 0.95rem; color: var(--color-orange);">Wealth Overview Balance Monitor</h3>
+                                </div>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; font-size: 0.8rem;">
+                                    <div style="background: rgba(255,255,255,0.02); padding: 0.6rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: space-between; align-items: center;">
+                                        <span>Active Asset Stance:</span>
+                                        <strong id="profile-primary-asset" class="text-cyan">CRUDE_OIL</strong>
+                                    </div>
+                                    <div style="background: rgba(255,255,255,0.02); padding: 0.6rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: space-between; align-items: center;">
+                                        <span>Universe Size:</span>
+                                        <strong id="profile-universe-size" class="text-gold">1</strong>
+                                    </div>
+                                    <div style="background: rgba(255,255,255,0.02); padding: 0.6rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: space-between; align-items: center;">
+                                        <span>Hokage Mode:</span>
+                                        <strong id="profile-mode" class="text-green">FOCUSED</strong>
+                                    </div>
+                                    <div style="background: rgba(255,255,255,0.02); padding: 0.6rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: space-between; align-items: center;">
+                                        <span>Progression Phase:</span>
+                                        <strong id="profile-phase" style="color: #fff;">ALPHA</strong>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Right Sidebar Column -->
+                    <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+                        
+                        <!-- 5. Scrolling System Activity Feed -->
+                        <div class="glass-panel" style="padding: 1rem; border-radius: 12px; display: flex; flex-direction: column; height: 320px;">
+                            <div class="panel-header" style="margin-bottom: 0.8rem;">
+                                <h3 style="margin: 0; font-size: 0.95rem; color: var(--color-orange);">System Activity Feed</h3>
+                            </div>
+                            <div id="log-terminal" style="flex: 1; background: #000; border: 1px solid var(--border-color); border-radius: 6px; font-family: monospace; font-size: 0.75rem; padding: 0.5rem; overflow-y: auto; color: #39ff14; line-height: 1.4;">
+                                <div style="color: var(--text-muted);">[SYSTEM] Listening to Shinobi activity feed...</div>
+                            </div>
+                        </div>
+                        
+                        <!-- 6. High-Priority Risk/Strategy Notifications -->
+                        <div class="glass-panel" style="padding: 1rem; border-radius: 12px; display: flex; flex-direction: column; height: 320px;">
+                            <div class="panel-header" style="margin-bottom: 0.8rem; display: flex; justify-content: space-between; align-items: center;">
+                                <h3 style="margin: 0; font-size: 0.95rem; color: var(--color-orange);">Alert Notifications</h3>
+                                <span id="RISK_PANEL" class="hk-badge" style="font-size: 0.65rem; background: var(--color-green-glow); color: var(--color-green); padding: 0.1rem 0.4rem; border-radius: 4px;">PASS</span>
+                            </div>
+                            <div id="alerts-list-container" style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.5rem;">
+                                <div style="padding: 0.5rem; background: rgba(255, 69, 0, 0.05); border-left: 2px solid var(--color-orange); border-radius: 4px; font-size: 0.75rem;">
+                                    <div style="font-weight: bold; color: #fff;">Surveillance active</div>
+                                    <div style="color: var(--text-muted); margin-top: 0.2rem;">All gates check passed successfully. Monitoring open trades.</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Chat Command Console overlay -->
+                <div id="COMMANDER_CHAT" class="glass-panel" style="padding: 1rem; border-radius: 12px; margin-top: 1rem;">
+                    <div class="panel-header" style="margin-bottom: 0.6rem;">
+                        <h3 style="margin: 0; font-size: 0.95rem; color: var(--color-orange);">Conversational Chat Command Console</h3>
+                    </div>
+                    <div class="chat-box-inline">
+                        <div class="chat-messages" id="warroom-chat-messages" style="max-height: 120px; overflow-y: auto; padding: 0.5rem; background: rgba(0,0,0,0.1); border-radius: 6px; margin-bottom: 0.5rem;">
+                            <div class="message system" style="font-size: 0.75rem; color: var(--text-muted);">
+                                Welcome, Commander Anant. Seek wisdom from the Hokage scrolls.
+                            </div>
+                        </div>
+                        <div class="chat-input-bar" style="display: flex; gap: 0.5rem;">
+                            <input type="text" id="warroom-input-chat" placeholder="Ask Hokage naturally..." style="flex: 1; background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); border-radius: 4px; padding: 0.4rem; color: #fff; font-size: 0.8rem;">
+                            <button id="warroom-btn-chat-send" class="btn-primary-sm" style="padding: 0.4rem 1rem; font-size: 0.8rem; font-weight: 600;">Send</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+<!-- TAB: POSITIONS -->
+            <section class="tab-pane" id="tab-positions">
+                <!-- Portfolio Stats Grid -->
+                <div class="metrics-grid" style="margin-bottom: 1.5rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem;">
+                    <div class="hk-metric-card">
+                        <span class="hk-metric-title">Unrealized P&L</span>
+                        <span class="hk-metric-value" id="port-unrealized-pnl">₹0.00</span>
+                    </div>
+                    <div class="hk-metric-card">
+                        <span class="hk-metric-title">Realized P&L</span>
+                        <span class="hk-metric-value" id="port-realized-pnl">₹0.00</span>
+                    </div>
+                    <div class="hk-metric-card">
+                        <span class="hk-metric-title">Buying Power</span>
+                        <span class="hk-metric-value" id="port-buying-power">₹0.00</span>
+                    </div>
+                    <div class="hk-metric-card">
+                        <span class="hk-metric-title">Portfolio Beta</span>
+                        <span class="hk-metric-value" id="port-beta" style="color: var(--color-cyan);">1.00</span>
+                    </div>
+                    <div class="hk-metric-card">
+                        <span class="hk-metric-title">Win Rate</span>
+                        <span class="hk-metric-value" id="port-win-rate" style="color: var(--color-green);">--%</span>
+                    </div>
+                </div>
+
+                <!-- Charts Row -->
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; margin-bottom: 1.5rem;">
+                    <div class="hk-card">
+                        <div class="panel-header" style="margin-bottom: 0.5rem;">
+                            <h3 style="margin: 0; font-size: 0.9rem; color: var(--color-gold);">Asset Allocation</h3>
+                        </div>
+                        <canvas id="portfolio-allocation-pie" style="width: 100%; height: 200px; max-height: 200px;"></canvas>
+                    </div>
+                    <div class="hk-card">
+                        <div class="panel-header" style="margin-bottom: 0.5rem;">
+                            <h3 style="margin: 0; font-size: 0.9rem; color: var(--color-gold);">Sector Exposure</h3>
+                        </div>
+                        <canvas id="portfolio-exposure-bar" style="width: 100%; height: 200px; max-height: 200px;"></canvas>
+                    </div>
+                    <div class="hk-card">
+                        <div class="panel-header" style="margin-bottom: 0.5rem;">
+                            <h3 style="margin: 0; font-size: 0.9rem; color: var(--color-gold);">PnL Curve</h3>
+                        </div>
+                        <canvas id="portfolio-pnl-curve" style="width: 100%; height: 200px; max-height: 200px;"></canvas>
+                    </div>
+                </div>
+
+                <!-- Holdings Table -->
+                <div class="table-container">
+                    <table class="data-table" id="table-positions">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Direction</th>
+                                <th>Quantity</th>
+                                <th>Entry Price</th>
+                                <th>Current Price</th>
+                                <th>Unrealized P&L</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="body-positions">
+                            <tr>
+                                <td colspan="7" class="empty-state">Loading positions...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Tax Implications & Command Center (Phase 9.5A) -->
+                <div class="hk-card" style="margin-top: 2rem;" id="portfolio-tax-implications">
+                    <div class="panel-header" style="margin-bottom: 1.5rem;">
+                        <h3 style="margin: 0; font-size: 1.1rem; color: var(--color-gold);">📊 Tax Implications & Fee Ledger</h3>
+                        <span class="hk-badge hk-badge-success" id="tax-fy-badge">FY 2026-2027</span>
+                    </div>
+                    
+                    <!-- Summary Grid -->
+                    <div class="metrics-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem;">
+                        <div class="hk-metric-card">
+                            <span class="hk-metric-title">Short-Term Gains (STCG)</span>
+                            <span class="hk-metric-value" id="tax-stcg">Not Available</span>
+                        </div>
+                        <div class="hk-metric-card">
+                            <span class="hk-metric-title">Long-Term Gains (LTCG)</span>
+                            <span class="hk-metric-value" id="tax-ltcg">Not Available</span>
+                        </div>
+                        <div class="hk-metric-card">
+                            <span class="hk-metric-title">Realized / Unrealized Profit</span>
+                            <span class="hk-metric-value" id="tax-realized-unrealized" style="font-size: 1.1rem; line-height: 1.4;">Realized: <span id="tax-realized">Not Available</span><br>Unrealized: <span id="tax-unrealized">Not Available</span></span>
+                        </div>
+                        <div class="hk-metric-card">
+                            <span class="hk-metric-title">Estimated Tax Liability</span>
+                            <span class="hk-metric-value" id="tax-liability" style="color: var(--color-red);">Not Available</span>
+                        </div>
+                        <div class="hk-metric-card">
+                            <span class="hk-metric-title">Net P&L (After Tax & Charges)</span>
+                            <span class="hk-metric-value" id="tax-net-pnl">Not Available</span>
+                        </div>
+                    </div>
+
+                    <!-- Breakdown & Ledger Split -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 1.5rem;">
+                        <!-- Charges & Other Income -->
+                        <div>
+                            <h4 style="margin: 0 0 1rem 0; font-size: 0.9rem; color: var(--color-gold); border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 0.25rem;">Taxes, Duties & Charges</h4>
+                            <div style="display: flex; flex-direction: column; gap: 0.6rem;">
+                                <div style="display: flex; justify-content: space-between; font-size: 0.8rem; border-bottom: 1px solid rgba(255,255,255,0.02); padding-bottom: 0.25rem;">
+                                    <span style="color: var(--text-secondary);">Brokerage:</span>
+                                    <span id="tax-charges-brokerage" style="font-weight: 600;">Not Available</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between; font-size: 0.8rem; border-bottom: 1px solid rgba(255,255,255,0.02); padding-bottom: 0.25rem;">
+                                    <span style="color: var(--text-secondary);">GST:</span>
+                                    <span id="tax-charges-gst" style="font-weight: 600;">Not Available</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between; font-size: 0.8rem; border-bottom: 1px solid rgba(255,255,255,0.02); padding-bottom: 0.25rem;">
+                                    <span style="color: var(--text-secondary);">STT (Securities Transaction Tax):</span>
+                                    <span id="tax-charges-stt" style="font-weight: 600;">Not Available</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between; font-size: 0.8rem; border-bottom: 1px solid rgba(255,255,255,0.02); padding-bottom: 0.25rem;">
+                                    <span style="color: var(--text-secondary);">Stamp Duty:</span>
+                                    <span id="tax-charges-stamp" style="font-weight: 600;">Not Available</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between; font-size: 0.8rem; border-bottom: 1px solid rgba(255,255,255,0.02); padding-bottom: 0.25rem;">
+                                    <span style="color: var(--text-secondary);">Exchange Charges:</span>
+                                    <span id="tax-charges-exchange" style="font-weight: 600;">Not Available</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between; font-size: 0.8rem; border-bottom: 1px solid rgba(255,255,255,0.02); padding-bottom: 0.25rem;">
+                                    <span style="color: var(--text-secondary);">SEBI Charges:</span>
+                                    <span id="tax-charges-sebi" style="font-weight: 600;">Not Available</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between; font-size: 0.8rem; border-bottom: 1px solid rgba(255,255,255,0.02); padding-bottom: 0.25rem; font-weight: 700; color: #fff;">
+                                    <span>Total Charges:</span>
+                                    <span id="tax-charges-total">Not Available</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between; font-size: 0.8rem; border-bottom: 1px solid rgba(255,255,255,0.02); padding-bottom: 0.25rem; margin-top: 0.5rem; color: var(--color-gold);">
+                                    <span>Dividend Income:</span>
+                                    <span id="tax-income-dividend">Not Available</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between; font-size: 0.8rem; border-bottom: 1px solid rgba(255,255,255,0.02); padding-bottom: 0.25rem; color: var(--color-gold);">
+                                    <span>Interest Income:</span>
+                                    <span id="tax-income-interest">Not Available</span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Tax Ledger -->
+                        <div>
+                            <h4 style="margin: 0 0 1rem 0; font-size: 0.9rem; color: var(--color-gold); border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 0.25rem;">Recent Tax Events & Ledger</h4>
+                            <div class="table-container inline" style="max-height: 250px; overflow-y: auto;">
+                                <table class="data-table" id="table-tax-ledger" style="font-size: 0.75rem;">
+                                    <thead>
+                                        <tr>
+                                            <th>Market</th>
+                                            <th>Dir</th>
+                                            <th>Value</th>
+                                            <th>Taxes/Fees</th>
+                                            <th>Time</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="body-tax-ledger">
+                                        <tr>
+                                            <td colspan="5" class="empty-state">No tax events logged.</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div style="margin-top: 1rem; padding: 0.75rem; background: rgba(255,255,255,0.02); border-radius: 4px; border: 1px dashed rgba(255,255,255,0.1);">
+                                <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">Future Tax Projection:</span>
+                                <p style="margin: 0.25rem 0 0 0; font-size: 0.75rem; color: var(--text-secondary);" id="tax-projection">Not Available</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB: DECISIONS -->
+            <section class="tab-pane" id="tab-no-trade-journal">
+                <div class="filter-header" style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; align-items: center; justify-content: space-between;">
+                    <h2>Strategy Decisions Journal</h2>
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                        <input type="text" id="journal-search" placeholder="🔍 Ticker / Strategy..." style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); border-radius: 4px; padding: 0.4rem 0.8rem; color: #fff; font-size: 0.8rem;">
+                        <select id="journal-filter-decision" style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); color: #fff; padding: 0.4rem; font-size: 0.8rem; border-radius: 4px;">
+                            <option value="">All Decisions</option>
+                            <option value="ACCEPTED">ACCEPTED</option>
+                            <option value="REJECTED">REJECTED</option>
+                        </select>
+                        <select id="journal-filter-risk" style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); color: #fff; padding: 0.4rem; font-size: 0.8rem; border-radius: 4px;">
+                            <option value="">All Risk Levels</option>
+                            <option value="LOW">LOW</option>
+                            <option value="MEDIUM">MEDIUM</option>
+                            <option value="HIGH">HIGH</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="feed-list" id="list-decisions-full">
+                    <p class="empty-state">Loading decisions...</p>
+                </div>
+            </section>
+
+            <!-- TAB: LESSONS -->
+            <section class="tab-pane" id="tab-trade-journal">
+                <div class="filter-header">
+                    <h2>EOD Quality Reviews & Taking Takeaways</h2>
+                </div>
+                <div class="feed-list" id="list-lessons-full">
+                    <p class="empty-state">Loading lessons...</p>
+                </div>
+            </section>
+
+            <!-- TAB: KNOWLEDGE -->
+            <section class="tab-pane" id="tab-research">
+                <div class="filter-header" style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; align-items: center; justify-content: space-between;">
+                    <h2>Research Library & Synthesized Thesis</h2>
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                        <input type="text" id="research-search" placeholder="🔍 Search reports..." style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); border-radius: 4px; padding: 0.4rem 0.8rem; color: #fff; font-size: 0.8rem;">
+                        <button class="btn-primary-sm" id="btn-research-refresh" style="padding: 0.4rem 0.8rem;">Refresh</button>
+                    </div>
+                </div>
+                
+                <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 1.5rem; height: 500px;">
+                    <!-- Report List -->
+                    <div class="hk-card" style="overflow-y: auto; padding: 1rem; display: flex; flex-direction: column; gap: 0.75rem;" id="research-reports-list">
+                        <p class="empty-state">Loading reports...</p>
+                    </div>
+                    
+                    <!-- Report Viewer -->
+                    <div class="hk-card" style="overflow-y: auto; padding: 1.5rem;" id="research-report-viewer">
+                        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--text-muted);">
+                            <span style="font-size: 3rem; margin-bottom: 1rem;">📖</span>
+                            <h3>Select a report to view details</h3>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB: MARKET INTELLIGENCE -->
+            <section class="tab-pane" id="tab-markets">
+                <div class="filter-header">
+                    <h2>Market & Sector Intelligence</h2>
+                    <p style="color:var(--text-muted);margin-top:4px;font-size:.85rem">Global Indices · Sector Rotation · Macro economic calendars</p>
+                </div>
+
+                <!-- Indian Benchmark Tracking (Module 1) -->
+                <div style="margin-bottom: 1.5rem;">
+                    <h3 style="margin: 0 0 1rem 0; font-size: 1rem; color: var(--color-gold);">Benchmark Tracking</h3>
+                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem;" id="global-indices-grid">
+                        <!-- NIFTY -->
+                        <div class="hk-metric-card" style="position: relative;">
+                            <span class="hk-metric-title">NIFTY 50</span>
+                            <span class="hk-metric-value" id="idx-nifty-price">23,500.00</span>
+                            <span class="hk-badge hk-badge-success" id="idx-nifty-change" style="position: absolute; top: 10px; right: 10px;">+0.50%</span>
+                            <canvas id="spark-nifty" style="width: 100%; height: 30px; margin-top: 0.5rem;"></canvas>
+                        </div>
+                        <!-- BANKNIFTY -->
+                        <div class="hk-metric-card" style="position: relative;">
+                            <span class="hk-metric-title">BANK NIFTY</span>
+                            <span class="hk-metric-value" id="idx-banknifty-price">50,200.00</span>
+                            <span class="hk-badge hk-badge-success" id="idx-banknifty-change" style="position: absolute; top: 10px; right: 10px;">+0.35%</span>
+                            <canvas id="spark-banknifty" style="width: 100%; height: 30px; margin-top: 0.5rem;"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Sector Intelligence (Module 2) -->
+                <div style="margin-bottom: 1.5rem;">
+                    <h3 style="margin: 0 0 1rem 0; font-size: 1rem; color: var(--color-gold);">Sector Momentum & Rotation</h3>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1rem;" id="sector-intelligence-grid">
+                        <!-- Sector Cards will be dynamically inserted here -->
+                    </div>
+                </div>
+
+                <div class="split-layout main-panels" style="margin-bottom: 1.5rem; display: flex; gap: 1rem; flex-wrap: wrap;">
+                    <!-- Sector Rotation Table -->
+                    <div class="radar-panel" style="flex: 1.5; min-width: 320px;">
+                        <div class="panel-header">
+                            <h2>Sector Rotation Momentum</h2>
+                        </div>
+                        <div class="table-container inline">
+                            <table class="data-table-sm" id="table-mkt-rotation">
+                                <thead>
+                                    <tr>
+                                        <th>Sector</th>
+                                        <th>Benchmark</th>
+                                        <th>Change %</th>
+                                        <th>Flow Coeff</th>
+                                        <th>Momentum</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="body-mkt-rotation">
+                                    <tr>
+                                        <td colspan="5" class="empty-state">Loading rotation stats...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Macro Events Calendar -->
+                    <div class="radar-panel" style="flex: 1; min-width: 280px;">
+                        <div class="panel-header">
+                            <h2>Macro Economic Calendar</h2>
+                        </div>
+                        <div class="dna-insights-box" id="list-mkt-calendar" style="max-height: 250px; overflow-y: auto;">
+                            <div class="empty-state">Loading calendar events...</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB: SHADOW TRADING -->
+            <section class="tab-pane" id="tab-portfolio">
+                <div class="filter-header">
+                    <h2>Shadow Trading &amp; Performance Validation</h2>
+                    <p style="color:var(--text-muted);margin-top:4px;font-size:.85rem">Paper execution · Real pipeline · No capital deployed</p>
+                </div>
+
+                <!-- Session Control Row -->
+                <div class="metrics-grid" style="margin-bottom:1.5rem">
+                    <div class="metric-card" style="grid-column:span 2">
+                        <div class="metric-label">Active Shadow Session</div>
+                        <div class="metric-value text-cyan" id="shadow-session-id" style="font-size:1rem">No active session</div>
+                        <div class="metric-subtext" id="shadow-session-status">–</div>
+                        <div style="margin-top:1rem;display:flex;gap:.75rem">
+                            <button id="btn-shadow-start" class="btn-primary-sm">▶ Start Session</button>
+                            <button id="btn-shadow-stop" class="btn-danger-sm">⏹ Stop Session</button>
+                        </div>
+                    </div>
+
+                    <!-- Hokage Alpha Score -->
+                    <div class="metric-card">
+                        <div class="metric-label">Hokage Alpha Score <span class="reality-badge derived">composite</span></div>
+                        <div class="metric-value" id="shadow-alpha-score" style="font-size:2.5rem">–</div>
+                        <div class="metric-subtext" id="shadow-alpha-label">Awaiting shadow data</div>
+                    </div>
+
+                    <!-- Promotion Readiness -->
+                    <div class="metric-card">
+                        <div class="metric-label">Promotion Readiness <span class="reality-badge derived">evidence-based</span></div>
+                        <div class="metric-value text-cyan" id="shadow-readiness-level" style="font-size:1.3rem">–</div>
+                        <div class="metric-subtext" id="shadow-readiness-sub">Criteria: 0 / 12 passed</div>
+                    </div>
+                </div>
+
+                <!-- Reality Score + Attribution Row -->
+                <div class="metrics-grid" style="margin-bottom:1.5rem">
+                    <div class="metric-card">
+                        <div class="metric-label">Shadow Reality Score <span class="reality-badge derived">decision quality</span></div>
+                        <div class="metric-value" id="shadow-reality-score">–</div>
+                        <div class="metric-subtext">Decision Accuracy · Luck Index · Edge Realization</div>
+                        <div style="margin-top:1rem">
+                            <div style="display:flex;justify-content:space-between;margin-bottom:.5rem">
+                                <span style="color:var(--text-muted);font-size:.8rem">Decision Accuracy</span>
+                                <span style="font-weight:600" id="shadow-decision-accuracy">–</span>
+                            </div>
+                            <div style="display:flex;justify-content:space-between;margin-bottom:.5rem">
+                                <span style="color:var(--text-muted);font-size:.8rem">Edge Realization</span>
+                                <span style="font-weight:600" id="shadow-edge-realization">–</span>
+                            </div>
+                            <div style="display:flex;justify-content:space-between">
+                                <span style="color:var(--text-muted);font-size:.8rem">Luck Index</span>
+                                <span style="font-weight:600" id="shadow-luck-index">–</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Trade Quadrant Breakdown -->
+                    <div class="metric-card">
+                        <div class="metric-label">Decision Quadrant Breakdown <span class="reality-badge derived">attribution</span></div>
+                        <div class="metric-subtext" style="margin-bottom:.75rem">Correct vs Incorrect × Profit vs Loss</div>
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
+                            <div style="background:rgba(0,255,136,.08);border:1px solid rgba(0,255,136,.2);border-radius:8px;padding:.6rem;text-align:center">
+                                <div style="font-size:.7rem;color:#00ff88">✓ Correct + Profit</div>
+                                <div style="font-size:1.5rem;font-weight:700" id="quadrant-cp">–</div>
+                            </div>
+                            <div style="background:rgba(255,193,7,.08);border:1px solid rgba(255,193,7,.2);border-radius:8px;padding:.6rem;text-align:center">
+                                <div style="font-size:.7rem;color:#ffc107">✓ Correct + Loss</div>
+                                <div style="font-size:1.5rem;font-weight:700" id="quadrant-cl">–</div>
+                            </div>
+                            <div style="background:rgba(255,136,0,.08);border:1px solid rgba(255,136,0,.2);border-radius:8px;padding:.6rem;text-align:center">
+                                <div style="font-size:.7rem;color:#ff8800">✗ Incorrect + Profit</div>
+                                <div style="font-size:1.5rem;font-weight:700" id="quadrant-ip">–</div>
+                            </div>
+                            <div style="background:rgba(255,56,96,.08);border:1px solid rgba(255,56,96,.2);border-radius:8px;padding:.6rem;text-align:center">
+                                <div style="font-size:.7rem;color:#ff3860">✗ Incorrect + Loss</div>
+                                <div style="font-size:1.5rem;font-weight:700" id="quadrant-il">–</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Calibration Card -->
+                    <div class="metric-card">
+                        <div class="metric-label">Confidence Calibration <span class="reality-badge derived">accuracy</span></div>
+                        <div class="metric-subtext" style="margin-bottom:.75rem">Expected vs Actual (Win Rate · Drawdown · Volatility)</div>
+                        <div style="display:flex;flex-direction:column;gap:.5rem" id="shadow-calibration-list">
+                            <div style="color:var(--text-muted);font-size:.85rem">Awaiting calibration data...</div>
+                        </div>
+                    </div>
+
+                    <!-- Benchmark Performance -->
+                    <div class="metric-card">
+                        <div class="metric-label">vs Benchmark <span class="reality-badge derived">relative</span></div>
+                        <div class="metric-subtext" style="margin-bottom:.75rem">Hokage Active Return over benchmark</div>
+                        <div style="display:flex;justify-content:space-between;margin-bottom:.5rem">
+                            <span style="color:var(--text-muted);font-size:.8rem">Active Return (Alpha)</span>
+                            <span style="font-weight:600" id="shadow-active-return">–</span>
+                        </div>
+                        <div style="display:flex;justify-content:space-between;margin-bottom:.5rem">
+                            <span style="color:var(--text-muted);font-size:.8rem">Tracking Error</span>
+                            <span style="font-weight:600" id="shadow-tracking-error">–</span>
+                        </div>
+                        <div style="display:flex;justify-content:space-between">
+                            <span style="color:var(--text-muted);font-size:.8rem">Information Ratio</span>
+                            <span style="font-weight:600" id="shadow-information-ratio">–</span>
+                        </div>
+                    </div>
+
+                    <!-- Institutional Statistical Diagnostics -->
+                    <div class="metric-card">
+                        <div class="metric-label">Statistical Diagnostics <span class="reality-badge derived" id="shadow-diagnostics-health-badge">health</span></div>
+                        <div class="metric-value-sm text-cyan" id="shadow-diagnostics-status" style="font-size:1.1rem;font-weight:700;margin-bottom:.25rem">Awaiting diagnostics...</div>
+                        <div class="metric-subtext" id="shadow-diagnostics-explanation" style="font-size:.75rem;line-height:1.2;min-height:2.4rem;margin-bottom:.5rem">Run shadow trading to gather returns data.</div>
+                        <div style="display:flex;flex-direction:column;gap:.4rem;font-size:.8rem;border-top:1px solid rgba(255,255,255,.05);padding-top:.5rem">
+                            <div style="display:flex;justify-content:space-between">
+                                <span style="color:var(--text-muted)">Ljung-Box (Serial Corr):</span>
+                                <span style="font-weight:600" id="shadow-diag-lb">–</span>
+                            </div>
+                            <div style="display:flex;justify-content:space-between">
+                                <span style="color:var(--text-muted)">Jarque-Bera (Normality):</span>
+                                <span style="font-weight:600" id="shadow-diag-jb">–</span>
+                            </div>
+                            <div style="display:flex;justify-content:space-between">
+                                <span style="color:var(--text-muted)">Kupiec POF (VaR Calib):</span>
+                                <span style="font-weight:600" id="shadow-diag-kp">–</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Execution Quality Realism Card -->
+                    <div class="metric-card">
+                        <div class="metric-label">Execution Quality <span class="reality-badge" id="shadow-quality-health-badge" style="background:rgba(0,255,136,.15);color:#00ff88;padding:2px 6px;border-radius:4px;font-size:.65rem;text-transform:uppercase;font-weight:700">health</span></div>
+                        <div class="metric-value" id="shadow-quality-score" style="font-size:2.5rem">–</div>
+                        <div class="metric-subtext" style="margin-bottom:.75rem">Transaction Slippage · Latency · Fills</div>
+                        <div style="display:flex;flex-direction:column;gap:.4rem;font-size:.8rem;border-top:1px solid rgba(255,255,255,.05);padding-top:.5rem">
+                            <div style="display:flex;justify-content:space-between">
+                                <span style="color:var(--text-muted)">Avg Slippage:</span>
+                                <span style="font-weight:600" id="shadow-quality-avg-slippage">–</span>
+                            </div>
+                            <div style="display:flex;justify-content:space-between">
+                                <span style="color:var(--text-muted)">Worst Slippage:</span>
+                                <span style="font-weight:600" id="shadow-quality-worst-slippage">–</span>
+                            </div>
+                            <div style="display:flex;justify-content:space-between">
+                                <span style="color:var(--text-muted)">Avg Latency:</span>
+                                <span style="font-weight:600" id="shadow-quality-avg-latency">–</span>
+                            </div>
+                            <div style="display:flex;justify-content:space-between">
+                                <span style="color:var(--text-muted)">Partial Fills:</span>
+                                <span style="font-weight:600" id="shadow-quality-partial-fills">–</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Readiness Checklist -->
+                <div class="metric-card" style="margin-bottom:1.5rem">
+                    <div class="metric-label">Promotion Readiness — Evidence Checklist</div>
+                    <div style="color:var(--text-muted);font-size:.8rem;margin-bottom:1rem">All 12 criteria must pass for LIVE_READY classification. Commander approval required for promotion.</div>
+                    <div id="shadow-readiness-checklist" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:.5rem">
+                        <div style="color:var(--text-muted);font-size:.85rem">Awaiting readiness data...</div>
+                    </div>
+                </div>
+
+                <!-- False Positives Prevented -->
+                <div class="metric-card">
+                    <div class="metric-label">HAC False Positives Prevented <span class="reality-badge derived">statistical guard</span></div>
+                    <div class="metric-subtext">Strategies that classical statistics would have promoted but HAC rejected</div>
+                    <div id="shadow-false-positives" style="margin-top:1rem;color:var(--text-muted);font-size:.85rem">Awaiting promotion evaluation history...</div>
+                </div>
+            </section>
+
+            <!-- TAB: CHAT (Commander Chat Interface) -->
+            <section class="tab-pane" id="tab-chat">
+                <div class="filter-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 1.5rem;">
+                    <div>
+                        <h2>Commander Conversation Engine</h2>
+                        <p style="color:var(--text-muted);margin-top:4px;font-size:.85rem">Natural Language Interface &middot; Voice Commander Status</p>
+                    </div>
+                    <!-- Voice Status Indicator widget -->
+                    <div style="display:flex; align-items:center; gap:0.5rem; background: rgba(255, 255, 255, 0.05); padding: 0.5rem 1rem; border-radius: 4px;">
+                        <span id="voice-status-dot" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--text-muted)"></span>
+                        <span id="voice-status-text" style="font-size:0.8rem; font-weight:600; color:var(--text-muted)">VOICE: INACTIVE</span>
+                        <button id="btn-toggle-voice" style="background:var(--color-gold); color:#000; border:none; padding:0.25rem 0.5rem; font-size:0.75rem; border-radius:3px; cursor:pointer; font-weight:700">TOGGLE VOICE</button>
+                    </div>
+                </div>
+
+                <div class="radar-panel" style="display:flex; flex-direction:column; height: 550px; background: rgba(10, 15, 25, 0.5); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px; overflow:hidden;">
+                    <!-- Message Log -->
+                    <div id="chat-messages-container" style="flex:1; padding:1.5rem; overflow-y:auto; display:flex; flex-direction:column; gap:1rem;">
+                        <div class="message system" style="align-self:center; background:rgba(255,255,255,0.05); padding:0.5rem 1rem; border-radius:4px; font-size:0.8rem; color:var(--text-muted)">
+                            Hokage Natural Language interface initialized. Ask a question about portfolio, market, risks, or decisions.
+                        </div>
+                    </div>
+
+                    <!-- Input Bar -->
+                    <div style="padding:1rem; background:rgba(0,0,0,0.2); border-top:1px solid rgba(255,255,255,0.1); display:flex; gap:0.75rem;">
+                        <input type="text" id="chat-input" placeholder="Type your question here (e.g. Explain today's portfolio)..." style="flex:1; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.15); border-radius:4px; padding:0.75rem 1rem; color:#fff; font-family:inherit; font-size:0.9rem;" />
+                        <button id="btn-chat-send" style="background:var(--color-green); color:#000; border:none; padding:0.75rem 1.5rem; border-radius:4px; font-weight:700; cursor:pointer; font-size:0.9rem; transition:background 0.2s;">SEND</button>
+                        <button id="btn-chat-mic" style="background:rgba(255,255,255,0.1); color:#fff; border:1px solid rgba(255,255,255,0.15); width:45px; height:45px; border-radius:4px; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:1.2rem;">🎤</button>
+                    </div>
+                </div>
+            </section>
+
+    <!-- Main Application Javascript -->
+    <script src="/static/app.js?v=patch_1"></script>
+<!-- TAB: COMMAND CONSOLE -->
+            <section class="tab-pane" id="tab-execution">
+                <!-- Emergency Kill Switch & Modes Row -->
+                <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 1.5rem; margin-bottom: 1.5rem;">
+                    <!-- Kill Switch -->
+                    <div class="hk-card" style="border: 2px solid var(--color-red); background: rgba(255, 56, 96, 0.05); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1.5rem; text-align: center; position: relative; overflow: hidden;">
+                        <h3 style="color: var(--color-red); margin: 0 0 0.5rem 0; font-size: 1.1rem; text-transform: uppercase; font-weight: 700;">Emergency Kill Switch</h3>
+                        <p style="color: var(--text-muted); font-size: 0.75rem; margin-bottom: 1rem;">Halts all bot loops, cancels open orders, and locks database immediately.</p>
+                        <button id="btn-kill-switch" class="btn-danger-sm" style="padding: 0.75rem 1.5rem; font-size: 0.9rem; font-weight: 800; animation: pulse 2s infinite;">🔴 HALT HOKAGE CORE</button>
+                    </div>
+
+                    <!-- Mode Control Panel -->
+                    <div class="hk-card">
+                        <div class="panel-header" style="margin-bottom: 1rem;">
+                            <h3 style="margin: 0; font-size: 1rem; color: var(--color-gold);">System Governance Controls</h3>
+                        </div>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem;">
+                            <button id="btn-control-start" class="btn-primary-sm" style="padding: 0.6rem;">▶ Start Autonomous</button>
+                            <button id="btn-control-stop" class="btn-primary-sm" style="padding: 0.6rem; background: rgba(255,255,255,0.05); color: #fff;">⏹ Stop Autonomous</button>
+                            <button id="btn-control-pause" class="btn-primary-sm" style="padding: 0.6rem; background: rgba(255,193,7,0.1); color: var(--color-gold);">⏸ Pause Decision Engine</button>
+                            <button id="btn-control-resume" class="btn-primary-sm" style="padding: 0.6rem;">▶ Resume Decision Engine</button>
+                            <button id="btn-control-paper" class="btn-primary-sm" style="padding: 0.6rem; background: rgba(0,255,136,0.1); color: var(--color-green);">Enable Paper Trading</button>
+                            <button id="btn-control-live" class="btn-danger-sm" style="padding: 0.6rem; background: rgba(255,56,96,0.1); color: var(--color-red);">Enable Live Trading</button>
+                            <button id="btn-control-shadow" class="btn-primary-sm" style="padding: 0.6rem; background: rgba(0,180,216,0.1); color: var(--color-cyan);">Enable Shadow Mode</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Bot Status Grid -->
+                <div style="margin-bottom: 1.5rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                        <h3 style="margin: 0; font-size: 1rem; color: var(--color-gold);">Hokage Bot Network Status</h3>
+                        <div style="font-size: 0.85rem; color: var(--text-muted);">Hokage Health Score: <strong id="control-health-score" style="color: var(--color-green);">100/100</strong></div>
+                    </div>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem;" id="bot-status-grid">
+                        <!-- Filled dynamically by app.js -->
+                    </div>
+                </div>
+
+                <!-- Bot Orchestrator Node Graph -->
+                <div class="hk-card" style="margin-bottom: 1.5rem;">
+                    <div class="panel-header" style="margin-bottom: 0.5rem;">
+                        <h3 style="margin: 0; font-size: 1rem; color: var(--color-gold);">Visual Bot Orchestrator</h3>
+                    </div>
+                    <div style="position: relative; background: rgba(0,0,0,0.2); border-radius: 8px; border: 1px solid var(--border-color); height: 350px;">
+                        <canvas id="orchestrator-canvas" style="width: 100%; height: 100%;"></canvas>
+                    </div>
+                </div>
+
+                <!-- AI Thinking Visualizer & Live Command Log Row -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+                    <!-- Thinking Canvas -->
+                    <div class="hk-card" style="display: flex; flex-direction: column;">
+                        <div class="panel-header" style="margin-bottom: 0.5rem;">
+                            <h3 style="margin: 0; font-size: 1rem; color: var(--color-gold);">Explainable Thinking Canvas</h3>
+                        </div>
+                        <div style="flex: 1; position: relative; background: rgba(0,0,0,0.2); border-radius: 8px; border: 1px solid var(--border-color); min-height: 250px;">
+                            <canvas id="thinking-canvas" style="width: 100%; height: 100%;"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- Live Command Log -->
+                    <div class="hk-card" style="display: flex; flex-direction: column;">
+                        <div class="panel-header" style="margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center;">
+                            <h3 style="margin: 0; font-size: 1rem; color: var(--color-gold);">Live Command History</h3>
+                            <button id="btn-export-commands" class="btn-primary-sm" style="padding: 0.2rem 0.5rem; font-size: 0.7rem;">Export</button>
+                        </div>
+                        <input type="text" id="command-search" placeholder="🔍 Search commands..." style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); border-radius: 4px; padding: 0.4rem; color: #fff; font-size: 0.8rem; margin-bottom: 0.5rem; width: 100%;">
+                        <div class="hk-log-console" style="flex: 1; max-height: 200px; overflow-y: auto;" id="command-log-console">
+                            <!-- Filled dynamically by app.js -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB: ALERT CENTER -->
+            <section class="tab-pane" id="tab-risk">
+                <div class="filter-header" style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; align-items: center; justify-content: space-between;">
+                    <h2>Unified Alert Center</h2>
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                        <input type="text" id="alerts-search" placeholder="🔍 Search alerts..." style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); border-radius: 4px; padding: 0.4rem 0.8rem; color: #fff; font-size: 0.8rem;">
+                        <select id="alerts-filter-severity" style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); color: #fff; padding: 0.4rem; font-size: 0.8rem; border-radius: 4px;">
+                            <option value="">All Severities</option>
+                            <option value="INFO">INFO</option>
+                            <option value="WARNING">WARNING</option>
+                            <option value="HIGH">HIGH</option>
+                            <option value="CRITICAL">CRITICAL</option>
+                        </select>
+                        <select id="alerts-filter-source" style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); color: #fff; padding: 0.4rem; font-size: 0.8rem; border-radius: 4px;">
+                            <option value="">All Sources</option>
+                            <option value="Risk">Risk</option>
+                            <option value="Execution">Execution</option>
+                            <option value="Watchdog">Watchdog</option>
+                            <option value="Research">Research</option>
+                            <option value="Portfolio">Portfolio</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="hk-card" style="padding: 1rem; max-height: 600px; overflow-y: auto;" id="alerts-list-container">
+                    <!-- Filled dynamically by app.js -->
+                </div>
+            </section>
+
+            
+            <!-- ================================================================== -->
+            <!-- TAB: TAX INTELLIGENCE                                              -->
+            <!-- ================================================================== -->
+            <section class="tab-pane" id="tab-tax-intelligence">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                    <h2 style="margin: 0; color: var(--color-orange);">🏛️ Tax Intelligence</h2>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+                    <div class="glass-panel" style="padding: 1.5rem; border-radius: 12px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color);">
+                        <h3>Capital Gains Summary (Indian Markets)</h3>
+                        <div style="display: flex; flex-direction: column; gap: 0.75rem; margin-top: 1rem;">
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 0.5rem;">
+                                <span>Short-Term Capital Gains (STCG):</span>
+                                <strong id="tax-stcg">₹0.00</strong>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 0.5rem;">
+                                <span>Long-Term Capital Gains (LTCG):</span>
+                                <strong id="tax-ltcg">₹0.00</strong>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 0.5rem;">
+                                <span>Realized P&L:</span>
+                                <strong id="tax-realized">₹0.00</strong>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 0.5rem;">
+                                <span>Unrealized P&L:</span>
+                                <strong id="tax-unrealized">₹0.00</strong>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 0.5rem;">
+                                <span>Net Profit After Tax:</span>
+                                <strong id="tax-net-pnl">₹0.00</strong>
+                            </div>
+                            <div style="display: flex; justify-content: space-between;">
+                                <span>Estimated Tax Liability:</span>
+                                <strong id="tax-liability">₹0.00</strong>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="glass-panel" style="padding: 1.5rem; border-radius: 12px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color);">
+                        <h3>Brokerage & Indian Post-Trade Friction Charges</h3>
+                        <div style="display: flex; flex-direction: column; gap: 0.75rem; margin-top: 1rem;">
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 0.5rem;">
+                                <span>Brokerage:</span>
+                                <strong id="tax-charges-brokerage">₹0.00</strong>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 0.5rem;">
+                                <span>GST (18% on Brokerage + transaction charges):</span>
+                                <strong id="tax-charges-gst">₹0.00</strong>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 0.5rem;">
+                                <span>STT (Securities Transaction Tax):</span>
+                                <strong id="tax-charges-stt">₹0.00</strong>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 0.5rem;">
+                                <span>Stamp Duty:</span>
+                                <strong id="tax-charges-stamp">₹0.00</strong>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 0.5rem;">
+                                <span>Exchange Transaction Charges:</span>
+                                <strong id="tax-charges-exchange">₹0.00</strong>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 0.5rem;">
+                                <span>SEBI Turnover Fees:</span>
+                                <strong id="tax-charges-sebi">₹0.00</strong>
+                            </div>
+                            <div style="display: flex; justify-content: space-between;">
+                                <span>Total Charges:</span>
+                                <strong id="tax-charges-total">₹0.00</strong>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="glass-panel" style="padding: 1.5rem; border-radius: 12px; margin-top: 1.5rem; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color);">
+                    <h3>Tax Projection & Forecast</h3>
+                    <p id="tax-projection" style="margin-top: 0.5rem; font-size: 0.9rem; color: var(--text-secondary); line-height: 1.4;">Calculating current year tax projections...</p>
+                </div>
+                <div class="glass-panel" style="padding: 1.5rem; border-radius: 12px; margin-top: 1.5rem; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color);">
+                    <h3>Detailed Tax Ledger</h3>
+                    <div class="table-container inline" style="margin-top: 1rem; max-height: 250px; overflow-y: auto;">
+                        <table class="data-table-sm">
+                            <thead>
+                                <tr>
+                                    <th>Timestamp</th>
+                                    <th>Venue</th>
+                                    <th>Symbol</th>
+                                    <th>Type</th>
+                                    <th>Realized P&L</th>
+                                    <th>Charges</th>
+                                    <th>Est. Tax</th>
+                                </tr>
+                            </thead>
+                            <tbody id="body-tax-ledger">
+                                <tr>
+                                    <td colspan="7" class="empty-state">No tax events recorded.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ================================================================== -->
+            <!-- TAB: WEALTH CENTER                                                 -->
+            <!-- ================================================================== -->
+            <section class="tab-pane" id="tab-wealth">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                    <h2 style="margin: 0; color: var(--color-orange);">💰 Wealth Center</h2>
+                </div>
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem;">
+                    <div class="glass-panel" style="padding: 1.5rem; border-radius: 12px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color);">
+                        <span class="metric-label" style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted);">Current Active Wealth</span>
+                        <div class="metric-value text-cyan" style="font-size: 1.8rem; font-weight: 700; margin: 0.5rem 0;" id="wealth-current-active">₹0.00</div>
+                        <span style="font-size: 0.75rem; color: var(--color-green);">+12.4% vs last month</span>
+                    </div>
+                    <div class="glass-panel" style="padding: 1.5rem; border-radius: 12px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color);">
+                        <span class="metric-label" style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted);">Compound Annualized Return</span>
+                        <div class="metric-value text-green" style="font-size: 1.8rem; font-weight: 700; margin: 0.5rem 0;">18.5%</div>
+                        <span style="font-size: 0.75rem; color: var(--text-muted);">Long-term Target: 15%</span>
+                    </div>
+                    <div class="glass-panel" style="padding: 1.5rem; border-radius: 12px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color);">
+                        <span class="metric-label" style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted);">Total Savings & Reserves</span>
+                        <div class="metric-value text-gold" style="font-size: 1.8rem; font-weight: 700; margin: 0.5rem 0;">₹2,50,000.00</div>
+                        <span style="font-size: 0.75rem; color: var(--text-muted);">Safety Margin: 100%</span>
+                    </div>
+                </div>
+                <div class="glass-panel" style="padding: 1.5rem; border-radius: 12px; margin-top: 1.5rem; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color);">
+                    <h3>Wealth Preservation & Allocations</h3>
+                    <p style="margin-top: 0.5rem; font-size: 0.9rem; color: var(--text-secondary); line-height: 1.4;">
+                        Following strict capital allocation rules under Lord Third's guidance. The Will of Fire protects our wealth structure, prioritizing low-drawdown strategies and constant compound scaling across multiple brokers.
+                    </p>
+                </div>
+            </section>
+
+            <!-- ================================================================== -->
+            <!-- TAB: DOCUMENTS                                                     -->
+            <!-- ================================================================== -->
+            <section class="tab-pane" id="tab-documents">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                    <h2 style="margin: 0; color: var(--color-orange);">📁 Documents</h2>
+                    <button class="btn-primary-sm" style="padding: 0.4rem 0.8rem;">Upload PDF</button>
+                </div>
+                <div class="glass-panel" style="padding: 1.5rem; border-radius: 12px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color);">
+                    <h3>Document Repository</h3>
+                    <div style="margin-top: 1rem; display: flex; flex-direction: column; gap: 0.75rem;">
+                        <div style="background: rgba(255,255,255,0.02); padding: 0.75rem 1rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <span style="font-weight: 600; color: #fff;">Common Stocks and Uncommon Profits</span>
+                                <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 0.15rem;">Uploaded 2 days ago &bull; 4.2 MB</div>
+                            </div>
+                            <span class="hk-badge hk-badge-success">PROCESSED</span>
+                        </div>
+                        <div style="background: rgba(255,255,255,0.02); padding: 0.75rem 1rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <span style="font-weight: 600; color: #fff;">The Daily Trading Coach</span>
+                                <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 0.15rem;">Uploaded 1 week ago &bull; 3.8 MB</div>
+                            </div>
+                            <span class="hk-badge hk-badge-success">PROCESSED</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ================================================================== -->
+            <!-- TAB: REPORTS                                                       -->
+            <!-- ================================================================== -->
+            <section class="tab-pane" id="tab-reports">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                    <h2 style="margin: 0; color: var(--color-orange);">📋 Reports</h2>
+                    <button class="btn-primary-sm" style="padding: 0.4rem 0.8rem;">Generate Report</button>
+                </div>
+                <div class="glass-panel" style="padding: 1.5rem; border-radius: 12px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color);">
+                    <h3>Shinobi Performance Reports</h3>
+                    <div style="margin-top: 1rem; display: flex; flex-direction: column; gap: 0.75rem;">
+                        <div style="background: rgba(255,255,255,0.02); padding: 0.75rem 1rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <span style="font-weight: 600; color: #fff;">Daily EOD Briefing - 2026-07-04</span>
+                                <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 0.15rem;">Generated today &bull; 12 KB</div>
+                            </div>
+                            <span class="hk-badge" style="background: rgba(255,69,0,0.1); color: var(--color-orange);">READY</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB: SETTINGS -->
+            <section class="tab-pane" id="tab-settings">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+                    <!-- Automation Settings -->
+                    <div class="hk-card">
+                        <div class="panel-header" style="margin-bottom: 1rem;">
+                            <h3 style="margin: 0; font-size: 1rem; color: var(--color-gold);">Automation Parameters</h3>
+                        </div>
+                        <form id="form-automation-settings" style="display: flex; flex-direction: column; gap: 1rem;">
+                            <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+                                <label style="font-size: 0.8rem; color: var(--text-muted);">Trading Window Hours</label>
+                                <input type="text" name="trading_window" value="09:15-23:30" style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); border-radius: 4px; padding: 0.4rem; color: #fff; font-size: 0.85rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+                                <label style="font-size: 0.8rem; color: var(--text-muted);">Capital Limit (₹)</label>
+                                <input type="number" name="capital_limit" value="100000" style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); border-radius: 4px; padding: 0.4rem; color: #fff; font-size: 0.85rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+                                <label style="font-size: 0.8rem; color: var(--text-muted);">Daily Loss Limit (%)</label>
+                                <input type="number" step="0.1" name="daily_loss_limit" value="2.0" style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); border-radius: 4px; padding: 0.4rem; color: #fff; font-size: 0.85rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+                                <label style="font-size: 0.8rem; color: var(--text-muted);">Max Open Positions</label>
+                                <input type="number" name="max_open_positions" value="5" style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); border-radius: 4px; padding: 0.4rem; color: #fff; font-size: 0.85rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+                                <label style="font-size: 0.8rem; color: var(--text-muted);">Risk Confidence Threshold (%)</label>
+                                <input type="number" name="confidence_threshold" value="75" style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); border-radius: 4px; padding: 0.4rem; color: #fff; font-size: 0.85rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+                                <label style="font-size: 0.8rem; color: var(--text-muted);">Voice Wake Word</label>
+                                <input type="text" name="wake_word" value="Hey Hokage" style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); border-radius: 4px; padding: 0.4rem; color: #fff; font-size: 0.85rem;">
+                            </div>
+                            <button type="submit" class="btn-primary-sm" style="padding: 0.6rem; margin-top: 0.5rem;">Save Automation Parameters</button>
+                        </form>
+                    </div>
+
+                    <!-- Institutional & Developer Settings -->
+                    <div class="hk-card">
+                        <div class="panel-header" style="margin-bottom: 1rem;">
+                            <h3 style="margin: 0; font-size: 1rem; color: var(--color-gold);">Institutional Configuration</h3>
+                        </div>
+                        <form id="form-institutional-settings" style="display: flex; flex-direction: column; gap: 1rem;">
+                            <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+                                <label style="font-size: 0.8rem; color: var(--text-muted);">Dashboard Layout</label>
+                                <select name="layout" style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); color: #fff; padding: 0.4rem; font-size: 0.85rem; border-radius: 4px;">
+                                    <option value="default">Default War Room</option>
+                                    <option value="compact">Compact Grid</option>
+                                </select>
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+                                <label style="font-size: 0.8rem; color: var(--text-muted);">Refresh Rate (ms)</label>
+                                <input type="number" name="refresh_rate" value="5000" style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); border-radius: 4px; padding: 0.4rem; color: #fff; font-size: 0.85rem;">
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+                                <label style="font-size: 0.8rem; color: var(--text-muted);">API Provider</label>
+                                <select name="provider" style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); color: #fff; padding: 0.4rem; font-size: 0.85rem; border-radius: 4px;">
+                                    <option value="kite">Kite Connect</option>
+                                    <option value="dummy">Simulated Provider</option>
+                                </select>
+                            </div>
+                            <div style="display: flex; gap: 1rem; align-items: center; margin-top: 0.5rem;">
+                                <input type="checkbox" name="developer_mode" id="chk-dev-mode" style="width: 16px; height: 16px;">
+                                <label for="chk-dev-mode" style="font-size: 0.85rem; color: #fff; cursor: pointer;">Enable Developer Mode & Diagnostics</label>
+                            </div>
+                            <button type="submit" class="btn-primary-sm" style="padding: 0.6rem; margin-top: 1rem;">Save Institutional Settings</button>
+                        </form>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Position Details Modal -->
+    <div id="position-details-modal" class="modal-overlay" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.75); z-index: 2000; align-items: center; justify-content: center; backdrop-filter: blur(4px);">
+        <div class="modal-content hk-card" style="width: 90%; max-width: 700px; max-height: 85vh; overflow-y: auto; padding: 1.5rem; border: 1px solid var(--color-gold); background: rgba(10, 15, 25, 0.95);">
+            <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.5rem; margin-bottom: 1rem;">
+                <h2 id="modal-position-title" style="margin: 0; font-size: 1.25rem; color: var(--color-gold);">Position Details</h2>
+                <button id="btn-close-position-modal" style="background: none; border: none; color: #fff; font-size: 1.5rem; cursor: pointer;">&times;</button>
+            </div>
+            <div class="modal-body" id="position-modal-body" style="display: flex; flex-direction: column; gap: 1rem;">
+                <!-- Filled dynamically by app.js -->
+            </div>
+        </div>
+    </div>
+
+    <!-- ================================================================== -->
+    <!-- TAB: MISSION CONTROL (Component 5)                                 -->
+    <!-- ================================================================== -->
+    <section class="tab-pane" id="tab-opportunities">
+        <!-- KPI Header Row -->
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+            <div class="hk-metric-card">
+                <span class="hk-metric-title">Total Missions</span>
+                <span class="hk-metric-value" id="mc-kpi-total">0</span>
+            </div>
+            <div class="hk-metric-card">
+                <span class="hk-metric-title">Active Missions</span>
+                <span class="hk-metric-value" id="mc-kpi-active" style="color: var(--color-cyan);">0</span>
+            </div>
+            <div class="hk-metric-card">
+                <span class="hk-metric-title">Success Rate</span>
+                <span class="hk-metric-value" id="mc-kpi-success" style="color: var(--color-green);">0%</span>
+            </div>
+            <div class="hk-metric-card">
+                <span class="hk-metric-title">Avg Completion</span>
+                <span class="hk-metric-value" id="mc-kpi-avg-time" style="color: var(--color-gold);">--</span>
+            </div>
+            <div class="hk-metric-card" style="cursor: pointer;" onclick="openCreateMissionModal()">
+                <span class="hk-metric-title">Launch Mission</span>
+                <span class="hk-metric-value" style="color: var(--color-gold); font-size: 1.5rem;">＋</span>
+            </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1.5rem; margin-bottom: 1.5rem;">
+            <!-- Active Missions List -->
+            <div class="hk-card">
+                <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <h3 style="margin: 0; font-size: 1rem; color: var(--color-gold);">🎯 Active Missions</h3>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <select id="mission-status-filter" style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); color: #fff; padding: 0.2rem 0.5rem; font-size: 0.75rem; border-radius: 4px;" onchange="loadMissionsData()">
+                            <option value="">All Statuses</option>
+                            <option value="RUNNING">Running</option>
+                            <option value="PENDING">Pending</option>
+                            <option value="PAUSED">Paused</option>
+                            <option value="COMPLETED">Completed</option>
+                            <option value="FAILED">Failed</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="missions-list" style="display: flex; flex-direction: column; gap: 0.75rem; max-height: 400px; overflow-y: auto;">
+                    <div style="color: var(--text-muted); text-align: center; padding: 2rem;">Loading missions...</div>
+                </div>
+            </div>
+
+            <!-- Mission Event Log -->
+            <div class="hk-card">
+                <div class="panel-header" style="margin-bottom: 1rem;">
+                    <h3 style="margin: 0; font-size: 1rem; color: var(--color-gold);">📋 Mission Event Log</h3>
+                </div>
+                <div id="mission-event-log" style="font-size: 0.78rem; font-family: monospace; max-height: 400px; overflow-y: auto; display: flex; flex-direction: column; gap: 0.3rem;">
+                    <div style="color: var(--text-muted);">Awaiting events...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Mission Templates -->
+        <div class="hk-card">
+            <div class="panel-header" style="margin-bottom: 1rem;">
+                <h3 style="margin: 0; font-size: 1rem; color: var(--color-gold);">📐 Mission Templates</h3>
+            </div>
+            <div id="mission-templates-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem;">
+                <div style="color: var(--text-muted);">Loading templates...</div>
+            </div>
+        </div>
+
+        <!-- Create Mission Modal -->
+        <div id="create-mission-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); z-index: 2001; align-items: center; justify-content: center; backdrop-filter: blur(4px);">
+            <div class="hk-card" style="width: 90%; max-width: 500px; padding: 1.5rem; border: 1px solid var(--color-gold);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <h3 style="margin: 0; color: var(--color-gold);">Launch New Mission</h3>
+                    <button onclick="document.getElementById('create-mission-modal').style.display='none'" style="background: none; border: none; color: #fff; font-size: 1.25rem; cursor: pointer;">&times;</button>
+                </div>
+                <form id="create-mission-form" style="display: flex; flex-direction: column; gap: 0.75rem;">
+                    <input type="text" id="new-mission-name" placeholder="Mission Name" style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: #fff; padding: 0.5rem; border-radius: 4px;">
+                    <input type="text" id="new-mission-objective" placeholder="Objective" style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: #fff; padding: 0.5rem; border-radius: 4px;">
+                    <textarea id="new-mission-desc" placeholder="Description" rows="3" style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: #fff; padding: 0.5rem; border-radius: 4px; resize: none;"></textarea>
+                    <select id="new-mission-priority" style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); color: #fff; padding: 0.5rem; border-radius: 4px;">
+                        <option value="0">🔴 Critical</option>
+                        <option value="1" selected>🟡 Normal</option>
+                        <option value="2">🟢 Low</option>
+                    </select>
+                    <button type="submit" class="btn-primary-sm" style="padding: 0.6rem; margin-top: 0.5rem;">🚀 Launch Mission</button>
+                </form>
+            </div>
+        </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- TAB: WORKFLOW BUILDER (Component 5)                                -->
+    <!-- ================================================================== -->
+    <section class="tab-pane" id="tab-automation">
+        <div style="display: flex; gap: 1.5rem; height: 600px;">
+            <!-- Node Palette -->
+            <div class="hk-card" style="width: 200px; min-width: 200px; display: flex; flex-direction: column; gap: 0.5rem; overflow-y: auto;">
+                <div class="panel-header" style="margin-bottom: 0.5rem;">
+                    <h3 style="margin: 0; font-size: 0.9rem; color: var(--color-gold);">🧩 Node Palette</h3>
+                </div>
+                <div class="workflow-node-palette-item" draggable="true" data-node-type="MARKET_INTELLIGENCE" style="background: rgba(0,200,255,0.1); border: 1px solid rgba(0,200,255,0.3); border-radius: 6px; padding: 0.5rem; cursor: grab; font-size: 0.8rem; color: var(--color-cyan);">📈 Neji (Market Intelligence)</div>
+                <div class="workflow-node-palette-item" draggable="true" data-node-type="RESEARCH" style="background: rgba(255,215,0,0.1); border: 1px solid rgba(255,215,0,0.3); border-radius: 6px; padding: 0.5rem; cursor: grab; font-size: 0.8rem; color: var(--color-gold);">🔬 Jiraiya (Research)</div>
+                <div class="workflow-node-palette-item" draggable="true" data-node-type="STRATEGY" style="background: rgba(100,200,100,0.1); border: 1px solid rgba(100,200,100,0.3); border-radius: 6px; padding: 0.5rem; cursor: grab; font-size: 0.8rem; color: var(--color-green);">♟️ Shikamaru (Strategy)</div>
+                <div class="workflow-node-palette-item" draggable="true" data-node-type="RISK" style="background: rgba(255,80,80,0.1); border: 1px solid rgba(255,80,80,0.3); border-radius: 6px; padding: 0.5rem; cursor: grab; font-size: 0.8rem; color: var(--color-red);">🛡️ Kakashi (Risk Check)</div>
+                <div class="workflow-node-palette-item" draggable="true" data-node-type="EXECUTION" style="background: rgba(180,100,255,0.1); border: 1px solid rgba(180,100,255,0.3); border-radius: 6px; padding: 0.5rem; cursor: grab; font-size: 0.8rem; color: var(--color-purple, #b064ff);">⚡ Minato (Execution)</div>
+                <div class="workflow-node-palette-item" draggable="true" data-node-type="LEARNING" style="background: rgba(255,165,0,0.1); border: 1px solid rgba(255,165,0,0.3); border-radius: 6px; padding: 0.5rem; cursor: grab; font-size: 0.8rem; color: #ff8c00;">🎓 Might Guy (Learning)</div>
+                <div class="workflow-node-palette-item" draggable="true" data-node-type="DECISION" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 0.5rem; cursor: grab; font-size: 0.8rem; color: #fff;">🔀 Decision Gate</div>
+                <hr style="border-color: rgba(255,255,255,0.1);">
+                <button class="btn-primary-sm" onclick="saveWorkflow()" style="font-size: 0.8rem;">💾 Save Workflow</button>
+                <button class="btn-primary-sm" onclick="clearWorkflowCanvas()" style="font-size: 0.8rem; background: rgba(255,80,80,0.2);">🗑️ Clear Canvas</button>
+            </div>
+            <!-- Canvas Area -->
+            <div class="hk-card" style="flex: 1; position: relative; overflow: hidden; background: rgba(0,0,0,0.4);">
+                <div class="panel-header" style="margin-bottom: 0.5rem; position: absolute; top: 1rem; left: 1rem; right: 1rem; z-index: 10; display: flex; justify-content: space-between; align-items: center;">
+                    <h3 style="margin: 0; font-size: 0.9rem; color: var(--color-gold);">🔀 Workflow Canvas</h3>
+                    <span style="font-size: 0.75rem; color: var(--text-muted);">Drag nodes from the palette. Click two nodes to connect.</span>
+                </div>
+                <canvas id="workflow-canvas" style="width: 100%; height: 100%; cursor: default;" width="900" height="560"></canvas>
+                <div id="workflow-empty-state" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); color: var(--text-muted); text-align: center; font-size: 0.9rem; pointer-events: none;">
+                    <div style="font-size: 2rem; margin-bottom: 0.5rem;">🔀</div>
+                    <div>Drag nodes from the palette to build your workflow</div>
+                </div>
+            </div>
+            <!-- Saved Workflows -->
+            <div class="hk-card" style="width: 220px; min-width: 220px; display: flex; flex-direction: column; gap: 0.5rem; overflow-y: auto;">
+                <div class="panel-header" style="margin-bottom: 0.5rem;">
+                    <h3 style="margin: 0; font-size: 0.9rem; color: var(--color-gold);">📁 Saved Workflows</h3>
+                </div>
+                <div id="saved-workflows-list" style="display: flex; flex-direction: column; gap: 0.5rem; flex: 1; overflow-y: auto;">
+                    <div style="color: var(--text-muted); font-size: 0.8rem;">No workflows yet.</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- TAB: KNOWLEDGE GRAPH (Component 6)                                 -->
+    <!-- ================================================================== -->
+    <section class="tab-pane" id="tab-brain">
+        <div style="display: grid; grid-template-columns: 3fr 1fr; gap: 1.5rem; height: 650px;">
+            <!-- Force-directed Canvas -->
+            <div class="hk-card" style="position: relative; overflow: hidden; background: rgba(0,0,0,0.5);">
+                <div class="panel-header" style="position: absolute; top: 1rem; left: 1rem; right: 1rem; z-index: 10; display: flex; justify-content: space-between; align-items: center;">
+                    <h3 style="margin: 0; font-size: 1rem; color: var(--color-gold);">🧠 Cognitive Memory Graph</h3>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <select id="memory-node-type-filter" style="background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.15); color: #fff; padding: 0.2rem 0.5rem; font-size: 0.75rem; border-radius: 4px;" onchange="renderMemoryGraph()">
+                            <option value="">All Types</option>
+                            <option value="TRADE">Trade</option>
+                            <option value="RESEARCH">Research</option>
+                            <option value="MISSION">Mission</option>
+                            <option value="LESSON">Lesson</option>
+                            <option value="STRATEGY">Strategy</option>
+                        </select>
+                        <button class="btn-primary-sm" onclick="loadMemoryGraphData()" style="font-size: 0.7rem; padding: 0.2rem 0.5rem;">↺ Refresh</button>
+                    </div>
+                </div>
+                <canvas id="memory-graph-canvas" style="width: 100%; height: 100%;" width="900" height="580"></canvas>
+                <div id="memory-graph-empty" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); color: var(--text-muted); text-align: center; font-size: 0.9rem; pointer-events: none;">
+                    <div style="font-size: 2rem; margin-bottom: 0.5rem;">🧠</div>
+                    <div>Memory graph will populate as Hokage learns</div>
+                </div>
+            </div>
+            <!-- Node Details Panel -->
+            <div class="hk-card" style="display: flex; flex-direction: column; gap: 1rem; overflow-y: auto;">
+                <div class="panel-header" style="margin-bottom: 0.5rem;">
+                    <h3 style="margin: 0; font-size: 1rem; color: var(--color-gold);">📋 Node Details</h3>
+                </div>
+                <div id="memory-node-details" style="font-size: 0.82rem; color: var(--text-muted);">
+                    Click any node to view details...
+                </div>
+                <hr style="border-color: rgba(255,255,255,0.1);">
+                <div class="panel-header">
+                    <h4 style="margin: 0 0 0.5rem 0; font-size: 0.85rem; color: var(--color-gold);">Graph Stats</h4>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                    <div class="hk-metric-card"><span class="hk-metric-title">Nodes</span><span class="hk-metric-value" id="graph-node-count">0</span></div>
+                    <div class="hk-metric-card"><span class="hk-metric-title">Edges</span><span class="hk-metric-value" id="graph-edge-count">0</span></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- TAB: AI COACH (Component 6)                                        -->
+    <!-- ================================================================== -->
+    <section class="tab-pane" id="tab-ai-coach">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 1.5rem;">
+            <!-- Recommendations -->
+            <div class="hk-card">
+                <div class="panel-header" style="margin-bottom: 1rem;">
+                    <h3 style="margin: 0; font-size: 1rem; color: var(--color-gold);">🏆 Commander Recommendations</h3>
+                </div>
+                <div id="coach-recommendations-list" style="display: flex; flex-direction: column; gap: 0.75rem; max-height: 350px; overflow-y: auto;">
+                    <div style="color: var(--text-muted); text-align: center; padding: 2rem;">Loading AI Coach insights...</div>
+                </div>
+            </div>
+
+            <!-- Calibration Stats -->
+            <div class="hk-card">
+                <div class="panel-header" style="margin-bottom: 1rem;">
+                    <h3 style="margin: 0; font-size: 1rem; color: var(--color-gold);">🎯 Prediction Calibration</h3>
+                </div>
+                <div id="calibration-stats-list" style="display: flex; flex-direction: column; gap: 0.5rem; max-height: 350px; overflow-y: auto;">
+                    <div style="color: var(--text-muted);">No calibration data yet...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Lessons Learned -->
+        <div class="hk-card">
+            <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h3 style="margin: 0; font-size: 1rem; color: var(--color-gold);">📚 Lessons Learned Log</h3>
+                <select id="lesson-category-filter" style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); color: #fff; padding: 0.2rem 0.5rem; font-size: 0.75rem; border-radius: 4px;" onchange="loadLearningHistory()">
+                    <option value="">All Categories</option>
+                    <option value="RISK_MANAGEMENT">Risk Management</option>
+                    <option value="ENTRY_TIMING">Entry Timing</option>
+                    <option value="EXIT_TIMING">Exit Timing</option>
+                    <option value="POSITION_SIZING">Position Sizing</option>
+                    <option value="MARKET_REGIME">Market Regime</option>
+                    <option value="EXECUTION">Execution</option>
+                    <option value="STRATEGY">Strategy</option>
+                </select>
+            </div>
+            <div id="lessons-list" style="display: flex; flex-direction: column; gap: 0.5rem; max-height: 300px; overflow-y: auto;">
+                <div style="color: var(--text-muted);">No lessons recorded yet. They will appear as Hokage learns...</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- TAB: PERFORMANCE LAB (Component 6)                                 -->
+    <!-- ================================================================== -->
+    <section class="tab-pane" id="tab-strategy-lab">
+        <!-- Bot Cards Row -->
+        <div id="perf-bot-cards" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+            <div style="color: var(--text-muted);">Loading performance data...</div>
+        </div>
+
+        <!-- Strategy Playbook Battle Arena (A/B Split-Testing) -->
+        <div class="hk-card" style="margin-bottom: 1.5rem;">
+            <div class="panel-header" style="margin-bottom: 1.25rem; display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="margin: 0; font-size: 1rem; color: var(--color-gold);">⚔️ Strategy Playbook Battle Arena (A/B Split-Testing)</h3>
+                <button id="heal-playbooks-btn" onclick="triggerSelfHealing()" class="hk-btn" style="background: rgba(255, 69, 0, 0.25); border: 1px solid rgba(255, 69, 0, 0.4); padding: 0.4rem 1rem; font-size: 0.8rem; border-radius: 4px; color: #fff; cursor: pointer; display: flex; align-items: center; gap: 0.5rem; box-shadow: 0 0 15px rgba(255, 69, 0, 0.2); transition: all 0.3s ease;">
+                    🔥 Might Guy: Self-Heal Playbooks
+                </button>
+            </div>
+            <div id="playbook-faceoff-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem;">
+                <div style="color: var(--text-muted);">Loading playbook arena face-off...</div>
+            </div>
+        </div>
+
+        <!-- Strategy Version Table -->
+        <div class="hk-card">
+            <div class="panel-header" style="margin-bottom: 1rem;">
+                <h3 style="margin: 0; font-size: 1rem; color: var(--color-gold);">♟️ Strategy Evolution Tracker</h3>
+            </div>
+            <div id="strategy-evolution-table" style="overflow-x: auto;">
+                <table style="width: 100%; border-collapse: collapse; font-size: 0.82rem;">
+                    <thead>
+                        <tr style="color: var(--text-muted); text-transform: uppercase; font-size: 0.7rem; border-bottom: 1px solid rgba(255,255,255,0.1);">
+                            <th style="text-align: left; padding: 0.5rem;">Strategy</th>
+                            <th style="text-align: left; padding: 0.5rem;">Version</th>
+                            <th style="text-align: left; padding: 0.5rem;">Status</th>
+                            <th style="text-align: left; padding: 0.5rem;">Created</th>
+                        </tr>
+                    </thead>
+                    <tbody id="strategy-evolution-body">
+                        <tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 1rem;">No strategy versions tracked yet.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- TAB: IMPROVEMENT QUEUE (Component 6)                               -->
+    <!-- ================================================================== -->
+    <section class="tab-pane" id="tab-analytics">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+            <h2 style="margin: 0; color: var(--color-gold);">🚀 Improvement Queue</h2>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+                <select id="improvement-status-filter" style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); color: #fff; padding: 0.4rem; font-size: 0.8rem; border-radius: 4px;" onchange="loadImprovementsData()">
+                    <option value="">All</option>
+                    <option value="PENDING">Pending</option>
+                    <option value="APPROVED">Approved</option>
+                    <option value="REJECTED">Rejected</option>
+                    <option value="POSTPONED">Postponed</option>
+                </select>
+            </div>
+        </div>
+
+        <div id="improvements-list" style="display: flex; flex-direction: column; gap: 1rem;">
+            <div style="color: var(--text-muted); text-align: center; padding: 3rem;">
+                <div style="font-size: 2rem; margin-bottom: 0.5rem;">🚀</div>
+                <div>No improvements in queue. Hokage will generate them as it learns.</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- TAB: ORGANIZATION PANEL (Component 7)                              -->
+    <!-- ================================================================== -->
+    <section class="tab-pane" id="tab-committee">
+        <!-- Agent Cards -->
+        <div style="margin-bottom: 1.5rem;">
+            <h3 style="margin: 0 0 1rem 0; color: var(--color-gold);">🏛️ Agent Organization</h3>
+            <div id="agent-cards-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem;">
+                <div style="color: var(--text-muted);">Loading agents...</div>
+            </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.5rem; margin-bottom: 1.5rem;">
+            <!-- Governance Policies -->
+            <div class="hk-card">
+                <div class="panel-header" style="margin-bottom: 1rem;">
+                    <h3 style="margin: 0; font-size: 1rem; color: var(--color-gold);">📜 Governance Policies</h3>
+                </div>
+                <div id="governance-policies-list" style="display: flex; flex-direction: column; gap: 0.5rem; max-height: 300px; overflow-y: auto;">
+                    <div style="color: var(--text-muted); font-size: 0.82rem;">Loading policies...</div>
+                </div>
+            </div>
+
+            <!-- Consensus Records -->
+            <div class="hk-card">
+                <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <h3 style="margin: 0; font-size: 1rem; color: var(--color-gold);">🗳️ Consensus Sessions</h3>
+                    <button class="btn-primary-sm" onclick="openStartConsensusModal()" style="font-size: 0.7rem; padding: 0.2rem 0.4rem;">+ New Vote</button>
+                </div>
+                <div id="consensus-records-list" style="display: flex; flex-direction: column; gap: 0.5rem; max-height: 300px; overflow-y: auto;">
+                    <div style="color: var(--text-muted); font-size: 0.82rem;">No votes yet.</div>
+                </div>
+            </div>
+
+            <!-- Resource Monitor -->
+            <div class="hk-card">
+                <div class="panel-header" style="margin-bottom: 1rem;">
+                    <h3 style="margin: 0; font-size: 1rem; color: var(--color-gold);">📊 Resource Monitor</h3>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+                    <div>
+                        <div style="display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 0.25rem;"><span style="color: var(--text-muted);">CPU</span><span id="res-cpu">0%</span></div>
+                        <div style="height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden;"><div id="res-cpu-bar" style="height: 100%; width: 0%; background: var(--color-cyan); transition: width 0.5s;"></div></div>
+                    </div>
+                    <div>
+                        <div style="display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 0.25rem;"><span style="color: var(--text-muted);">RAM</span><span id="res-ram">0 MB</span></div>
+                        <div style="height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden;"><div id="res-ram-bar" style="height: 100%; width: 0%; background: var(--color-gold); transition: width 0.5s;"></div></div>
+                    </div>
+                    <div>
+                        <div style="display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 0.25rem;"><span style="color: var(--text-muted);">LLM Tokens</span><span id="res-tokens">0 / 1M</span></div>
+                        <div style="height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden;"><div id="res-tokens-bar" style="height: 100%; width: 0%; background: var(--color-green); transition: width 0.5s;"></div></div>
+                    </div>
+                    <div>
+                        <div style="display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 0.25rem;"><span style="color: var(--text-muted);">API Calls</span><span id="res-api">0 / 10K</span></div>
+                        <div style="height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden;"><div id="res-api-bar" style="height: 100%; width: 0%; background: var(--color-red); transition: width 0.5s;"></div></div>
+                    </div>
+                    <button class="btn-primary-sm" onclick="loadOrganizationResources()" style="font-size: 0.75rem; margin-top: 0.5rem;">↺ Refresh Resources</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Start Consensus Modal -->
+        <div id="start-consensus-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); z-index: 2001; align-items: center; justify-content: center; backdrop-filter: blur(4px);">
+            <div class="hk-card" style="width: 90%; max-width: 450px; padding: 1.5rem; border: 1px solid var(--color-gold);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <h3 style="margin: 0; color: var(--color-gold);">🗳️ Start Consensus Vote</h3>
+                    <button onclick="document.getElementById('start-consensus-modal').style.display='none'" style="background: none; border: none; color: #fff; font-size: 1.25rem; cursor: pointer;">&times;</button>
+                </div>
+                <form id="start-consensus-form" style="display: flex; flex-direction: column; gap: 0.75rem;">
+                    <input type="text" id="consensus-topic" placeholder="Topic" style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: #fff; padding: 0.5rem; border-radius: 4px;">
+                    <textarea id="consensus-desc" placeholder="Description" rows="3" style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: #fff; padding: 0.5rem; border-radius: 4px; resize: none;"></textarea>
+                    <select id="consensus-model" style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); color: #fff; padding: 0.5rem; border-radius: 4px;">
+                        <option value="MAJORITY">Majority Vote</option>
+                        <option value="WEIGHTED">Weighted Vote</option>
+                        <option value="UNANIMOUS">Unanimous</option>
+                    </select>
+                    <button type="submit" class="btn-primary-sm" style="padding: 0.6rem;">🗳️ Start Vote</button>
+                </form>
+            </div>
+        </div>
+    </section>
+
+        </main>
+    </div>
+
+    <!-- Floating Ask Hokage FAB (Phase 9.5A) -->
+    <div id="floating-chat-fab" style="position: fixed; bottom: 2rem; right: 2rem; z-index: 10000; background: var(--color-gold); color: #000; width: 60px; height: 60px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.5rem; cursor: pointer; box-shadow: 0 4px 20px rgba(0,0,0,0.5); transition: transform 0.2s, background 0.2s; user-select: none;">
+        💬
+    </div>
+
+    <!-- Floating Command Palette Overlay (Phase 9.5A) -->
+    <div id="floating-command-palette" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 10001; align-items: center; justify-content: center; backdrop-filter: blur(4px); animation: fadeIn 0.2s ease-out;">
+        <div style="background: var(--bg-secondary); border: 1px solid var(--color-gold); width: 90%; max-width: 600px; border-radius: 8px; box-shadow: var(--shadow-chakra); overflow: hidden; display: flex; flex-direction: column; max-height: 80vh;">
+            <div style="padding: 1rem; border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.3);">
+                <h3 style="margin: 0; color: var(--color-gold); font-size: 1.1rem; display: flex; align-items: center; gap: 0.5rem;">⚙️ Commander Command Palette</h3>
+                <span style="font-size: 0.8rem; color: var(--text-muted);">Press ESC to close</span>
+            </div>
+            <!-- Chat history inside palette -->
+            <div id="palette-chat-history" style="flex: 1; overflow-y: auto; padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; max-height: 400px; min-height: 200px; background: rgba(0,0,0,0.2);">
+                <div style="background: rgba(255,255,255,0.02); padding: 0.75rem 1rem; border-radius: 6px; border-left: 3px solid var(--color-gold); font-size: 0.85rem; color: var(--text-secondary);">
+                    Welcome, Commander. Enter a query or command (e.g. status, /scan, /help, Good morning)...
+                </div>
+            </div>
+            <!-- Input container -->
+            <div style="padding: 1rem; border-top: 1px solid rgba(255,255,255,0.1); display: flex; gap: 0.75rem; background: rgba(0,0,0,0.4); align-items: center;">
+                <label for="palette-file-upload" style="cursor: pointer; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.15); width: 45px; height: 45px; border-radius: 4px; font-size: 1.2rem; color: #fff; transition: background 0.2s; user-select: none;" title="Upload PDF/TXT/DOCX">
+                    📎
+                </label>
+                <input type="file" id="palette-file-upload" accept=".pdf,.txt,.docx" style="display: none;" />
+                <textarea id="palette-chat-input" rows="2" style="resize: none; flex: 1; background: rgba(255,255,255,0.05); border: 1px solid var(--color-gold); border-radius: 4px; padding: 0.75rem 1rem; color: #fff; font-family: inherit; font-size: 0.9rem; box-sizing: border-box;" placeholder="Type your query (Ctrl+K or Esc to exit)..."></textarea>
+                <button id="btn-palette-send" style="background: var(--color-gold); color: #000; border: none; padding: 0.75rem 1.5rem; border-radius: 4px; font-weight: 700; cursor: pointer; font-size: 0.9rem; transition: background 0.2s; height: 45px;">SEND</button>
+            </div>
+            <!-- File name display area -->
+            <div id="palette-file-status" style="display: none; padding: 0.5rem 1rem; font-size: 0.8rem; color: var(--color-gold); background: rgba(0,0,0,0.3); border-top: 1px dashed rgba(255,255,255,0.1);"></div>
+        </div>
+    </div>
+
+</body>
+</html>

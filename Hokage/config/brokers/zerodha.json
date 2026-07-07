@@ -1,0 +1,34 @@
+{
+  "_broker_id": "zerodha",
+  "_description": "Zerodha Kite — Indian equity, F&O, and commodity broker.",
+  "supported_exchanges":    ["NSE", "BSE", "MCX"],
+  "supported_instruments":  ["equity", "futures", "options", "commodity"],
+  "market_orders":          true,
+  "limit_orders":           true,
+  "stop_orders":            true,
+  "stop_market_orders":     true,
+  "margin_trading":         true,
+  "product_types":          ["CNC", "MIS", "NRML"],
+  "options_trading":        true,
+  "futures_trading":        true,
+  "fractional_shares":      false,
+  "websocket_streaming":    true,
+  "historical_data":        true,
+  "paper_execution_support": true,
+  "live_execution_support": true,
+  "paper_venue_id":         "paper_zerodha",
+  "live_venue_id":          "kite_main",
+  "authentication_type":    "api_key_totp",
+  "rate_limits": {
+    "orders_per_second":    10,
+    "quotes_per_second":    1,
+    "history_per_minute":   60
+  },
+  "constraints": {
+    "min_order_value_inr":  1,
+    "max_order_qty":        100000,
+    "supports_amo":         true,
+    "supports_bo":          false,
+    "supports_co":          true
+  }
+}

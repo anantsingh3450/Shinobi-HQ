@@ -45,19 +45,28 @@ class ExecutionBot:
     def execute(
         self,
         proposal: StrategyProposal,
-        *,
         persist: bool = True,
+        quantity: float | None = None,
+        limit_price: float | None = None,
     ) -> TradeRecord:
         """Execute a strategy proposal and return the resulting trade.
 
         Args:
             proposal: The strategy to execute.
             persist:  When True and a store is configured, save the trade.
+            quantity: Optional quantity override to execute.
+            limit_price: Optional limit price for slippage checking.
 
         Returns:
             The completed TradeRecord.
         """
-        trade = self._engine.execute(proposal)
+        kwargs = {}
+        if quantity is not None:
+            kwargs["quantity"] = quantity
+        if limit_price is not None:
+            kwargs["limit_price"] = limit_price
+
+        trade = self._engine.execute(proposal, **kwargs)
 
         if persist and self._store is not None:
             self._store.save(trade)

@@ -28,4 +28,4 @@ Hokage invokes Execution Bot only after Risk Bot returns a pass for the target m
 
 The strategy logic in `engine/` is identical for both modes. Only the execution adapter differs.
 
-No code yet.
+Implemented: `execution_bot.py`, `models.py`, `interfaces.py`, `engine/paper_engine.py`, `store/json_trade_store.py`. The `live/` adapter folder exists as a placeholder for Phase 4.

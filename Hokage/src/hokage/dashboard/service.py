@@ -10,8 +10,6 @@ This service has NO side effects and does NOT modify account or trade data.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 from bots.execution.store.json_trade_store import JsonTradeStore
 from bots.portfolio.store import JsonPortfolioStore
 from hokage.dashboard.models import (
@@ -114,7 +112,7 @@ class DashboardService:
         """
         # For now, we load trades from JsonTradeStore
         # In a real system with multiple accounts, we'd filter by account_id
-        trades = self.trade_store.load_trades()
+        trades = self.trade_store.load_all()
         
         if limit:
             trades = trades[-limit:]

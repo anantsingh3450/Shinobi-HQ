@@ -14,7 +14,8 @@ Runs the Hokage workflow pipeline:
 ## Pipeline
 
 ```
-Research → Strategy → Backtest → Risk → Execution → Improvement
+Research → Strategy → Backtest → Risk → Execution → Tax → Portfolio
 ```
 
-No code yet.
+## Implementation
+The Orchestrator pipeline is implemented in `pipeline.py`, which defines the `HokageOrchestrator` coordinating all bot processes and enforcing workflow rules.

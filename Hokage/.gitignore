@@ -6,6 +6,7 @@
 # Runtime data (keep folder READMEs)
 data/*
 !data/README.md
+hokage_brain/
 logs/*
 !logs/README.md
 *.log

@@ -39,11 +39,18 @@ class ExecutionEngine(Protocol):
     implementation would send an order to a real broker.
     """
 
-    def execute(self, proposal: StrategyProposal) -> TradeRecord:
+    def execute(
+        self,
+        proposal: StrategyProposal,
+        quantity: float | None = None,
+        limit_price: float | None = None,
+    ) -> TradeRecord:
         """Simulate or place a trade from the given strategy proposal.
 
         Args:
             proposal: The strategy to execute.
+            quantity: Optional quantity override.
+            limit_price: Optional limit price for slippage checking.
 
         Returns:
             A ``TradeRecord`` representing the executed position.

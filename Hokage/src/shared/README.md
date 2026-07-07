@@ -2,7 +2,7 @@
 
 Cross-cutting code used by Hokage and all bots.
 
-## Submodules (planned)
+## Submodules
 
 | Folder | Purpose |
 |--------|---------|
@@ -11,4 +11,5 @@ Cross-cutting code used by Hokage and all bots.
 | `utils/` | Logging helpers, date/time, file I/O |
 | `events/` | Internal event bus for bot-to-bot messaging |
 
-No code yet.
+## Implementation
+Shared structures and utility packages are defined under their respective subdirectories. The schemas inside `contracts` outline key structures used for research, risk, and backtesting.

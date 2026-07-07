@@ -2,4 +2,5 @@
 
 Market data provider adapters used by Research, Backtest, and Execution bots.
 
-No code yet.
+## Implementation
+Data integration interfaces and providers are fully implemented. `MockMarketDataProvider` generates daily candle data and simulated quotes, and is instantiated dynamically by `ProviderFactory` under `factory.py`.

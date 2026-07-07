@@ -1,26 +1,23 @@
-# Portfolio Manager (Future Placeholder)
+# Portfolio Bot
 
-**Not in the active pipeline.** Reserved for future multi-strategy portfolio operations.
+The Portfolio Bot manages the account portfolio state. It is active in the unified pipeline.
 
-## Planned role
+## Role
 
-- Aggregate positions across multiple strategies
-- Capital allocation and rebalancing
-- Portfolio-level exposure and correlation reporting
-- Feed portfolio context to Risk Bot for limit checks
+- Tracks account balance, cash, realized PnL, and open position counts.
+- Maintains and aggregates position details (market, direction, quantity, entry price, etc.).
+- Persists and loads account details to/from local storage (`account_paper.json`).
+- Updates portfolio state immediately after a trade executes, ensuring consistency.
 
-## Planned integrations
+## Integrations
 
 | Module | Relationship |
 |--------|--------------|
-| Risk Bot | Portfolio-level risk limits and exposure checks |
-| Execution Bot | Coordinated order placement across strategies |
-| Hokage | Status and allocation commands via commander only |
+| Execution Bot | Updates portfolio holdings and cash balances on trade execution |
+| Command Router | Feeds metrics for the interactive `portfolio` and `positions` CLI commands |
+| Dashboard Service | Shares state via `account_paper.json` to serve Flask REST API queries |
 
-## Status
+## Implementation
 
-- Folder and documentation only
-- Disabled in `config/hokage.yaml` (`enabled: false`)
-- No implementation until core pipeline (Research → Improvement) is stable
+The Portfolio Bot is implemented in `portfolio_bot.py`. The portfolio database model and storage management live in `models.py` and `store.py`.
 
-No code yet.

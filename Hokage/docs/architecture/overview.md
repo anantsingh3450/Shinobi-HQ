@@ -25,23 +25,22 @@ One commander, many specialists. **Hokage is the only user-facing interface.** T
     └─────────────┼─────────────┴─────────────┘
                   ▼
             Execution Bot
-         (Paper ←→ Live)
+           (Paper ←→ Live)
                   │
                   ▼
-           Improvement Bot
+            Tax Simulation
                   │
-                  └──► loop back to Research / Strategy
-
-    ┌─────────────────────────────────────┐
-    │  Portfolio Manager  (future)        │
-    │  placeholder — not in active pipe   │
-    └─────────────────────────────────────┘
+                  ▼
+            Portfolio Bot
+                  │
+                  ▼
+         Improvement Bot (future)
 ```
 
 ## Standard Pipeline
 
 ```
-Research → Strategy → Backtest → Risk → Execution → Improvement
+Research → Strategy → Backtest → Risk → Execution → Tax → Portfolio
 ```
 
 ## Folder Map
@@ -51,11 +50,11 @@ Research → Strategy → Backtest → Risk → Execution → Improvement
 | `src/hokage/` | Commander core — sole user interface |
 | `src/bots/` | Specialist bot modules |
 | `src/bots/risk/` | Pre-execution risk assessment |
-| `src/bots/portfolio/` | Future placeholder — portfolio management |
+| `src/bots/portfolio/` | Portfolio management (balances, cash, positions, realized PnL) |
 | `src/shared/` | Cross-bot contracts and utilities |
 | `src/integrations/` | External systems (brokers, data feeds) |
 | `config/` | Configuration templates |
 | `data/` | Runtime artifacts (gitignored) |
 | `docs/` | Architecture and operational docs |
-| `tests/` | Test suites (future) |
+| `tests/` | Unit and integration test suites (106 tests passing) |
 | `scripts/` | Dev and ops scripts (future) |

@@ -1,0 +1,34 @@
+{
+  "_broker_id": "alpaca",
+  "_description": "Alpaca Markets — US equity broker supporting fractional shares and paper trading.",
+  "supported_exchanges":    ["NASDAQ", "NYSE", "GLOBAL"],
+  "supported_instruments":  ["equity", "etf"],
+  "market_orders":          true,
+  "limit_orders":           true,
+  "stop_orders":            true,
+  "stop_market_orders":     true,
+  "margin_trading":         true,
+  "product_types":          ["DAY", "GTC", "IOC", "FOK"],
+  "options_trading":        false,
+  "futures_trading":        false,
+  "fractional_shares":      true,
+  "websocket_streaming":    true,
+  "historical_data":        true,
+  "paper_execution_support": true,
+  "live_execution_support": true,
+  "paper_venue_id":         "paper_alpaca",
+  "live_venue_id":          "alpaca_main",
+  "authentication_type":    "api_key_secret",
+  "rate_limits": {
+    "orders_per_second":    10,
+    "quotes_per_second":    200,
+    "history_per_minute":   200
+  },
+  "constraints": {
+    "min_order_value_inr":  null,
+    "max_order_qty":        null,
+    "supports_amo":         false,
+    "supports_bo":          false,
+    "supports_co":          false
+  }
+}

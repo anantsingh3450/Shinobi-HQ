@@ -95,7 +95,7 @@ class TestTradeRecord:
             )
 
     def test_rejects_live_mode(self) -> None:
-        with pytest.raises(ValueError, match="ExecutionMode.LIVE is disabled"):
+        with pytest.raises(ValueError, match="Live trading capability exists but is not active in the current execution mode"):
             TradeRecord(
                 proposal_id="proposal-123",
                 market="EUR/USD",

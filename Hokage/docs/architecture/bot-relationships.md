@@ -32,7 +32,7 @@
 
 ## Risk Bot
 
-- Input: strategy spec, backtest results, configured risk limits, current portfolio context (future: Portfolio Manager)
+- Input: strategy spec, backtest results, configured risk limits, current portfolio context (provided by Portfolio Bot)
 - Output: risk assessment report, pass/fail verdict → `data/risk/`
 - Feeds: Execution Bot (paper and live gates)
 - **Paper gate** — must pass before paper execution begins
@@ -52,9 +52,8 @@
 - Output: improvement proposals, parameter suggestions, lessons learned
 - Feeds: Research Bot, Strategy Bot (closes the loop)
 
-## Portfolio Manager (future placeholder)
+## Portfolio Bot
 
-- **Not in the active pipeline** — reserved for future multi-strategy operations
-- Planned role: aggregate positions, allocation across strategies, rebalancing, exposure reporting
-- Will integrate with Risk Bot (portfolio-level limits) and Execution Bot (coordinated orders)
-- Folder exists at `src/bots/portfolio/`; disabled in config until implemented
+- **Active in the pipeline** — tracks real-time account balances, cash, realized/unrealized PnL, and open positions.
+- Core role: updates and persists the account state (`account_paper.json`) after each trade executed by the Execution Bot.
+- Integrates with the CLI command router to serve portfolio overview and holdings/positions details.

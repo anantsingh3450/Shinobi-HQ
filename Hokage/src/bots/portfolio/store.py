@@ -21,6 +21,18 @@ class JsonPortfolioStore:
                               Created automatically on first save.
         """
         self._output_directory = output_directory
+        
+        # Determine if SQLite is active
+        from hokage.memory.resolver import PathResolver
+        from shared.persistence.sqlite_engine import SqliteStorageEngine
+        from shared.persistence.sqlite_stores import SqlitePortfolioStore
+        
+        resolver = PathResolver(output_directory.parent)
+        if SqliteStorageEngine.is_active(resolver):
+            engine = SqliteStorageEngine(resolver)
+            self._delegate = SqlitePortfolioStore(engine)
+        else:
+            self._delegate = None
 
     @property
     def output_directory(self) -> Path:
@@ -46,6 +58,10 @@ class JsonPortfolioStore:
         Args:
             account: The Account state object to save.
         """
+        if self._delegate is not None:
+            self._delegate.save_account(account)
+            return
+
         self._output_directory.mkdir(parents=True, exist_ok=True)
         filepath = self.account_file(account.account_id)
         with filepath.open("w", encoding="utf-8") as fh:
@@ -61,6 +77,9 @@ class JsonPortfolioStore:
         Returns:
             The loaded or newly initialized Account state.
         """
+        if self._delegate is not None:
+            return self._delegate.load_account(account_id, default_balance)
+
         filepath = self.account_file(account_id)
         if not filepath.exists():
             # Initialize new account

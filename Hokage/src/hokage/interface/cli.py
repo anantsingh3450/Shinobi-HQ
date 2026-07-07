@@ -16,9 +16,7 @@ class HokageCLI:
 
     def run(self) -> None:
         """Start the REPL loop."""
-        print("========================================")
-        print("        Hokage Commander MVP            ")
-        print("========================================")
+        print(self.router.handle_hokage_greet())
         print("Type 'help' for commands, 'exit' or 'quit' to leave.\n")
 
         while True:

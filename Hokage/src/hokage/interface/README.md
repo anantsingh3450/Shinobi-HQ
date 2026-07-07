@@ -2,7 +2,7 @@
 
 User-facing entry points. All channels normalize into Hokage commands.
 
-Planned channels:
+Channels:
 
 - `telegram/` — primary mobile interface
 - `cli/` — local development and debugging
@@ -10,4 +10,5 @@ Planned channels:
 
 The user never bypasses Hokage to reach a bot directly.
 
-No code yet.
+## Implementation
+The interactive CLI environment is implemented in `cli.py` which runs a REPL shell supporting system commands.

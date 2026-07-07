@@ -1,0 +1,39 @@
+{
+  "enabled": true,
+  "watchlists": ["TCS", "INFY", "RELIANCE", "HDFCBANK", "ICICIBANK", "ONGC", "LT", "SBIN"],
+  "scoring_parameters": {
+    "max_conviction_adjustment": 10.0,
+    "min_report_confidence_threshold": 50.0,
+    "rotation_score_multiplier": 5.0,
+    "macro_alignment_bonus": 3.0
+  },
+  "providers": {
+    "economic_calendar": {
+      "type": "mock_economic",
+      "url": "https://api.economic-calendar.mock/v1/events"
+    },
+    "earnings_calendar": {
+      "type": "mock_earnings",
+      "url": "https://api.earnings-calendar.mock/v1/releases"
+    },
+    "institutional_flow": {
+      "type": "mock_flows",
+      "url": "https://api.institutional-flows.mock/v1/net"
+    },
+    "options_data": {
+      "type": "mock_options",
+      "url": "https://api.options-chain.mock/v1/pcr"
+    },
+    "market_breadth": {
+      "type": "mock_breadth",
+      "url": "https://api.market-breadth.mock/v1/internals"
+    },
+    "news": {
+      "type": "rss_news",
+      "urls": [
+        "https://www.moneycontrol.com/rss/marketoutlook.xml",
+        "https://economictimes.indiatimes.com/markets/rssfeeds/1977021500.cms"
+      ]
+    }
+  }
+}

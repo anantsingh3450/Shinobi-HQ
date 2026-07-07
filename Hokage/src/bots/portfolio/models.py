@@ -5,15 +5,11 @@ Defines the structure for tracking open positions, account state, and PnL metric
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import uuid4
+from shared.utils import utc_now
 
 from bots.execution.models import TradeDirection, TradeRecord, TradeStatus
-
-
-def utc_now() -> datetime:
-    """Return current UTC timezone-aware datetime."""
-    return datetime.now(UTC)
 
 
 @dataclass(slots=True)
@@ -47,6 +43,9 @@ class Position:
 
     opened_at: datetime = field(default_factory=utc_now)
     closed_at: datetime | None = None
+    playbook_id: str | None = None
+    volatility_regime: str | None = None
+    failure_reason: str | None = None
 
     def update_price(self, price: float) -> None:
         """Update current price and recalculate unrealized PnL."""
@@ -80,6 +79,9 @@ class Position:
             "status": self.status.value,
             "opened_at": self.opened_at.isoformat(),
             "closed_at": self.closed_at.isoformat() if self.closed_at else None,
+            "playbook_id": self.playbook_id,
+            "volatility_regime": self.volatility_regime,
+            "failure_reason": self.failure_reason,
         }
 
     @classmethod
@@ -98,6 +100,9 @@ class Position:
             status=TradeStatus(data["status"]),
             opened_at=datetime.fromisoformat(data["opened_at"]),
             closed_at=datetime.fromisoformat(closed_at) if closed_at else None,
+            playbook_id=data.get("playbook_id"),
+            volatility_regime=data.get("volatility_regime"),
+            failure_reason=data.get("failure_reason"),
         )
 
 
@@ -144,7 +149,7 @@ class Account:
     account_id: str
     initial_balance: float
     cash: float
-    currency: str = "USD"
+    currency: str = "INR"
     positions: dict[str, Position] = field(default_factory=dict)  # Keyed by position_id
     equity_history: list[EquitySnapshot] = field(default_factory=list)
     realized_pnl: float = 0.0
@@ -196,6 +201,9 @@ class Account:
                     entry_price=pos.entry_price,
                     current_price=trade.entry_price,
                     opened_at=pos.opened_at,
+                    playbook_id=pos.playbook_id,
+                    volatility_regime=pos.volatility_regime,
+                    failure_reason=pos.failure_reason,
                 )
                 updated_pos.update_price(trade.entry_price)
                 self.positions[pos.position_id] = updated_pos
@@ -211,6 +219,9 @@ class Account:
                 entry_price=trade.entry_price,
                 current_price=trade.entry_price,
                 opened_at=trade.executed_at,
+                playbook_id=getattr(trade, "playbook_id", None),
+                volatility_regime=getattr(trade, "volatility_regime", None),
+                failure_reason=getattr(trade, "failure_reason", None),
             )
             new_pos.update_price(trade.entry_price)
             self.positions[trade.trade_id] = new_pos
@@ -242,7 +253,7 @@ class Account:
             account_id=data["account_id"],
             initial_balance=data["initial_balance"],
             cash=data["cash"],
-            currency=data.get("currency", "USD"),
+            currency=data.get("currency", "INR"),
             realized_pnl=data.get("realized_pnl", 0.0),
             positions=positions,
             equity_history=equity_history,

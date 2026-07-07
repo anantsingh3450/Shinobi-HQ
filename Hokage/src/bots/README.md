@@ -4,16 +4,16 @@ Each bot is a self-contained module invoked by Hokage. **Bots do not talk to the
 
 | Bot | Folder | Output | Status |
 |-----|--------|--------|--------|
-| Research | `research/` | Findings, reports | Planned |
-| Strategy | `strategy/` | Strategy specifications | Planned |
-| Backtest | `backtest/` | Validation reports | Planned |
-| Risk | `risk/` | Risk assessments, pass/fail verdicts | Planned |
-| Execution | `execution/` | Paper and live trades | Planned |
-| Improvement | `improvement/` | Feedback and iteration proposals | Planned |
-| Portfolio Manager | `portfolio/` | Allocation and rebalancing (future) | Placeholder |
+| Research | `research/` | Findings, reports | **Implemented** |
+| Strategy | `strategy/` | Strategy specifications | **Implemented** |
+| Backtest | `backtest/` | Validation reports | **Implemented** |
+| Risk | `risk/` | Risk assessments, pass/fail verdicts | **Implemented** |
+| Execution | `execution/` | Paper and live trades | **Implemented** |
+| Portfolio | `portfolio/` | Account state, FIFO position tracking | **Implemented** |
+| Improvement | `improvement/` | Feedback and iteration proposals | Placeholder |
 
 ## Pipeline order
 
 ```
-Research → Strategy → Backtest → Risk → Execution → Improvement
+Research → Strategy → Backtest → Risk → Execution → Tax → Portfolio
 ```

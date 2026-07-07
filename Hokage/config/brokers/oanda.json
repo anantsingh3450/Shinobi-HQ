@@ -1,0 +1,34 @@
+{
+  "_broker_id": "oanda",
+  "_description": "OANDA — Forex and CFD broker supporting spot and leveraged positions.",
+  "supported_exchanges":    ["FOREX"],
+  "supported_instruments":  ["forex_spot", "forex_cfd", "indices_cfd", "commodity_cfd"],
+  "market_orders":          true,
+  "limit_orders":           true,
+  "stop_orders":            true,
+  "stop_market_orders":     true,
+  "margin_trading":         true,
+  "product_types":          ["SPOT", "CFD"],
+  "options_trading":        false,
+  "futures_trading":        false,
+  "fractional_shares":      true,
+  "websocket_streaming":    true,
+  "historical_data":        true,
+  "paper_execution_support": true,
+  "live_execution_support": true,
+  "paper_venue_id":         "paper_oanda",
+  "live_venue_id":          "oanda_main",
+  "authentication_type":    "bearer_token",
+  "rate_limits": {
+    "orders_per_second":    100,
+    "quotes_per_second":    100,
+    "history_per_minute":   120
+  },
+  "constraints": {
+    "min_order_value_inr":  null,
+    "max_order_qty":        null,
+    "supports_amo":         false,
+    "supports_bo":          false,
+    "supports_co":          false
+  }
+}

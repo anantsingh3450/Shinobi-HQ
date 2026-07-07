@@ -2,11 +2,11 @@
 
 **The only module the user interacts with.** Routes intent to bots and enforces workflow gates.
 
-## Submodules (planned)
+## Submodules
 
 | Folder | Responsibility |
 |--------|----------------|
-| `orchestrator/` | Workflow engine — drives Research → Strategy → Backtest → Risk → Execution → Improvement |
+| `orchestrator/` | Workflow engine — drives Research → Strategy → Backtest → Risk → Execution → Tax → Portfolio |
 | `router/` | Command parsing and bot dispatch |
 | `memory/` | Session state, mission context, conversation history |
 | `interface/` | User channels — Telegram, CLI, HTTP API |

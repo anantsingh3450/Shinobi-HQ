@@ -1,0 +1,34 @@
+{
+  "_broker_id": "coindcx",
+  "_description": "CoinDCX — Indian crypto exchange supporting spot delivery.",
+  "supported_exchanges":    ["BINANCE"],
+  "supported_instruments":  ["crypto_spot"],
+  "market_orders":          true,
+  "limit_orders":           true,
+  "stop_orders":            true,
+  "stop_market_orders":     true,
+  "margin_trading":         false,
+  "product_types":          ["DELIVERY"],
+  "options_trading":        false,
+  "futures_trading":        false,
+  "fractional_shares":      true,
+  "websocket_streaming":    true,
+  "historical_data":        true,
+  "paper_execution_support": true,
+  "live_execution_support": true,
+  "paper_venue_id":         "paper_coindcx",
+  "live_venue_id":          "coindcx_main",
+  "authentication_type":    "api_key_secret",
+  "rate_limits": {
+    "orders_per_second":    10,
+    "quotes_per_second":    10,
+    "history_per_minute":   120
+  },
+  "constraints": {
+    "min_order_value_inr":  100,
+    "max_order_qty":        null,
+    "supports_amo":         false,
+    "supports_bo":          false,
+    "supports_co":          false
+  }
+}

@@ -8,14 +8,10 @@ pure data structures with no external dependencies, suitable for use as the
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
-
-
-def utc_now() -> datetime:
-    """Return the current UTC timestamp with timezone awareness."""
-    return datetime.now(UTC)
+from shared.utils import utc_now
 
 
 @dataclass(frozen=True, slots=True)

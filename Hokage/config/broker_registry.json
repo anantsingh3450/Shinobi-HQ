@@ -1,0 +1,13 @@
+{
+  "_comment": "Hokage Broker Registry — exchange-to-broker mapping ONLY. Broker capability profiles live in config/brokers/<broker_id>.json. To change a broker: edit this file only. No source code changes required.",
+  "exchange_broker_map": {
+    "NSE":     "zerodha",
+    "BSE":     "zerodha",
+    "MCX":     "zerodha",
+    "BINANCE": "coindcx",
+    "NASDAQ":  "alpaca",
+    "NYSE":    "alpaca",
+    "FOREX":   "oanda",
+    "GLOBAL":  "alpaca"
+  }
+}

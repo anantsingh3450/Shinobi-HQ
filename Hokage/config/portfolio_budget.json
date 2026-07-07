@@ -1,0 +1,19 @@
+{
+  "max_deployable_capital_pct": 80.0,
+  "cash_reserve_target_pct": 20.0,
+  "asset_class_budgets": {
+    "equity": { "target": 50.0, "min": 30.0, "max": 70.0 },
+    "commodities": { "target": 20.0, "min": 10.0, "max": 40.0 },
+    "crypto": { "target": 10.0, "min": 0.0, "max": 20.0 },
+    "forex": { "target": 10.0, "min": 5.0, "max": 20.0 }
+  },
+  "exchange_budgets": {
+    "nse": { "target": 60.0, "min": 30.0, "max": 80.0 },
+    "mcx": { "target": 30.0, "min": 10.0, "max": 50.0 },
+    "crypto": { "target": 10.0, "min": 0.0, "max": 20.0 }
+  },
+  "strategy_budgets": {
+    "autotrend": { "target": 70.0, "min": 40.0, "max": 90.0 },
+    "meanreversion": { "target": 30.0, "min": 10.0, "max": 50.0 }
+  }
+}

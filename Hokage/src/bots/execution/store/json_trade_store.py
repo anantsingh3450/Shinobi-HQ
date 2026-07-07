@@ -36,6 +36,18 @@ class JsonTradeStore:
                               Created automatically on first write.
         """
         self._output_directory = output_directory
+        
+        # Determine if SQLite is active
+        from hokage.memory.resolver import PathResolver
+        from shared.persistence.sqlite_engine import SqliteStorageEngine
+        from shared.persistence.sqlite_stores import SqliteTradeStore
+        
+        resolver = PathResolver(output_directory.parent)
+        if SqliteStorageEngine.is_active(resolver):
+            engine = SqliteStorageEngine(resolver)
+            self._delegate = SqliteTradeStore(engine)
+        else:
+            self._delegate = None
 
     @property
     def output_directory(self) -> Path:
@@ -48,21 +60,28 @@ class JsonTradeStore:
         return self._output_directory / self._FILENAME
 
     def save(self, trade: TradeRecord) -> None:
-        """Append a trade record as a single JSON line.
+        """Append a trade record as a single JSON line or save to SQLite.
 
         Args:
             trade: The TradeRecord to persist.
         """
+        if self._delegate is not None:
+            self._delegate.save(trade)
+            return
+
         self._output_directory.mkdir(parents=True, exist_ok=True)
         with self.trades_file.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(trade.to_dict(), sort_keys=True) + "\n")
 
     def load_all(self) -> tuple[TradeRecord, ...]:
-        """Load all persisted trade records in insertion order.
+        """Load all persisted trade records in insertion order from SQLite or JSON.
 
         Returns:
             Tuple of TradeRecord objects. Empty tuple if file does not exist.
         """
+        if self._delegate is not None:
+            return self._delegate.load_all()
+
         if not self.trades_file.exists():
             return ()
 

@@ -2,7 +2,7 @@
 
 Shared core used by both paper and live execution.
 
-Responsibilities (planned):
+Responsibilities:
 
 - Load strategy spec
 - Generate signals on each bar/tick
@@ -11,4 +11,5 @@ Responsibilities (planned):
 
 Paper and live adapters in sibling folders consume these intents.
 
-No code yet.
+## Implementation
+The Execution Engine is implemented in `paper_engine.py`. It obtains market quotes, executes fills, and records trades to the local JSON store (`trades.jsonl`).

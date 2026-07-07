@@ -1,6 +1,6 @@
 # Source Code
 
-All Hokage application code lives here. No implementation yet — folders define module boundaries.
+All Hokage application code lives here. Phases 1–3B are implemented; see `PROJECT_STATE.md` for the current file tree.
 
 ```
 src/
@@ -10,4 +10,4 @@ src/
 └── integrations/    External service adapters (brokers, data, Telegram)
 ```
 
-Pipeline: `Research → Strategy → Backtest → Risk → Execution → Improvement`
+Pipeline: `Research → Strategy → Backtest → Risk → Execution → Tax → Portfolio`
