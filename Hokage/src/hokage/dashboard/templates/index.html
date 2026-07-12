@@ -139,24 +139,9 @@
                     </div>
                 </div>
 
-                <!-- Global Search Bar -->
-                <div style="display: flex; align-items: center; gap: 1rem; flex: 1; max-width: 250px; position: relative;">
-                    <input type="text" id="global-search-input" placeholder="🔍 Search logs and strategies..." style="width: 100%; background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); border-radius: 4px; padding: 0.4rem 0.8rem; color: #fff; font-size: 0.8rem;">
-                    <div id="global-search-results" class="hk-card" style="display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 1000; max-height: 400px; overflow-y: auto; margin-top: 0.5rem; background: rgba(15, 23, 42, 0.95); border: 1px solid var(--color-orange); padding: 0.5rem;">
-                        <div id="search-results-content"></div>
-                    </div>
-                </div>
 
-                <!-- Replay & Time Machine Controls -->
-                <div class="replay-controls-header" style="display: flex; align-items: center; gap: 0.5rem; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); padding: 0.25rem 0.5rem; border-radius: 4px;">
-                    <span style="font-size: 0.7rem; color: var(--color-orange); font-weight: 600; text-transform: uppercase;">Replay:</span>
-                    <input type="date" id="time-machine-date" style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); color: #fff; padding: 0.15rem; font-size: 0.7rem; border-radius: 3px; width: 110px;">
-                    <button id="btn-replay-play" class="btn-primary-sm" style="padding: 0.15rem 0.35rem; font-size: 0.65rem;">▶ Play</button>
-                    <button id="btn-replay-pause" class="btn-primary-sm" style="padding: 0.15rem 0.35rem; font-size: 0.65rem; display: none;">⏸ Pause</button>
-                    <button id="btn-replay-step" class="btn-primary-sm" style="padding: 0.15rem 0.35rem; font-size: 0.65rem;">⏭ Step</button>
-                </div>
-
-                <div class="header-status" style="display: flex; gap: 0.5rem;">
+                <div class="header-status" style="display: flex; gap: 0.5rem; align-items: center;">
+                    <button id="btn-broker-login" style="background-color: rgba(255,165,0,0.2); color: var(--color-orange); border: 1px solid var(--color-orange); padding: 0.2rem 0.6rem; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 0.75rem;" onclick="document.getElementById('broker-login-modal').style.display='flex'">Broker Login</button>
                     <div class="badge" id="badge-hokage-active" style="background-color: var(--color-green-glow); color: var(--color-green); border-color: var(--color-green); text-shadow: 0 0 10px rgba(57,255,20,0.3); animation: pulse 2s infinite;">HOKAGE IS ACTIVE</div>
                     <div class="badge mode-badge" id="badge-mode">Mode: READ_ONLY</div>
                     <div class="badge loop-badge" id="badge-loop">Loop: INACTIVE</div>
@@ -291,12 +276,7 @@
                             <button id="qa-new-opportunity" class="btn-primary-sm" style="flex: 1; padding: 0.6rem; display: flex; align-items: center; justify-content: center; gap: 0.4rem; background: rgba(255, 69, 0, 0.1); border: 1px solid var(--border-color); color: #fff; border-radius: 6px; cursor: pointer; font-size: 0.8rem; font-weight: 600;">
                                 🎯 New Opportunity
                             </button>
-                            <button id="qa-upload-document" class="btn-primary-sm" style="flex: 1; padding: 0.6rem; display: flex; align-items: center; justify-content: center; gap: 0.4rem; background: rgba(255, 69, 0, 0.1); border: 1px solid var(--border-color); color: #fff; border-radius: 6px; cursor: pointer; font-size: 0.8rem; font-weight: 600;">
-                                📁 Upload Document
-                            </button>
-                            <button id="qa-voice-command" class="btn-primary-sm" style="flex: 1; padding: 0.6rem; display: flex; align-items: center; justify-content: center; gap: 0.4rem; background: rgba(255, 69, 0, 0.1); border: 1px solid var(--border-color); color: #fff; border-radius: 6px; cursor: pointer; font-size: 0.8rem; font-weight: 600;">
-                                🎙️ Voice Command
-                            </button>
+
                         </div>
                         
                         <!-- 4. Bottom Widget Panel Grid -->
@@ -411,18 +391,8 @@
                     <!-- Right Sidebar Column -->
                     <div style="display: flex; flex-direction: column; gap: 1.5rem;">
                         
-                        <!-- 5. Scrolling System Activity Feed -->
-                        <div class="glass-panel" style="padding: 1rem; border-radius: 12px; display: flex; flex-direction: column; height: 320px;">
-                            <div class="panel-header" style="margin-bottom: 0.8rem;">
-                                <h3 style="margin: 0; font-size: 0.95rem; color: var(--color-orange);">System Activity Feed</h3>
-                            </div>
-                            <div id="log-terminal" style="flex: 1; background: #000; border: 1px solid var(--border-color); border-radius: 6px; font-family: monospace; font-size: 0.75rem; padding: 0.5rem; overflow-y: auto; color: #39ff14; line-height: 1.4;">
-                                <div style="color: var(--text-muted);">[SYSTEM] Listening to Shinobi activity feed...</div>
-                            </div>
-                        </div>
-                        
                         <!-- 6. High-Priority Risk/Strategy Notifications -->
-                        <div class="glass-panel" style="padding: 1rem; border-radius: 12px; display: flex; flex-direction: column; height: 320px;">
+                        <div class="glass-panel" style="padding: 1rem; border-radius: 12px; display: flex; flex-direction: column; min-height: 660px; height: 100%;">
                             <div class="panel-header" style="margin-bottom: 0.8rem; display: flex; justify-content: space-between; align-items: center;">
                                 <h3 style="margin: 0; font-size: 0.95rem; color: var(--color-orange);">Alert Notifications</h3>
                                 <span id="RISK_PANEL" class="hk-badge" style="font-size: 0.65rem; background: var(--color-green-glow); color: var(--color-green); padding: 0.1rem 0.4rem; border-radius: 4px;">PASS</span>
@@ -1795,5 +1765,70 @@
         </div>
     </div>
 
+    <!-- Broker Login Modal -->
+    <div id="broker-login-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 10000; align-items: center; justify-content: center;">
+        <div style="background: var(--bg-card); padding: 2rem; border-radius: 8px; border: 1px solid var(--border-color); width: 400px; max-width: 90%;">
+            <h3 style="margin-top: 0; margin-bottom: 1rem; color: var(--color-orange);">Broker Authentication</h3>
+            <p style="font-size: 0.9rem; margin-bottom: 1rem; color: #ccc;">1. Click the button below to open the Kite login page.</p>
+            <button id="btn-get-login-url" style="width: 100%; padding: 0.5rem; background: var(--color-orange); color: white; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; margin-bottom: 1.5rem;">Open Kite Login</button>
+            
+            <p style="font-size: 0.9rem; margin-bottom: 0.5rem; color: #ccc;">2. Paste the redirect URL (or request_token) here:</p>
+            <p style="font-size: 0.75rem; margin-bottom: 1rem; color: var(--color-gold);"><em>(Note: If the login tab says "Authentication successful", you are already connected and can just close this!)</em></p>
+            <input type="text" id="input-broker-token" placeholder="https://.../?request_token=..." style="width: 100%; padding: 0.5rem; background: rgba(0,0,0,0.5); border: 1px solid var(--border-color); color: white; border-radius: 4px; margin-bottom: 1rem;">
+            
+            <div style="display: flex; justify-content: flex-end; gap: 1rem;">
+                <button onclick="document.getElementById('broker-login-modal').style.display='none'" style="padding: 0.5rem 1rem; background: transparent; border: 1px solid var(--border-color); color: white; border-radius: 4px; cursor: pointer;">Cancel</button>
+                <button id="btn-submit-token" style="padding: 0.5rem 1rem; background: var(--color-green); border: none; color: white; border-radius: 4px; cursor: pointer; font-weight: bold;">Submit</button>
+            </div>
+            <div id="broker-login-status" style="margin-top: 1rem; font-size: 0.85rem; text-align: center;"></div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('btn-get-login-url').addEventListener('click', async () => {
+            try {
+                const res = await fetch('/api/v1/broker/login_url');
+                const data = await res.json();
+                if (data.url) {
+                    window.open(data.url, '_blank');
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (e) {
+                alert('Failed to fetch login URL.');
+            }
+        });
+
+        document.getElementById('btn-submit-token').addEventListener('click', async () => {
+            const token = document.getElementById('input-broker-token').value;
+            const statusDiv = document.getElementById('broker-login-status');
+            if (!token) {
+                statusDiv.innerHTML = '<span style="color: var(--color-red);">Please enter a token or URL.</span>';
+                return;
+            }
+            
+            statusDiv.innerHTML = '<span style="color: var(--color-orange);">Processing...</span>';
+            try {
+                const res = await fetch('/api/v1/broker/token', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({token})
+                });
+                const data = await res.json();
+                if (data.success) {
+                    statusDiv.innerHTML = '<span style="color: var(--color-green);">✅ Login Successful! Synchronized.</span>';
+                    setTimeout(() => {
+                        document.getElementById('broker-login-modal').style.display = 'none';
+                        statusDiv.innerHTML = '';
+                        document.getElementById('input-broker-token').value = '';
+                    }, 2000);
+                } else {
+                    statusDiv.innerHTML = `<span style="color: var(--color-red);">❌ Error: ${data.error}</span>`;
+                }
+            } catch (e) {
+                statusDiv.innerHTML = '<span style="color: var(--color-red);">❌ Network error occurred.</span>';
+            }
+        });
+    </script>
 </body>
 </html>

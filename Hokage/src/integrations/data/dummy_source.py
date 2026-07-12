@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from bots.research.interfaces import ResearchSource
 from bots.research.models import ResearchFinding, ResearchQuery, SourceReference, utc_now
 
 

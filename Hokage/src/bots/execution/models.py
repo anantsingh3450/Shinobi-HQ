@@ -111,7 +111,6 @@ class TradeRecord:
     def from_dict(cls, data: dict) -> TradeRecord:
         """Deserialize a trade record from a dictionary."""
         from datetime import datetime
-        from typing import Any
 
         return cls(
             trade_id=data["trade_id"],

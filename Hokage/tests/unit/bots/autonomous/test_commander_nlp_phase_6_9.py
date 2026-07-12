@@ -1,7 +1,6 @@
 """Unit tests for Phase 6.9: Natural Language & Voice Commander."""
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
 
@@ -80,7 +79,7 @@ def test_commander_conversation_engine(mock_orchestrator, mock_cache):
     assert "portfolio" in res_port.lower()
     
     # Test market query
-    res_mkt = engine.respond("Explain today's market")
+    res_mkt = engine.respond("/intel")
     assert "regime" in res_mkt.lower()
     
     # Test risk query

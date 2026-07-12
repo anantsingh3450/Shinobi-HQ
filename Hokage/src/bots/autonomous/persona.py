@@ -4,7 +4,6 @@ import json
 import logging
 import random
 from pathlib import Path
-from typing import Any
 
 from hokage.memory.resolver import PathResolver
 

@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import json
 import threading
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-import pytest
 
 from hokage.memory.resolver import PathResolver
 from shared.watchdog.heartbeat import Heartbeat, HeartbeatTracker

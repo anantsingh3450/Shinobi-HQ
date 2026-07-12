@@ -8,7 +8,6 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from hokage.memory.resolver import PathResolver
@@ -300,7 +299,7 @@ class StrategyPortfolioManager:
             # Fallback to Heuristic strategy
             fallback_id = "strat-autotrend-equities-v1"
             best_strategy = self.portfolio["strategies"][fallback_id]
-            selection_reason = f"No specialized match found. Defaulted to Heuristic AutoTrend."
+            selection_reason = "No specialized match found. Defaulted to Heuristic AutoTrend."
 
         return {
             "strategy": best_strategy,
@@ -468,7 +467,7 @@ class StrategyPortfolioManager:
         explanation = f"--- STRATEGY SELECTION EXPLANATION FOR {asset_upper} ---\n"
         explanation += f"Selected Strategy: {selected_strat['name']} (v{selected_strat['version']})\n"
         explanation += f"Reason: {res['reason']}\n\n"
-        explanation += f"Coexisting Strategies Audited:\n"
+        explanation += "Coexisting Strategies Audited:\n"
 
         for s_id, strat in self.portfolio["strategies"].items():
             status = strat["status"]

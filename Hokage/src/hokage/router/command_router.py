@@ -13,9 +13,7 @@ Supports:
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from collections import Counter
-from datetime import datetime, time, date, timezone
+from datetime import date
 
 from hokage.orchestrator.pipeline import HokageOrchestrator
 from bots.autonomous.trade_dna import TradeDNAEngine
@@ -281,6 +279,16 @@ class CommandRouter:
                 return "Error: Please specify a topic. Usage: research <topic>"
             try:
                 return self.orchestrator.execute_research_to_strategy(query)
+            except Exception as exc:
+                return f"Pipeline failed: {exc}"
+
+        # take a trade / take any trade - bypass to demonstrate paper trading
+        if lower_cmd in ("take a trade", "take any trade", "execute a trade", "take trade"):
+            demo_symbol = "CRUDEOIL24NOVFUT" # Or just a standard symbol
+            try:
+                msg = f"Executing manual discretionary override. Initiating unverified paper trade sequence on {demo_symbol}..."
+                res = self.orchestrator.execute_paper_trade(demo_symbol)
+                return f"{msg}\n\nPipeline Output:\n{res}"
             except Exception as exc:
                 return f"Pipeline failed: {exc}"
 
@@ -612,11 +620,11 @@ class CommandRouter:
             f"Commander: {profile.commander_title} {profile.commander_name}",
             f"Execution Mode: {profile.environment.mode.value.upper()}",
             f"System State: {sys_state}",
-            f"Mission Engine: READY",
-            f"AI Coach: READY",
-            f"Knowledge Graph: READY",
-            f"Watchdog: ACTIVE",
-            f"EventBus: ACTIVE",
+            "Mission Engine: READY",
+            "AI Coach: READY",
+            "Knowledge Graph: READY",
+            "Watchdog: ACTIVE",
+            "EventBus: ACTIVE",
             "",
             "Good morning, Commander. Awaiting your orders.",
             "========================================"
@@ -2115,7 +2123,7 @@ class CommandRouter:
             # Show status summary of secrets
             lines = [
                 "=== Hokage Secrets Status ===",
-                f"Secure Vault Active : YES (OS-Native Keyring)",
+                "Secure Vault Active : YES (OS-Native Keyring)",
                 f"Storage Location    : {sm.secrets_file_path}",
                 f"Test Mode           : {'ACTIVE (Mock)' if sm.test_mode else 'INACTIVE'}",
                 "Configured Credentials:",

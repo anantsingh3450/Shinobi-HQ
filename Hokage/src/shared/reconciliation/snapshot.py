@@ -74,7 +74,7 @@ class BrokerSnapshot:
             if hasattr(venue, "_trade_store") and venue._trade_store is not None:
                 try:
                     trades = venue._trade_store.load_all()
-                    from integrations.brokers.models import OrderSide, OrderStatus, OrderType
+                    from integrations.brokers.models import OrderSide, OrderStatus
                     from integrations.data.models import Instrument, AssetClass, Exchange
                     for t in trades:
                         inst = Instrument(symbol=t.market, asset_class=AssetClass.INDIAN_EQUITY, exchange=Exchange.NSE)

@@ -6,7 +6,6 @@ independently. Determines whether an asset is currently tradable.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from datetime import datetime, time as dt_time, timezone, tzinfo, timedelta
 
 from integrations.data.models import Exchange, AssetClass
@@ -104,7 +103,7 @@ class TradingSessionManager:
             return Exchange.FOREX
 
         # MCX
-        if asset_upper in ("GOLD", "GOLDM", "CRUDE", "CRUDE_OIL", "CRUDEOIL", "NATURALGAS", "SILVER", "COPPER"):
+        if asset_upper in ("GOLD", "GOLDM", "CRUDE", "CRUDE_OIL", "CRUDEOIL", "NATURALGAS", "SILVER", "COPPER") or "CRUDEOIL" in asset_upper or "NATURALGAS" in asset_upper or "GOLD" in asset_upper:
             return Exchange.MCX
 
         # NASDAQ / US Equity

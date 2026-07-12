@@ -8,7 +8,7 @@ import logging
 from enum import Enum
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any
 
 logger = logging.getLogger("Hokage.CommandQueue")
 

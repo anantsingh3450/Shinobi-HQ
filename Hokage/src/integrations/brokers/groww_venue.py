@@ -12,7 +12,6 @@ from integrations.brokers.models import (
     ConnectionStatus,
     OrderRequest,
     OrderResponse,
-    OrderStatus,
     VenueCapabilities,
     VenuePosition,
     VenueHolding,

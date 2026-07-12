@@ -12,7 +12,6 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from hokage.memory.resolver import PathResolver
@@ -151,9 +150,9 @@ class InvestmentCommittee:
         """Runs independent evaluations across all 9 members to make a decision."""
         # 1. Research Committee
         res_score = proposal.confidence_score if hasattr(proposal, "confidence_score") else 50.0
-        if res_score >= 70.0:
+        if res_score >= 60.0:
             v_res = Vote("APPROVE", res_score, f"Strong research conviction score of {res_score}.", {"proposal_score": res_score}, 1.0 - (res_score / 100.0))
-        elif res_score >= 50.0:
+        elif res_score >= 45.0:
             v_res = Vote("ABSTAIN", res_score, f"Moderate research conviction score of {res_score}.", {"proposal_score": res_score}, 0.5)
         else:
             v_res = Vote("REJECT", res_score, f"Insufficient research conviction score of {res_score}.", {"proposal_score": res_score}, res_score / 100.0)
@@ -161,9 +160,9 @@ class InvestmentCommittee:
         # 2. Trend Committee
         win_rate = backtest_result.win_rate if hasattr(backtest_result, "win_rate") else 50.0
         market_regime = context.get("market_regime", "NORMAL")
-        if market_regime in ("NORMAL", "RISK-ON") and win_rate >= 55.0:
-            v_trend = Vote("APPROVE", win_rate, f"Favorable regime {market_regime} and strong backtest win rate {win_rate}%.", {"regime": market_regime, "win_rate": win_rate}, 0.1)
-        elif win_rate >= 45.0:
+        if market_regime in ("NORMAL", "RISK-ON") and win_rate >= 50.0:
+            v_trend = Vote("APPROVE", win_rate, f"Favorable regime {market_regime} and acceptable backtest win rate {win_rate}%.", {"regime": market_regime, "win_rate": win_rate}, 0.1)
+        elif win_rate >= 40.0:
             v_trend = Vote("ABSTAIN", win_rate, f"Regime {market_regime} with moderate win rate {win_rate}%.", {"regime": market_regime, "win_rate": win_rate}, 0.4)
         else:
             v_trend = Vote("REJECT", win_rate, f"Unfavorable trend parameters (win rate {win_rate}%).", {"regime": market_regime, "win_rate": win_rate}, 0.6)
@@ -171,9 +170,9 @@ class InvestmentCommittee:
         # 3. Market Structure Committee
         profit_factor = backtest_result.profit_factor if hasattr(backtest_result, "profit_factor") else 1.0
         struct_conf = min(100.0, profit_factor * 40.0)
-        if profit_factor >= 1.5:
-            v_struct = Vote("APPROVE", struct_conf, f"Strong reward/risk structure with profit factor {profit_factor}.", {"profit_factor": profit_factor}, 0.15)
-        elif profit_factor >= 1.1:
+        if profit_factor >= 1.3:
+            v_struct = Vote("APPROVE", struct_conf, f"Acceptable reward/risk structure with profit factor {profit_factor}.", {"profit_factor": profit_factor}, 0.15)
+        elif profit_factor >= 1.0:
             v_struct = Vote("ABSTAIN", struct_conf, f"Marginal reward/risk profile (profit factor {profit_factor}).", {"profit_factor": profit_factor}, 0.4)
         else:
             v_struct = Vote("REJECT", struct_conf, f"Poor reward/risk structure (profit factor {profit_factor}).", {"profit_factor": profit_factor}, 0.7)
@@ -188,15 +187,15 @@ class InvestmentCommittee:
         else:
             v_macro = Vote("REJECT", macro_conf, f"Sector rotation outflows of {flow_strength:.3f}.", {"flow_strength": flow_strength}, 0.6)
 
-        # 5. Volatility Committee
+        # 5. Volatility Committee — relaxed: REJECT only on extreme panic (VIX delta >=4.0)
         vix_impact = context.get("vix_impact_delta", 0.0)
         vol_conf = max(0.0, 100.0 - (vix_impact * 20.0))
-        if vix_impact < 1.5:
+        if vix_impact < 2.5:
             v_vol = Vote("APPROVE", vol_conf, f"Volatility levels within boundaries (VIX delta {vix_impact:.2f}).", {"vix_impact": vix_impact}, 0.1)
-        elif vix_impact < 3.0:
-            v_vol = Vote("ABSTAIN", vol_conf, f"Elevated volatility detected (VIX delta {vix_impact:.2f}).", {"vix_impact": vix_impact}, 0.3)
+        elif vix_impact < 4.0:
+            v_vol = Vote("ABSTAIN", vol_conf, f"Elevated volatility detected (VIX delta {vix_impact:.2f}). Proceeding with caution.", {"vix_impact": vix_impact}, 0.3)
         else:
-            v_vol = Vote("REJECT", vol_conf, f"VIX delta {vix_impact:.2f} exceeds extreme risk thresholds.", {"vix_impact": vix_impact}, 0.8)
+            v_vol = Vote("REJECT", vol_conf, f"VIX delta {vix_impact:.2f} exceeds extreme panic thresholds. Vetoing.", {"vix_impact": vix_impact}, 0.8)
 
         # 6. Risk Committee (Veto)
         risk_approved = context.get("risk_approved", False)
@@ -265,9 +264,12 @@ class InvestmentCommittee:
         non_abstaining = approvals + rejections
         approval_pct = (approvals / non_abstaining * 100.0) if non_abstaining > 0 else 0.0
 
-        # Calculate final verdict
-        # Approved if no vetoes AND approvals > rejections
-        if not veto_triggered and approvals > rejections:
+        # Calculate final verdict:
+        # APPROVED if:
+        #   - No hard veto (Risk, CapitalPreservation, LiquidityExecution)
+        #   - AND approvals >= rejections (ABSTAIN votes are neutral — they do NOT count as rejections)
+        # This ensures ABSTAIN from noisy committees (Macro, Research, Strategy) doesn't kill good trades.
+        if not veto_triggered and approvals >= rejections:
             final_verdict = "APPROVED"
         else:
             final_verdict = "REJECTED"

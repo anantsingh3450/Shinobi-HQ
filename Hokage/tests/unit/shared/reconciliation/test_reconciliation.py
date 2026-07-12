@@ -1,13 +1,10 @@
 """Comprehensive verification tests for the Broker Reconciliation Engine and Safety Gating."""
 from __future__ import annotations
 
-import json
-import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -21,25 +18,20 @@ from integrations.brokers.models import (
     OrderRequest,
     OrderResponse,
     OrderSide,
-    OrderStatus,
     VenueCapabilities,
     VenuePosition,
     VenueHolding,
 )
 from integrations.data.models import Instrument, AssetClass, Exchange
 from bots.portfolio.models import Account, Position
-from bots.execution.models import TradeRecord, TradeDirection, TradeStatus
+from bots.execution.models import TradeDirection, TradeStatus
 from bots.strategy.models import StrategyProposal
 from bots.portfolio.store import JsonPortfolioStore
 from bots.execution.store.json_trade_store import JsonTradeStore
-from bots.autonomous.decision_journal import DecisionJournalSystem
 from bots.risk.rules import CompositeRiskManager, ReconciliationFreezeRiskRule
 from bots.risk.risk_bot import RiskBot
 
-from shared.reconciliation.snapshot import BrokerSnapshot, LocalSnapshot
-from shared.reconciliation.classifier import DiscrepancyType, SeverityLevel, Discrepancy
-from shared.reconciliation.difference import DifferenceEngine
-from shared.reconciliation.report import ReconciliationReport
+from shared.reconciliation.classifier import DiscrepancyType, SeverityLevel
 from shared.reconciliation.store import ReconciliationStore
 from shared.reconciliation.engine import ReconciliationEngine
 

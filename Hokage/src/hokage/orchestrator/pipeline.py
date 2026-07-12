@@ -6,7 +6,7 @@ CommandRouter calls. No business logic lives here.
 from __future__ import annotations
 
 from pathlib import Path
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 from bots.backtest.backtest_bot import BacktestBot
 from bots.backtest.engine.historical_backtest_engine import HistoricalBacktestEngine
@@ -295,9 +295,14 @@ class HokageOrchestrator:
             else:
                 mode_enum = profile_mode
                 
+            if mode_enum in (ExecutionMode.PAPER, ExecutionMode.HYBRID):
+                new_active_venue_id = "paper_zerodha"
+            else:
+                new_active_venue_id = "kite_main"
+                
             self.context = ExecutionContext(
                 execution_mode=mode_enum,
-                active_venue_id=self.context.active_venue_id,
+                active_venue_id=new_active_venue_id,
                 brain_id=self.context.brain_id,
                 authority_level=self.context.authority_level,
             )

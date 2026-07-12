@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,7 +9,6 @@ import pytest
 from bots.execution.models import ExecutionMode, TradeDirection, TradeRecord, TradeStatus
 from bots.portfolio.models import Account, Position
 from hokage.dashboard.models import (
-    AccountMetrics,
     PortfolioOverview,
     PositionSnapshot,
     TradeSnapshot,

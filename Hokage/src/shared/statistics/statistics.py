@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import math
-from shared.statistics.covariance import mean, autocovariance
+from shared.statistics.covariance import mean
 from shared.statistics.lag_selection import get_optimal_lag
 from shared.statistics.newey_west import newey_west_se
 

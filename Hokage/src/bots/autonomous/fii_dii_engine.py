@@ -1,3 +1,5 @@
+# ??  MOCK-ONLY STUB: Both branches of this module return synthetic mock data.
+# Real data provider integration is pending. Do NOT use for live trading decisions.
 from __future__ import annotations
 
 import logging

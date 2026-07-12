@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from bots.autonomous.research_intel import MarketScanner, NewsIntelligenceEngine, GeopoliticalIntelligenceEngine
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from bots.autonomous.cache import IntelligenceCache
     from bots.autonomous.predictive import MarketRegimeEngine, PredictionAccuracyTracker
     from bots.autonomous.conviction import ConvictionScoreEngine, NoTradeDecisionEngine
-    from bots.autonomous.portfolio_intelligence import PortfolioAwareness, PositionAllocationEngine
+    from bots.autonomous.portfolio_intelligence import PortfolioAwareness
     from bots.autonomous.trust_engine import ElderTrustEngine
     from bots.autonomous.capital_preservation import CapitalPreservationEngine
     from bots.autonomous.personality_engine import PortfolioManagerPersonalityLayer
@@ -686,7 +686,7 @@ class BriefingGenerator:
             "### Trading Highlights",
             f"- **Biggest Winner**: {best_trade_desc}",
             f"- **Biggest Loser**: {worst_trade_desc}",
-            f"- **Operational Observations**: Exits were handled cleanly via trailing stop-losses. No execution slips or invalid double-entries occurred.",
+            "- **Operational Observations**: Exits were handled cleanly via trailing stop-losses. No execution slips or invalid double-entries occurred.",
             "",
             "## 2. Financial Performance Metrics & Trust Diagnostics",
             "",
@@ -697,15 +697,15 @@ class BriefingGenerator:
             "",
             "### Confidence Calibration & Edge Accuracy",
             f"- **Calibration Grade**: **{calibration_grade}** (Brier Score: {brier_score:.4f})",
-            f"  *Interpretation:* Our predicted conviction scores align closely with actual market outcomes, indicating that Hokage is neither overly optimistic nor pessimistic about its edge.",
+            "  *Interpretation:* Our predicted conviction scores align closely with actual market outcomes, indicating that Hokage is neither overly optimistic nor pessimistic about its edge.",
             "",
             "### Execution Quality Summary",
             f"- **Execution Quality Score**: **{execution_quality_score:.1f}/100** (Health: **{execution_quality_health}**)",
-            f"  *Interpretation:* Slippage, latencies, and order fills remained within acceptable parameters, verifying that PaperVenue's realism profiles are modeling real transaction friction accurately.",
+            "  *Interpretation:* Slippage, latencies, and order fills remained within acceptable parameters, verifying that PaperVenue's realism profiles are modeling real transaction friction accurately.",
             "",
             "## 3. Market Post-Mortem",
             f"- **Market Regime**: {market_regime} (VIX Stress Delta: {vix_stress_delta:+.2f})",
-            f"- **Sector Rotation Report**: Capital rotated predominantly out of weak sectors into strong sectors.",
+            "- **Sector Rotation Report**: Capital rotated predominantly out of weak sectors into strong sectors.",
             f"- **Lessons Learned**: *{report.lessons_learned}*"
         ])
 

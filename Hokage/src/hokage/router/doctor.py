@@ -12,7 +12,6 @@ import time
 import json
 import logging
 import platform
-import threading
 from pathlib import Path
 from typing import Any, Dict, List
 

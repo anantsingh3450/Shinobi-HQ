@@ -3,7 +3,6 @@
 Verifies pattern matching, keyword association, and fallback routing logic.
 """
 from __future__ import annotations
-import pytest
 
 from hokage.router.nl_router import NaturalLanguageRouter
 

@@ -11,7 +11,6 @@ if TYPE_CHECKING:
     from shared.discovery.models import (
         Opportunity,
         CrossMarketPosition,
-        CurrencyExposure,
         MacroIndicators,
     )
 

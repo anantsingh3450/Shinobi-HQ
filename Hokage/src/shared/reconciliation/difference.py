@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
 
 from shared.reconciliation.snapshot import BrokerSnapshot, LocalSnapshot
 from shared.reconciliation.classifier import Discrepancy, DiscrepancyType, DiscrepancyClassifier

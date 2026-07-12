@@ -1,0 +1,26 @@
+{
+  "commander_name": "Anant",
+  "commander_title": "Elder",
+  "environment": {
+    "mode": "PAPER",
+    "base_currency": "INR"
+  },
+  "horizon": {
+    "phase": "ALPHA",
+    "mode": "FOCUSED",
+    "active_universe": [
+      "CRUDE_OIL"
+    ]
+  },
+  "risk": {
+    "risk_mode": "DEFENSIVE",
+    "capital_preservation": true,
+    "max_positions": 1
+  },
+  "portfolio": {
+    "starting_capital": 500000
+  },
+  "tax": {
+    "tax_aware": true
+  }
+}

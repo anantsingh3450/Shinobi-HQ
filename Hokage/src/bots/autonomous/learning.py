@@ -6,7 +6,7 @@ portfolio outcomes, archiving key event lessons in permanent memory.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:

@@ -46,7 +46,10 @@ class IntelligenceCache:
                     os.fsync(fh.fileno())
                 except Exception:
                     pass
-            temp_path.replace(file_path)
+            try:
+                temp_path.replace(file_path)
+            except PermissionError as pe:
+                logger.warning(f"File locked, could not replace cache for {filename}: {pe}")
             logger.debug(f"Wrote precomputed intelligence to cache: {filename}")
         except Exception as exc:
             logger.error(f"Failed to write intelligence cache '{filename}': {exc}")

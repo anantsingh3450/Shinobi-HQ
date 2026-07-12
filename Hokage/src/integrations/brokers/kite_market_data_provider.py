@@ -78,19 +78,36 @@ class KiteMarketDataProvider(MarketDataProvider):
 
         time_since_last_ws = (datetime.now() - self._last_ws_tick).total_seconds()
         if is_market_hours and time_since_last_ws > 4.0:
-            logger.warning(
+            logger.debug(
                 f"Feed Freshness Watchdog: WebSocket ticks stalled for {time_since_last_ws:.2f}s during market hours. "
-                f"Falling back to REST polling instantly for {market}."
+                f"Operating on standard REST polling instantly for {market}."
             )
             self._last_ws_tick = datetime.now() # Reset watchdog tick on fallback trigger
+
+        import time
+        import urllib3
+        import requests
 
         client = self._connection_manager.get_kite_client()
         inst = self.resolve_instrument(market)
 
-        exchange_str = "NSE" if inst.exchange == Exchange.NSE else "BSE"
+        exchange_str = inst.exchange.value if inst.exchange.value in ("NSE", "BSE", "MCX") else "NSE"
         kite_symbol = f"{exchange_str}:{inst.symbol}"
 
-        quotes = client.quote([kite_symbol])
+        max_retries = 3
+        quotes = {}
+        for attempt in range(max_retries):
+            try:
+                quotes = client.quote([kite_symbol])
+                break
+            except (requests.exceptions.RequestException, urllib3.exceptions.HTTPError, Exception) as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"Kite API Network Error on {kite_symbol} after {max_retries} attempts: {e}")
+                    raise
+                wait_time = 2 ** attempt
+                logger.warning(f"Kite API Network Error fetching {kite_symbol}. Retrying in {wait_time}s... ({e})")
+                time.sleep(wait_time)
+
         data = quotes.get(kite_symbol, {})
         last_price = float(data.get("last_price", 0.0))
         if last_price <= 0:
@@ -104,6 +121,8 @@ class KiteMarketDataProvider(MarketDataProvider):
         if data.get("sell") and len(data["sell"]) > 0:
             ask = float(data["sell"][0].get("price", last_price))
 
+        previous_close = data.get("ohlc", {}).get("close")
+
         return MarketQuote(
             instrument=inst,
             price=last_price,
@@ -111,7 +130,8 @@ class KiteMarketDataProvider(MarketDataProvider):
             quoted_at=utc_now(),
             bid=bid,
             ask=ask,
-            volume=float(data.get("volume", 0.0))
+            volume=float(data.get("volume", 0.0)),
+            previous_close=previous_close
         )
 
     def get_historical_candles(
@@ -119,12 +139,28 @@ class KiteMarketDataProvider(MarketDataProvider):
         request: HistoricalDataRequest,
     ) -> HistoricalDataResult:
         """Retrieve historical data candles."""
+        import time
+        import urllib3
+        import requests
+        import logging
+        logger = logging.getLogger("Hokage.MarketDataWatchdog")
+        
         client = self._connection_manager.get_kite_client()
         inst = request.instrument
-        exchange_str = "NSE" if inst.exchange == Exchange.NSE else "BSE"
+        exchange_str = inst.exchange.value if inst.exchange.value in ("NSE", "BSE", "MCX") else "NSE"
         kite_symbol = f"{exchange_str}:{inst.symbol}"
 
-        quotes = client.quote([kite_symbol])
+        max_retries = 3
+        quotes = {}
+        for attempt in range(max_retries):
+            try:
+                quotes = client.quote([kite_symbol])
+                break
+            except (requests.exceptions.RequestException, urllib3.exceptions.HTTPError, Exception):
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(2 ** attempt)
+
         token = quotes.get(kite_symbol, {}).get("instrument_token")
         if not token:
             raise ValueError(f"Could not retrieve instrument token for {kite_symbol}")

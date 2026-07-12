@@ -277,3 +277,27 @@ class SecretManager:
                     pass
 
         logger.info(f"Rollback complete. Restored {len(rolled_back)} secrets to plaintext in secrets.json.")
+
+def update_env_file(env_path: str, key: str, value: str) -> None:
+    """Update a specific key in the .env file safely."""
+    import os
+    if not os.path.exists(env_path):
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.write(f'{key}="{value}"\n')
+        return
+
+    with open(env_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    found = False
+    for i, line in enumerate(lines):
+        if line.strip().startswith(f"{key}="):
+            lines[i] = f'{key}="{value}"\n'
+            found = True
+            break
+            
+    if not found:
+        lines.append(f'{key}="{value}"\n')
+
+    with open(env_path, "w", encoding="utf-8") as f:
+        f.writelines(lines)

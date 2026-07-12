@@ -1,4 +1,3 @@
-import os
 import sys
 is_testing = "pytest" in sys.modules or any("pytest" in arg for arg in sys.argv)
 if not is_testing:

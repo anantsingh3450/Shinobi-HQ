@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
+from integrations.brokers.base_venue import BaseVenue
 from integrations.brokers.models import (
     OrderRequest,
     OrderResponse,
@@ -13,7 +14,7 @@ from integrations.brokers.models import (
 
 
 @runtime_checkable
-class BaseExecutionVenue(Protocol):
+class BaseExecutionVenue(BaseVenue, Protocol):
     """Unified port representing any custodian, exchange, dealer, or smart contract venue."""
 
     @property

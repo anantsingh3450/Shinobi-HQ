@@ -86,4 +86,17 @@ def test_create_dashboard_api_with_brain_root(tmp_path: Path) -> None:
         assert "jarque_bera" in diag_data
         assert "kupiec" in diag_data
 
+        # Verify manual trade execution via /chat
+        manual_buy_resp = client.post("/api/v1/chat", json={"message": "buy 10 TCS"})
+        assert manual_buy_resp.status_code == 200
+        buy_data = manual_buy_resp.json
+        assert buy_data["mapped_command"] == "execute_manual_trade"
+        assert "Executed manual BUY order for 10 shares of TCS" in buy_data["response_text"]
+
+        # Check if position registered in paper portfolio overview
+        portfolio_updated = client.get("/api/v1/portfolio/paper/overview")
+        assert portfolio_updated.status_code == 200
+        port_data = portfolio_updated.json
+        assert port_data["open_positions_count"] == 1
+
 

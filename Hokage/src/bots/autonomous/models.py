@@ -21,6 +21,38 @@ class ExitConditionType(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class TradeAutopsy:
+    """Rich post-trade context generated upon closing a position.
+    Used by the Pattern Reader engine to identify edge distribution.
+    """
+
+    trade_id: str
+    symbol: str
+    direction: str
+    entry_price: float
+    exit_price: float
+    pnl: float
+    return_pct: float
+    holding_time_seconds: int
+    exit_reason: str
+
+    # Context at Entry
+    ml_edge_score_at_entry: float
+    vix_at_entry: float
+    market_regime_at_entry: str
+    
+    # Trade Journey Metrics
+    max_adverse_excursion_pct: float
+    max_favorable_excursion_pct: float
+    
+    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+
+    def to_dict(self) -> dict[str, Any]:
+        from dataclasses import asdict
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
 class ExitCondition:
     """Trigger parameters for monitoring and exiting active positions."""
 

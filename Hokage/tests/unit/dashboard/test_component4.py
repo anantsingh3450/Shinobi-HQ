@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 from hokage.dashboard.api import create_dashboard_api
 from shared.persistence.sqlite_engine import SqliteStorageEngine
 from hokage.memory.resolver import PathResolver
-from hokage.orchestrator.command_queue import Command, CommandType, Role
 
 
 def test_component4_orchestration_and_apis(tmp_path: Path) -> None:

@@ -1,4 +1,3 @@
-import pytest
 from bots.autonomous.intelligence import (
     AdvancedMarketRegimeEngine,
     SessionBehaviorEngine,

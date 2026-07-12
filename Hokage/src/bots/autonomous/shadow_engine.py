@@ -9,7 +9,6 @@ import json
 import hashlib
 import logging
 from datetime import datetime, timezone
-from typing import Any
 
 from shared.persistence.sqlite_engine import SqliteStorageEngine
 from bots.autonomous.benchmark_engine import BenchmarkEngine

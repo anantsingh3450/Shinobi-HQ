@@ -1,0 +1,13 @@
+{
+  "brain_id": "52d8bd31-6598-4d02-a3c8-6b522883644e",
+  "brain_name": "Elder_Primary",
+  "owner_name": "Anant",
+  "display_name": "Village Elder",
+  "brain_role": "PRIMARY",
+  "brain_type": "PRIMARY",
+  "parent_brain_id": null,
+  "brain_generation": 0,
+  "schema_version": 1,
+  "created_at": 1783689123.239644,
+  "brain_fingerprint": ""
+}

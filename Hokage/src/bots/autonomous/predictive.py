@@ -6,11 +6,9 @@ automated no-trade logic, and prediction accuracy tracking.
 """
 from __future__ import annotations
 
-import os
 import json
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -275,7 +273,6 @@ class SectorFlowForecastEngine:
         return prediction_result
 
 
-from bots.autonomous.conviction import ConvictionScoreEngine, NoTradeDecisionEngine
 
 
 class PredictionAccuracyTracker:

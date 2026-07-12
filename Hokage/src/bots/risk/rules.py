@@ -6,6 +6,7 @@ from bots.portfolio.models import Account
 from bots.risk.interfaces import RiskManager
 from bots.risk.models import RiskVerdict
 from bots.strategy.models import StrategyProposal
+from integrations.brokers.models import ExecutionMode
 
 
 class MaxDrawdownRiskRule(RiskManager):
@@ -44,6 +45,31 @@ class MaxDrawdownRiskRule(RiskManager):
         )
 
 
+class StrictPaperModeRiskRule(RiskManager):
+    """Enforces that execution is strictly in PAPER mode unless explicitly overridden."""
+
+    def __init__(self, execution_mode: ExecutionMode = ExecutionMode.PAPER) -> None:
+        self.execution_mode = execution_mode
+
+    def check_order(
+        self,
+        account: Account,
+        proposal: StrategyProposal,
+        entry_price: float,
+    ) -> RiskVerdict:
+        if self.execution_mode == ExecutionMode.LIVE:
+            return RiskVerdict(
+                is_approved=False,
+                max_approved_quantity=0.0,
+                reason="System is locked. LIVE execution mode is strictly disabled unless overridden by Commander.",
+            )
+        return RiskVerdict(
+            is_approved=True,
+            max_approved_quantity=float("inf"),
+            reason="Approved (Paper Mode)",
+        )
+
+
 class MaxPositionSizeRiskRule(RiskManager):
     """Restricts the maximum exposure allowed for a single position."""
 
@@ -64,7 +90,11 @@ class MaxPositionSizeRiskRule(RiskManager):
     ) -> RiskVerdict:
         """Cap or reject order size if it exceeds the max allowed per position."""
         max_value = account.equity * self.max_size_pct
-        max_qty = round(max_value / entry_price, 6)
+        
+        # Options Premium overriding for Crude Oil (assume ~1.5% of spot as premium)
+        effective_entry_price = entry_price * 0.015 if proposal.market.upper() == "CRUDEOIL" else entry_price
+        
+        max_qty = round(max_value / effective_entry_price, 6)
 
         # Calculate existing quantity in this market
         existing_qty = 0.0
@@ -149,7 +179,10 @@ class LeverageRiskRule(RiskManager):
                 ),
             )
 
-        max_qty = round(available_exposure / entry_price, 6)
+        # Options Premium overriding for Crude Oil (assume ~1.5% of spot as premium)
+        effective_entry_price = entry_price * 0.015 if proposal.market.upper() == "CRUDEOIL" else entry_price
+
+        max_qty = round(available_exposure / effective_entry_price, 6)
         return RiskVerdict(
             is_approved=True,
             max_approved_quantity=max_qty,
@@ -686,7 +719,10 @@ class DynamicVaRSizingRule(RiskManager):
         daily_vol = self._daily_vol_of(proposal.market)
 
         # Compute the VaR for 1 unit → maximum quantity within VaR budget
-        var_per_unit = entry_price * daily_vol * self.z_score
+        # For Crude Oil, we use options, so risk is based on premium
+        effective_entry_price = entry_price * 0.015 if proposal.market.upper() == "CRUDEOIL" else entry_price
+        
+        var_per_unit = effective_entry_price * daily_vol * self.z_score
         if var_per_unit <= 0:
             return RiskVerdict(
                 is_approved=True,

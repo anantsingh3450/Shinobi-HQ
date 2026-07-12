@@ -7,8 +7,7 @@ from bots.autonomous.portfolio_intelligence import (
     PortfolioHealthEngine,
     PositionAllocationEngine,
 )
-from integrations.brokers.models import VenuePosition, AccountBalance
-from integrations.data.models import Instrument, AssetClass, Exchange
+from integrations.brokers.models import AccountBalance
 
 
 @pytest.fixture

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from datetime import datetime
 
 from bots.execution.engine.paper_engine import PaperEngine
 from bots.execution.execution_bot import ExecutionBot
@@ -12,7 +11,7 @@ from bots.portfolio.portfolio_bot import PortfolioBot
 from bots.portfolio.store import JsonPortfolioStore
 from bots.strategy.models import StrategyProposal
 from hokage.memory.resolver import PathResolver
-from integrations.brokers.interfaces import BaseExecutionVenue
+from integrations.brokers.base_venue import BaseVenue
 from integrations.brokers.models import (
     AccountBalance,
     ConnectionState,
@@ -23,7 +22,6 @@ from integrations.brokers.models import (
     OrderStatus,
     OrderType,
     VenueCapabilities,
-    VenueCategory,
     VenuePosition,
     VenueHolding,
     utc_now,
@@ -37,10 +35,10 @@ from integrations.tax.mock_provider import SimulatedTaxProvider
 from integrations.tax.store import JsonTaxLedger
 
 
-class PaperVenue(BaseExecutionVenue):
+class PaperVenue(BaseVenue):
     """Paper trading execution venue wrapping ExecutionBot, PaperEngine, and local stores.
     
-    Conforms to the BaseExecutionVenue protocol.
+    Conforms to the BaseVenue abstract interface.
     """
 
     def __init__(

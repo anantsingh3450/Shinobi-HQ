@@ -1,6 +1,5 @@
 from __future__ import annotations
-import pytest
-from shared.discovery.models import AssetCategory, HorizonMode
+from shared.discovery.models import AssetCategory
 from shared.discovery.scanners import (
     EquityAssetScanner,
     CommodityAssetScanner,

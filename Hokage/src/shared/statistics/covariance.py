@@ -1,7 +1,6 @@
 """Covariance calculations for the Newey-West HAC statistical engine."""
 from __future__ import annotations
 
-import math
 
 def mean(x: list[float]) -> float:
     """Calculate the arithmetic mean of a list of floats."""

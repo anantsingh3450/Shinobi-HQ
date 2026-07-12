@@ -20,9 +20,7 @@ Coordinates the complete, sequential boot process of the system:
 """
 from __future__ import annotations
 
-import os
 import sys
-import time
 import signal
 import logging
 import threading
@@ -160,8 +158,10 @@ class HokageBootManager:
             # Run Flask development server (blocking)
             app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
 
-        except Exception as exc:
-            logger.critical(f"Boot manager encountered a fatal error: {exc}", exc_info=True)
+        except BaseException as exc:
+            logger.critical(f"Boot manager encountered a fatal error (BaseException): {type(exc).__name__}: {exc}", exc_info=True)
+            import traceback
+            traceback.print_exc()
             self.publish_state(LifecycleState.OFFLINE)
             print("\n=========================================")
             print(f"             BOOT FAILED: {exc}          ")

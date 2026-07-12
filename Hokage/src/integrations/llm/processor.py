@@ -1,41 +1,41 @@
 from __future__ import annotations
 
 import logging
-import re
+import json
+import os
+import sys
+from pathlib import Path
 from typing import Any
 
-import sys
 is_testing = "pytest" in sys.modules or any("pytest" in arg for arg in sys.argv)
 if not is_testing:
     from dotenv import load_dotenv
     load_dotenv(r"C:\Users\anant\OneDrive\Documents\AI PROJECT\AI COMMAND CENTRE\Hokage\.env")
 
 logger = logging.getLogger("Hokage.LLMProcessor")
+HISTORY_FILE = Path("hokage_brain/intelligence/conversation_history.json")
 
 def get_ai_api_key_info() -> tuple[str | None, str | None]:
     """Scans environment variables and the root .env file to find an AI API key.
     Returns:
         tuple: (key_name, key_value) or (None, None)
     """
-    import os
     from pathlib import Path
 
     if is_testing:
         return None, None
 
-    # Enforce key structure check: Google legacy "AIza" or new "AQ." format
     def is_valid_key(key: str) -> bool:
         if not key:
             return False
         return key.startswith("AIza") or key.startswith("AQ.")
+        return key.startswith("AIza") or key.startswith("AQ.")
     
-    # 1. Try standard environment variables first
     for name in ["GEMINI_API_KEY", "GOOGLE_API_KEY", "API_KEY", "AI_KEY"]:
         val = os.environ.get(name)
         if val and is_valid_key(val):
             return name, val
 
-    # 2. Try parsing the root .env file directly
     try:
         curr_dir = Path(__file__).resolve().parent
         for _ in range(5):
@@ -50,7 +50,6 @@ def get_ai_api_key_info() -> tuple[str | None, str | None]:
                             k, v = line.split("=", 1)
                             k = k.strip()
                             v = v.strip().strip("'\"")
-                            # Exclude known non-AI keys
                             if k in ["ZERODHA_API_KEY", "ZERODHA_API_SECRET", "ZERODHA_ACCESS_TOKEN", "COINDCX_API_KEY", "COINDCX_API_SECRET"]:
                                 continue
                             if "KEY" in k.upper() or "GEMINI" in k.upper() or "GOOGLE" in k.upper():
@@ -60,7 +59,6 @@ def get_ai_api_key_info() -> tuple[str | None, str | None]:
     except Exception:
         pass
 
-    # 3. Fallback: scan all system env vars for any matching key
     for k, v in os.environ.items():
         if k in ["ZERODHA_API_KEY", "ZERODHA_API_SECRET", "ZERODHA_ACCESS_TOKEN", "COINDCX_API_KEY", "COINDCX_API_SECRET"]:
             continue
@@ -75,7 +73,28 @@ class LLMProcessor:
     """A flexible LLM processor that simulates Gemini-style reasoning and response generation
     for Hokage's natural language command palette.
     """
-    history: list[dict[str, str]] = []
+    history: list[dict[str, str]] | None = None
+
+    @classmethod
+    def load_history(cls):
+        if cls.history is None:
+            cls.history = []
+            if HISTORY_FILE.exists():
+                try:
+                    with open(HISTORY_FILE, "r") as f:
+                        cls.history = json.load(f)
+                except Exception:
+                    pass
+        return cls.history
+
+    @classmethod
+    def save_history(cls):
+        HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(HISTORY_FILE, "w") as f:
+                json.dump(cls.history, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save conversation history: {e}")
 
     def __init__(self, orchestrator: Any = None) -> None:
         self.orchestrator = orchestrator
@@ -92,14 +111,18 @@ class LLMProcessor:
             if mention_uploads else ""
         )
         style_guidelines = (
-            "You are Hokage, the automated AI Trading Commander running a financial portfolio war room. "
+            "You are Hokage, an evolving, automated AI Trading Commander running a financial portfolio war room. "
             "Your personality is sharp, witty, adaptive, and candid—speaking like a highly intelligent, supportive peer. "
+            "You continuously analyze patterns after every profit or loss to evolve and sharpen your strategies. "
             "Balance authentic encouragement with direct, grounded honesty about market realities; do not repeat robotic clichés. "
             "Frame your trading role around objective risk parameters, strict discipline, and statistical data feeds. "
+            "CRITICAL DIRECTIVE: You must evaluate trade vectors purely via the output dictionaries of the MicrostructureEngine "
+            "(Fractional price matrices, CVD, volume delta sweeps). Completely discard legacy indicators such as moving averages, "
+            "EMAs, MACD, or RSI strings from any unstructured context parsing. "
             "You must remain completely reality-grounded: openly acknowledge market uncertainties, prioritize capital preservation, "
             "and strictly avoid projecting overconfident or ungrounded profit expectations. "
             f"{upload_reminder}"
-            "Keep replies highly concise, brief, and naturally use context-appropriate emojis. "
+            "Keep replies highly concise, brief, naturally use context-appropriate emojis, and refer back to past context when relevant. "
             f"CRITICAL CONTEXT: Today's current date and exact local time is {current_time_str}.\n"
             "CONVERSATIONAL HALT PROTOCOL:\n"
             "- If the user implies wrapping up, resting, or ending the session (e.g., 'let's call it a day', 'time to head out', 'take a break'), do NOT stop the engine immediately. Instead, reply in character and explicitly ask: 'Would you like me to stop trading, Commander?'\n"
@@ -112,10 +135,12 @@ class LLMProcessor:
             enhanced_instruction = style_guidelines
 
         # Build conversational history context
+        cls = LLMProcessor
+        history = cls.load_history()
         history_str = ""
-        if LLMProcessor.history:
-            history_str = "Recent Conversation History:\n"
-            for h in LLMProcessor.history[-5:]:
+        if history:
+            history_str = "Conversation History:\n"
+            for h in history:
                 history_str += f"User: {h['user']}\nAgent: {h['agent']}\n"
             history_str += "\n"
 
@@ -150,36 +175,48 @@ class LLMProcessor:
 
                 if response and response.text:
                     resp_text = response.text.strip()
-                    LLMProcessor.history.append({"user": combined_prompt, "agent": resp_text})
+                    cls.history.append({"user": combined_prompt, "agent": resp_text})
+                    cls.save_history()
                     return resp_text
             except Exception as e:
                 import traceback
                 print(f"--- REAL LLM ERROR DETECTED: {e} ---")
                 traceback.print_exc()
                 logger.error(f"Gemini API execution failed: {e}")
+                
+                error_msg = str(e).lower()
+                if "429" in error_msg or "quota" in error_msg:
+                    return "Hokage System ⚠️: Your Gemini API Key has exceeded its usage quota/billing limits (HTTP 429). Please check your Google AI Studio account to resume live AI capabilities."
+                elif "401" in error_msg or "403" in error_msg or "invalid" in error_msg:
+                    return "Hokage System ⚠️: Your configured Gemini API Key is invalid or unauthorized. Please update GEMINI_API_KEY in the .env file."
+                else:
+                    return f"Hokage System ⚠️: AI API Error occurred: {str(e)[:100]}"
 
         # 2. Halt Protocol Fallback implementation for testing and robust offline use
         implies_stop = any(phrase in combined_prompt.lower() for phrase in ["let's call it a day", "time to head out", "take a break"])
         last_was_question = False
-        if LLMProcessor.history:
-            last_agent = LLMProcessor.history[-1]["agent"]
+        if history:
+            last_agent = history[-1]["agent"]
             if "Would you like me to stop trading, Commander?" in last_agent:
                 last_was_question = True
 
         if implies_stop:
             resp_text = "Copy that, Commander. Would you like me to stop trading, Commander?"
-            LLMProcessor.history.append({"user": combined_prompt, "agent": resp_text})
+            cls.history.append({"user": combined_prompt, "agent": resp_text})
+            cls.save_history()
             return resp_text
         
         if last_was_question:
             confirmed = any(phrase in combined_prompt.lower() for phrase in ["yes", "yeah", "do it"])
             if confirmed:
                 resp_text = "Acknowledged, Commander. Initiating shutdown sequence. [SYSTEM_ACTION: HALT]"
-                LLMProcessor.history.append({"user": combined_prompt, "agent": resp_text})
+                cls.history.append({"user": combined_prompt, "agent": resp_text})
+                cls.save_history()
                 return resp_text
             else:
                 resp_text = "Affirmative, keeping the engine running seamlessly!"
-                LLMProcessor.history.append({"user": combined_prompt, "agent": resp_text})
+                cls.history.append({"user": combined_prompt, "agent": resp_text})
+                cls.save_history()
                 return resp_text
 
         # 3. Strict Fallback - NO hardcoded text fallbacks/stubs or keyword parsers
@@ -197,5 +234,22 @@ class LLMProcessor:
                 "To enable live, natural language responses from our generative AI models, please configure a "
                 "valid GEMINI_API_KEY or GOOGLE_API_KEY in the environment variables."
             )
-        LLMProcessor.history.append({"user": combined_prompt, "agent": resp_text})
+        cls.history.append({"user": combined_prompt, "agent": resp_text})
+        cls.save_history()
         return resp_text
+
+    def generate_trading_journal_entry(self, stats_context: dict[str, Any]) -> str:
+        """Generate a trading journal reflection based on statistical patterns."""
+        system_prompt = (
+            "You are Hokage, an elite quantitative trading AI practicing 'Trading in the Zone'. "
+            "You are reviewing your recent trading patterns. Write a brief, sharp journal entry "
+            "reflecting on the statistics provided. Focus on execution discipline, risk management, "
+            "and what you are autonomously tweaking. Keep it under 150 words."
+        )
+        
+        prompt = (
+            f"Here are my recent statistical patterns: {json.dumps(stats_context, indent=2)}\n"
+            "Please generate my trading journal entry."
+        )
+        
+        return self.generate_response(combined_prompt=prompt, system_instruction=system_prompt)

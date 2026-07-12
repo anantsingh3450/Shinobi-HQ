@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hokage Command Center</title>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/new_dashboard.css">
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <i class="fa-solid fa-shuriken"></i>
+                <h2>HOKAGE</h2>
+            </div>
+            <ul class="nav-links">
+                <li class="active"><i class="fa-solid fa-chart-line"></i> Dashboard</li>
+            </ul>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <header class="topbar">
+                <div class="topbar-title">
+                    <h1>Commander Dashboard</h1>
+                    <p class="subtitle">Operational Overview & Reality Engine</p>
+                </div>
+                <div class="topbar-actions">
+                    <span id="connection-status" class="status-badge connected"><i class="fa-solid fa-circle-check"></i> Connected</span>
+                </div>
+            </header>
+
+            <div class="dashboard-grid">
+                
+                <!-- Manual Login Card -->
+                <section class="card login-card">
+                    <div class="card-header">
+                        <h3><i class="fa-solid fa-key"></i> Broker Authentication</h3>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-sm muted-text mb-4">Initialize the session to generate your daily access token for live executions.</p>
+                        <div class="auth-actions">
+                            <button id="btn-open-login" class="btn btn-outline">
+                                <span><i class="fa-solid fa-external-link-alt"></i> Open Login Page</span>
+                            </button>
+                        </div>
+                        <div class="token-input-group mt-4">
+                            <label for="token-url-input" class="text-sm">Paste Redirect URL here:</label>
+                            <div class="input-wrapper">
+                                <input type="text" id="token-url-input" placeholder="https://127.0.0.1/?request_token=...&action=login" autocomplete="off">
+                                <button id="btn-update-token" class="btn btn-primary">Update Token</button>
+                            </div>
+                        </div>
+                        <div id="auth-status-message" class="status-message hidden mt-3"></div>
+                    </div>
+                </section>
+
+                <!-- Tax Liability Card -->
+                <section class="card tax-card">
+                    <div class="card-header">
+                        <h3><i class="fa-solid fa-file-invoice-dollar"></i> Tax & Charges Ledger</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="tax-grid">
+                            <div class="tax-stat">
+                                <span class="label">Estimated Tax (STCG)</span>
+                                <span class="value" id="val-estimated-tax">₹0.00</span>
+                            </div>
+                            <div class="tax-stat">
+                                <span class="label">Total Brokerage & Fees</span>
+                                <span class="value" id="val-total-charges">₹0.00</span>
+                            </div>
+                            <div class="tax-stat highlight">
+                                <span class="label">Net Profit (After Tax)</span>
+                                <span class="value success" id="val-net-profit">₹0.00</span>
+                            </div>
+                        </div>
+                        <p id="tax-forecast-msg" class="text-sm muted-text mt-3 text-center"></p>
+                    </div>
+                </section>
+
+                <!-- Active Trades Card -->
+                <section class="card active-trades-card span-full">
+                    <div class="card-header">
+                        <h3><i class="fa-solid fa-crosshairs"></i> Active Trades</h3>
+                        <div class="badge-count" id="count-active-trades">0</div>
+                    </div>
+                    <div class="card-body table-responsive">
+                        <table class="data-table" id="table-active-trades">
+                            <thead>
+                                <tr>
+                                    <th>Symbol</th>
+                                    <th>Direction</th>
+                                    <th>Quantity</th>
+                                    <th>Entry Price</th>
+                                    <th>Unrealized PnL</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- JS Injected Rows -->
+                                <tr><td colspan="5" class="text-center text-muted py-4">No active positions.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <!-- Previous Trades Card -->
+                <section class="card previous-trades-card span-full">
+                    <div class="card-header">
+                        <h3><i class="fa-solid fa-clock-rotate-left"></i> Trade History</h3>
+                    </div>
+                    <div class="card-body table-responsive scrollable-table-container">
+                        <table class="data-table" id="table-previous-trades">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Symbol</th>
+                                    <th>Direction</th>
+                                    <th>Status</th>
+                                    <th>Price</th>
+                                    <th>PnL</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- JS Injected Rows -->
+                                <tr><td colspan="6" class="text-center text-muted py-4">Loading trade history...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/new_dashboard.js"></script>
+</body>
+</html>

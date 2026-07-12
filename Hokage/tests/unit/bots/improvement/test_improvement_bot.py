@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import json
-import pytest
 from pathlib import Path
 
 from hokage.memory.resolver import PathResolver
 from bots.strategy.portfolio import StrategyPortfolioManager
 from bots.improvement.improvement_bot import ImprovementBot
-from hokage.ledger.prediction_ledger import JsonPredictionLedger
-from bots.execution.store.json_trade_store import JsonTradeStore
 
 
 def test_improvement_bot_drift_and_proposals(tmp_path: Path) -> None:

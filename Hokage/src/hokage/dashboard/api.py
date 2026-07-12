@@ -14,7 +14,6 @@ if not is_testing:
 
 from datetime import datetime, timezone
 import json
-import os
 from pathlib import Path
 
 from flask import Blueprint, Flask, jsonify, render_template, request, redirect
@@ -63,6 +62,58 @@ def extract_text_from_file(file) -> str:
     return "[Unsupported file format]"
 
 
+def try_manual_trade_execution(message: str, orchestrator) -> str | None:
+    """Parses a manual trade execution intent (e.g. 'buy 10 TCS' or 'sell 5 INFY') and executes it.
+    
+    Returns:
+        A success message string if executed, or None if the message did not match trade intent.
+    """
+    import re
+    cleaned = message.strip().lower()
+    
+    # Match patterns like:
+    # - "buy 10 tcs"
+    # - "sell 5 infy"
+    # - "execute buy 100 reliance"
+    # - "execute sell 50 tcs"
+    pattern = r"^(?:execute\s+)?(buy|sell)\s+(\d+)\s+([a-zA-Z0-9_\-\.]+)$"
+    match = re.match(pattern, cleaned)
+    if not match:
+        return None
+        
+    side, quantity, symbol = match.groups()
+    quantity = int(quantity)
+    symbol = symbol.upper()
+    
+    try:
+        from integrations.brokers.models import OrderRequest, OrderSide, OrderType, ConnectionState
+        from integrations.data.models import Instrument, AssetClass
+        
+        instrument = Instrument(symbol=symbol, asset_class=AssetClass.INDIAN_EQUITY)
+        order_req = OrderRequest(
+            instrument=instrument,
+            side=OrderSide.BUY if side == "buy" else OrderSide.SELL,
+            quantity=quantity,
+            order_type=OrderType.MARKET,
+        )
+        
+        active_venue_id = orchestrator.get_execution_context().active_venue_id
+        venue = orchestrator.registry.get_venue(active_venue_id)
+        if not venue:
+            venue = orchestrator.paper_venue
+            
+        if venue.get_status().state != ConnectionState.CONNECTED:
+            venue.connect()
+            
+        res = venue.place_order(order_req)
+        
+        return f"Executed manual {side.upper()} order for {quantity} shares of {symbol}. Trade ID: {res.venue_order_id}."
+    except Exception as e:
+        import logging
+        logging.getLogger("Hokage.DashboardAPI").error(f"Failed to execute manual trade intent: {e}")
+        return f"Failed to execute manual trade: {e}"
+
+
 def create_dashboard_api(
     brain_root: Path | None = None,
     orchestrator: HokageOrchestrator | None = None,
@@ -87,10 +138,19 @@ def create_dashboard_api(
     from hokage.memory.bootstrap import BrainBootstrapper
     BrainBootstrapper(resolver).bootstrap()
 
-    portfolio_dir = resolver.resolve_portfolio_dir()
-    trades_dir = resolver.resolve_trades_dir()
+    if orchestrator is None:
+        orchestrator = HokageOrchestrator(brain_root=brain_root)
+    app.orchestrator = orchestrator
 
     # Initialize stores and service
+    trades_dir = resolver.resolve_brain_root() / "trades"
+    portfolio_dir = resolver.resolve_brain_root() / "portfolio"
+    
+    active_venue_id = orchestrator.get_execution_context().active_venue_id
+    if active_venue_id != "paper_main":
+        trades_dir = trades_dir / active_venue_id
+        portfolio_dir = portfolio_dir / active_venue_id
+        
     portfolio_store = JsonPortfolioStore(portfolio_dir)
     trade_store = JsonTradeStore(trades_dir)
     dashboard_service = DashboardService(portfolio_store, trade_store)
@@ -299,14 +359,8 @@ def create_dashboard_api(
             limit = request.args.get("limit", type=int, default=None)
             as_of = parse_as_of()
             
-            from shared.persistence.sqlite_engine import SqliteStorageEngine
-            if SqliteStorageEngine.is_active(resolver):
-                from shared.persistence.sqlite_stores import SqliteTradeStore
-                db = SqliteStorageEngine(resolver)
-                db_trade_store = SqliteTradeStore(db)
-                trades = list(db_trade_store.load_all())
-            else:
-                trades = list(trade_store.load_all())
+            # The trade_store is already initialized to point to the correct venue directory
+            trades = list(trade_store.load_all())
                 
             if as_of:
                 trades = [t for t in trades if t.executed_at <= as_of]
@@ -560,6 +614,14 @@ def create_dashboard_api(
 
             if not message:
                 return jsonify({"error": "Empty message"}), 400
+
+            trade_result = try_manual_trade_execution(message, orchestrator)
+            if trade_result:
+                return jsonify({
+                    "query": message,
+                    "mapped_command": "execute_manual_trade",
+                    "response_text": trade_result
+                })
 
             from integrations.llm.processor import get_ai_api_key_info
             key_name, api_key = get_ai_api_key_info()
@@ -972,7 +1034,7 @@ def create_dashboard_api(
             status_info = {
                 "execution_mode": profile.environment.mode.value,
                 "autonomous_loop": "ACTIVE" if orchestrator.autonomous_bot.is_active() else "INACTIVE",
-                "active_venue": "paper_main",
+                "active_venue": orchestrator.get_execution_context().active_venue_id,
                 "capital_preservation_state": "ACTIVE" if profile.risk.capital_preservation else "INACTIVE",
                 "elder_trust_score": trust_score,
                 "elder_trust_grade": trust_grade,
@@ -1002,8 +1064,7 @@ def create_dashboard_api(
             else:
                 # Dynamic Multi-asset Opportunity Radar details - asset-agnostic cross-asset listings
                 from shared.discovery.scanners import (
-                    EquityAssetScanner, CommodityAssetScanner, CryptoAssetScanner,
-                    ForexAssetScanner, ETFAssetScanner
+                    EquityAssetScanner, CommodityAssetScanner, ForexAssetScanner
                 )
                 from shared.discovery.rankers import OpportunityRankingEngine
                 from shared.discovery.models import AssetCategory
@@ -1352,12 +1413,12 @@ def create_dashboard_api(
                 "BRENT": "BRENT OIL"
             }
             base_prices = {
-                "NIFTY": 22500.0,
-                "BANKNIFTY": 50000.0,
-                "SENSEX": 74000.0,
-                "CRUDE_OIL": 78.50,
-                "GOLD": 2350.0,
-                "SILVER": 30.0,
+                "NIFTY": 24300.0,
+                "BANKNIFTY": 52500.0,
+                "SENSEX": 80000.0,
+                "CRUDE_OIL": 6800.0,
+                "GOLD": 71000.0,
+                "SILVER": 85000.0,
                 "BRENT": 82.0
             }
             index_quotes = {}
@@ -1365,7 +1426,7 @@ def create_dashboard_api(
                 try:
                     quote = provider.get_quote(key)
                     price_val = quote.price
-                    base_val = base_prices.get(key, 100.0)
+                    base_val = quote.previous_close if quote.previous_close and quote.previous_close > 0 else base_prices.get(key, 100.0)
                     change_pct = ((price_val - base_val) / base_val) * 100.0 if base_val > 0 else 0.0
                     change_str = f"{change_pct:+.2f}%"
                     index_quotes[key] = {
@@ -1607,7 +1668,34 @@ def create_dashboard_api(
                 
             if not query:
                 return jsonify({"error": "Query cannot be empty"}), 400
-                
+
+            trade_result = try_manual_trade_execution(query, orchestrator)
+            if trade_result:
+                global_conversation_history.append({
+                    "direction": "input",
+                    "text": query,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                })
+                global_conversation_history.append({
+                    "direction": "output",
+                    "text": trade_result,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                })
+                try:
+                    from hokage.dashboard.event_bus import EventBus
+                    EventBus().publish("COMMANDER_MESSAGE", {
+                        "query": query,
+                        "response": trade_result,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    })
+                except Exception:
+                    pass
+                return jsonify({
+                    "query": query,
+                    "response": trade_result,
+                    "audio": f"MOCK_AUDIO_FOR: {trade_result}" if use_voice else None
+                })
+
             cache = IntelligenceCache(resolver.resolve_brain_root())
             engine = CommanderConversationEngine(orchestrator, cache)
             
@@ -2053,6 +2141,63 @@ def create_dashboard_api(
                     "realized_pnl": account.realized_pnl
                 })
             return jsonify(history)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    # =====================================================================
+    # Broker Authentication Endpoints
+    # =====================================================================
+    @dashboard_bp.route("/broker/login_url", methods=["GET"])
+    def broker_login_url():
+        try:
+            from integrations.brokers.secrets import SecretManager
+            mgr = SecretManager()
+            api_key = mgr.get_secret("api_key", broker="zerodha")
+            if not api_key:
+                return jsonify({"error": "No API Key configured"}), 400
+            url = f"https://kite.trade/connect/login?v=3&api_key={api_key}"
+            return jsonify({"url": url})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @dashboard_bp.route("/broker/token", methods=["POST"])
+    def broker_submit_token():
+        try:
+            data = request.get_json(force=True) or {}
+            raw_token = data.get("token", "").strip()
+            if not raw_token:
+                return jsonify({"error": "Token required"}), 400
+            
+            # Parse token if it's a URL
+            request_token = raw_token
+            if "request_token=" in raw_token:
+                from urllib.parse import urlparse, parse_qs
+                try:
+                    parsed = urlparse(raw_token)
+                    qs = parse_qs(parsed.query)
+                    if 'request_token' in qs:
+                        request_token = qs['request_token'][0]
+                    else:
+                        request_token = raw_token.split("request_token=")[1].split("&")[0]
+                except Exception:
+                    request_token = raw_token.split("request_token=")[1].split("&")[0]
+
+            from kiteconnect import KiteConnect
+            from integrations.brokers.secrets import SecretManager, update_env_file
+            mgr = SecretManager()
+            api_key = mgr.get_secret("api_key", broker="zerodha")
+            api_secret = mgr.get_secret("api_secret", broker="zerodha")
+            
+            kite = KiteConnect(api_key=api_key)
+            session_data = kite.generate_session(request_token, api_secret=api_secret)
+            final_access_token = session_data["access_token"]
+            
+            # Sync completely
+            mgr.set_secret("access_token", final_access_token, broker="zerodha")
+            os.environ["ZERODHA_ACCESS_TOKEN"] = final_access_token
+            update_env_file(".env", "ZERODHA_ACCESS_TOKEN", final_access_token)
+            
+            return jsonify({"success": True, "message": "Broker Connected"})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
@@ -2834,7 +2979,6 @@ def create_dashboard_api(
     def strategy_heal():
         """Expose self-healing parameter sweeps triggered via Might Guy."""
         try:
-            from bots.strategy.portfolio import StrategyPortfolioManager
             from shared.persistence.sqlite_engine import SqliteStorageEngine
             
             db = SqliteStorageEngine(resolver)
@@ -3108,6 +3252,62 @@ def create_dashboard_api(
             rm = ResourceManager(db)
             rm.record_snapshot()
             return jsonify(rm.get_summary())
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @dashboard_bp.route("/broker/login_url", methods=["GET"])
+    def get_login_url():
+        """Get the Zerodha login URL."""
+        try:
+            from integrations.brokers.secrets import SecretManager
+            from kiteconnect import KiteConnect
+            mgr = SecretManager()
+            api_key = mgr.get_secret("api_key", broker="zerodha")
+            if not api_key:
+                return jsonify({"error": "api_key not found in SecretManager"}), 400
+            kite = KiteConnect(api_key=api_key)
+            return jsonify({"url": kite.login_url()})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @dashboard_bp.route("/broker/token", methods=["POST"])
+    def submit_login_token():
+        """Submit the redirect token URL and generate a session."""
+        try:
+            from urllib.parse import urlparse, parse_qs
+            from integrations.brokers.secrets import SecretManager
+            from kiteconnect import KiteConnect
+            
+            data = request.get_json(force=True) or {}
+            token_url = data.get("token", "")
+            if not token_url:
+                return jsonify({"error": "No token provided."}), 400
+                
+            parsed = urlparse(token_url)
+            request_token = parse_qs(parsed.query).get('request_token', [None])[0]
+            
+            if not request_token:
+                if "request_token=" in token_url:
+                    request_token = token_url.split('request_token=')[1].split('&')[0]
+                else:
+                    request_token = token_url.strip()
+            
+            if not request_token:
+                return jsonify({"error": "Could not parse request_token from URL."}), 400
+
+            mgr = SecretManager()
+            api_key = mgr.get_secret("api_key", broker="zerodha")
+            api_secret = mgr.get_secret("api_secret", broker="zerodha")
+            
+            if not api_key or not api_secret:
+                return jsonify({"error": "Missing api_key or api_secret in SecretManager."}), 400
+                
+            kite = KiteConnect(api_key=api_key)
+            session_data = kite.generate_session(request_token, api_secret=api_secret)
+            final_access_token = session_data["access_token"]
+            
+            mgr.set_secret("access_token", final_access_token, broker="zerodha")
+            return jsonify({"success": True, "message": "Access token updated successfully."})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 

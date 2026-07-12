@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
 
 from hokage.memory.resolver import PathResolver
 from integrations.brokers.interfaces import BaseExecutionVenue

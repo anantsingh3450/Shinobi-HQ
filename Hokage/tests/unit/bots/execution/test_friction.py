@@ -5,10 +5,8 @@ latency ranges, and SQLite/JSON metrics aggregation.
 """
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
-import pytest
 
 from bots.execution.friction import (
     FrictionProfile,
@@ -16,11 +14,10 @@ from bots.execution.friction import (
     ZeroFrictionModel,
     get_market_volatility,
 )
-from bots.execution.models import TradeDirection, TradeRecord, TradeStatus
+from bots.execution.models import TradeDirection, TradeRecord
 from bots.execution.engine.paper_engine import PaperEngine
 from bots.strategy.models import StrategyProposal
 from bots.autonomous.quality_engine import ExecutionQualityEngine
-from integrations.brokers.models import ExecutionMode
 from integrations.data.mock_provider import MockMarketDataProvider
 from shared.persistence.sqlite_engine import SqliteStorageEngine
 from shared.persistence.sqlite_stores import SqliteTradeStore

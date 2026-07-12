@@ -8,7 +8,6 @@ from unittest.mock import MagicMock, patch
 
 from integrations.brokers.secrets import SecretManager
 from integrations.brokers.kite_connection import KiteConnectionManager
-from integrations.brokers.kite_account import KiteAccountService
 from integrations.brokers.kite_market_data_provider import KiteMarketDataProvider
 from integrations.brokers.kite_venue import KiteVenue
 from integrations.brokers.models import ConnectionState, OrderRequest, OrderSide, OrderType

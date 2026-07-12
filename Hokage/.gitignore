@@ -11,11 +11,19 @@ logs/*
 !logs/README.md
 *.log
 
-# Python (future)
+# Python
 __pycache__/
 *.py[cod]
 .venv/
 venv/
+*.egg-info/
+
+# Test artifacts
+MagicMock/
+scratch/
+
+# Runtime journals
+journal/
 
 # IDE
 .idea/

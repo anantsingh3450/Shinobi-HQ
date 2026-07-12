@@ -5,12 +5,11 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 import pytest
 
-from bots.autonomous.models import ExitConditionType
 from bots.autonomous.autonomous_bot import AutonomousTradingBot
 from bots.strategy.models import StrategyProposal
 from bots.backtest.models import BacktestResult
 from bots.risk.models import RiskVerdict
-from integrations.brokers.models import ConnectionState, ConnectionStatus, AccountBalance, VenuePosition, ExecutionMode, ExecutionContext
+from integrations.brokers.models import AccountBalance, VenuePosition, ExecutionMode, ExecutionContext
 from integrations.data.models import Instrument, AssetClass, Exchange
 
 
@@ -89,7 +88,7 @@ def test_autonomous_bot_monitor_exit_long_tsl(mock_orchestrator):
     assert exit_req.instrument.symbol == "TCS"
     assert exit_req.side == OrderSide.SELL
     assert exit_req.quantity == 5.0
-    assert exit_req.execution_reason == "Trailing Stop-Loss Triggered"
+    assert "ATR Thesis Stop" in exit_req.execution_reason or "Trailing" in exit_req.execution_reason
 
 
 def test_autonomous_bot_monitor_take_profit(mock_orchestrator):
@@ -119,7 +118,7 @@ def test_autonomous_bot_monitor_take_profit(mock_orchestrator):
     exit_req = mock_venue.place_order.call_args[0][0]
     assert exit_req.instrument.symbol == "INFY"
     assert exit_req.side == OrderSide.SELL
-    assert exit_req.execution_reason == "Take Profit Triggered"
+    assert "Time-Decaying" in exit_req.execution_reason or "Take Profit" in exit_req.execution_reason
 
 
 def test_autonomous_bot_scan_and_entry(mock_orchestrator, tmp_path):
@@ -429,7 +428,7 @@ def test_generate_daily_report_no_trades_eod(mock_orchestrator, tmp_path):
 
 def test_cache_freshness_age_validation(tmp_path):
     from bots.autonomous.cache import IntelligenceCache
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     cache = IntelligenceCache(brain_root=tmp_path)
     

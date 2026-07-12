@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
 import threading
 from datetime import datetime, timezone
 from typing import Any
@@ -11,7 +10,7 @@ from typing import Any
 from hokage.memory.resolver import PathResolver
 from integrations.brokers.models import ConnectionState
 from shared.watchdog.heartbeat import Heartbeat, HeartbeatTracker
-from shared.watchdog.incident import Incident, IncidentJournal
+from shared.watchdog.incident import IncidentJournal
 from shared.watchdog.store import WatchdogStore
 
 logger = logging.getLogger("Hokage.Watchdog.Engine")
@@ -72,7 +71,11 @@ class Watchdog:
 
     def start_subsystem_heartbeats(self) -> None:
         """Start background daemon threads for standard critical subsystems to register heartbeats."""
-        subsystems = ["orchestrator", "surveillance_loop", "strategy_engine", "risk_engine", "improvement_bot"]
+        subsystems = [
+            "orchestrator", "surveillance_loop", "strategy_engine", "risk_engine", 
+            "improvement_engine", "execution_engine", "portfolio_engine", 
+            "research_engine", "shadow_engine", "voice_commander"
+        ]
         for sub in subsystems:
             def loop(sub_name=sub):
                 import time
@@ -243,7 +246,7 @@ class Watchdog:
         now = datetime.now(timezone.utc)
         
         # Check standard critical subsystems
-        critical_subsystems = ["orchestrator", "surveillance_loop", "strategy_engine", "risk_engine", "improvement_bot"]
+        critical_subsystems = ["orchestrator", "surveillance_loop", "strategy_engine", "risk_engine", "improvement_engine"]
         for sub in critical_subsystems:
             hb = heartbeats.get(sub)
             if not hb:

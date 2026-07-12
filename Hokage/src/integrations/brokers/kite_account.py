@@ -27,11 +27,20 @@ class KiteAccountService:
         client = self._connection_manager.get_kite_client()
         margins = client.margins()
         
-        # Parse equity funds
+        try:
+            import json
+            with open("C:/Users/anant/OneDrive/Documents/AI PROJECT/AI COMMAND CENTRE/Hokage/scratch/margins_dump.json", "w") as f:
+                json.dump(margins, f)
+        except Exception:
+            pass
+        
+        # Parse equity and commodity funds
         equity = margins.get("equity", {})
-        net = float(equity.get("net", 0.0))
-        cash = float(equity.get("available", {}).get("cash", 0.0))
-        margin_used = float(equity.get("utilised", {}).get("debits", 0.0))
+        commodity = margins.get("commodity", {})
+        
+        net = float(equity.get("net", 0.0)) + float(commodity.get("net", 0.0))
+        cash = float(equity.get("available", {}).get("cash", 0.0)) + float(commodity.get("available", {}).get("cash", 0.0))
+        margin_used = float(equity.get("utilised", {}).get("debits", 0.0)) + float(commodity.get("utilised", {}).get("debits", 0.0))
         
         return AccountBalance(
             venue_id=venue_id,

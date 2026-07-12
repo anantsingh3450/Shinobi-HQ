@@ -562,3 +562,10 @@ Hokage/
 5. **Execution** → `PaperEngine` gets quote, executes fill, and writes `TradeRecord` to `trades.jsonl`.
 6. **Tax** → `SimulatedTaxProvider` generates tax components and logs to `tax_events.jsonl` via `JsonTaxLedger`.
 7. **Portfolio** → `PortfolioBot` updates `Account` holdings, saving state to `account_paper.json`.
+
+## 7. Operational Updates
+
+- **Date**: 2026-07-12
+- **Action**: Automated Codebase Cleanup
+- **Details**: Ran static analysis (ruff) to fix syntax issues, removed dead code/zombie variables and imports (fixed 254 issues). Generated duplicate files report.
+

@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from hokage.memory.resolver import PathResolver

@@ -12,7 +12,7 @@ from bots.autonomous.portfolio_intelligence import (
     PortfolioHealthEngine,
 )
 from integrations.brokers.models import AccountBalance, VenuePosition, OrderSide
-from integrations.data.models import Instrument, AssetClass, Exchange, HistoricalDataResult, Candle, CandleInterval
+from integrations.data.models import Instrument, AssetClass, Exchange
 from bots.autonomous.cache import IntelligenceCache
 
 

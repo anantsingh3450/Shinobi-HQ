@@ -1,2 +1,0 @@
-[console_scripts]
-hokage = hokage.main:main

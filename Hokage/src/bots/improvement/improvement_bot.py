@@ -10,9 +10,7 @@ import json
 import logging
 import uuid
 import os
-import math
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from hokage.memory.resolver import PathResolver
@@ -49,6 +47,7 @@ class ImprovementBot:
         self._journal_dir = self._brain_root / "journal"
         self._journal_dir.mkdir(parents=True, exist_ok=True)
         self._applied_improvements_file = self._journal_dir / "applied_improvements.jsonl"
+        self._autopsies_file = self._improvement_dir / "trade_autopsies.jsonl"
 
     def analyze_performance_drift(self, strategy_id: str, asset: str = "DEFAULT") -> dict[str, Any]:
         """Compare backtest parameters vs. actual execution metrics for a strategy and asset."""
@@ -505,3 +504,163 @@ class ImprovementBot:
             temp_path.replace(self._applied_improvements_file)
         except Exception as exc:
             logger.error(f"Failed to atomically write applied improvements log: {exc}")
+
+    def process_autopsy(self, autopsy: Any) -> None:
+        """Process and save a TradeAutopsy record."""
+        try:
+            record = autopsy.to_dict()
+            with self._autopsies_file.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record) + "\n")
+            logger.info(f"Saved TradeAutopsy for {autopsy.symbol} (Trade ID: {autopsy.trade_id})")
+            
+            # Check if we should trigger evolution and LLM journal
+            # For this alpha, we'll run it every 5 trades.
+            count = 0
+            with self._autopsies_file.open("r", encoding="utf-8") as fh:
+                count = sum(1 for line in fh if line.strip())
+            
+            if count > 0 and count % 5 == 0:
+                logger.info(f"Autopsy threshold reached ({count}). Triggering Pattern Detection and Evolution.")
+                patterns = self.detect_patterns("strat-autotrend-equities-v1")
+                if patterns:
+                    self.apply_autonomous_evolution(patterns)
+                    
+                    from integrations.llm.processor import LLMProcessor
+                    llm = LLMProcessor()
+                    journal_entry = llm.generate_trading_journal_entry(patterns)
+                    
+                    from integrations.notifications.telegram_bot import TelegramBotUplink
+                    tb = TelegramBotUplink()
+                    if tb.enabled:
+                        tb.send_message(f"📖 *HOKAGE TRADING JOURNAL*\n\n{journal_entry}")
+                    
+                    self.evaluate_promotions()
+                    
+        except Exception as e:
+            logger.error(f"Failed to process TradeAutopsy: {e}")
+
+    def detect_patterns(self, strategy_id: str) -> dict[str, Any]:
+        """Analyze recent autopsies to find statistical edge patterns."""
+        if not self._autopsies_file.exists():
+            return {}
+        
+        try:
+            autopsies = []
+            with self._autopsies_file.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    if line.strip():
+                        autopsies.append(json.loads(line.strip()))
+            
+            if len(autopsies) < 5:
+                return {}
+            
+            # Basic pattern detection
+            wins = [a for a in autopsies if a.get("pnl", 0) > 0]
+            losses = [a for a in autopsies if a.get("pnl", 0) <= 0]
+            
+            win_rate = len(wins) / len(autopsies)
+            avg_win_vix = sum(w.get("vix_at_entry", 15) for w in wins) / max(1, len(wins))
+            avg_loss_vix = sum(l.get("vix_at_entry", 15) for l in losses) / max(1, len(losses))
+            
+            # Identify if stop losses are too tight (many losses with max_favorable > 0 but max_adverse hitting stop)
+            premature_stops = len([l for l in losses if l.get("max_favorable_excursion_pct", 0) > 1.0])
+            stop_tightness_issue = premature_stops > len(losses) * 0.5
+            
+            return {
+                "strategy_id": strategy_id,
+                "win_rate": win_rate,
+                "avg_win_vix": avg_win_vix,
+                "avg_loss_vix": avg_loss_vix,
+                "stop_tightness_issue": stop_tightness_issue,
+                "recent_trades": len(autopsies),
+                "premature_stops": premature_stops
+            }
+        except Exception as e:
+            logger.error(f"Failed to detect patterns: {e}")
+            return {}
+
+    def apply_autonomous_evolution(self, patterns: dict[str, Any]) -> None:
+        """Apply safe autonomous adjustments to strategy parameters based on patterns."""
+        strategy_id = patterns.get("strategy_id")
+        if not strategy_id:
+            return
+            
+        strat = self.portfolio_manager.portfolio.get("strategies", {}).get(strategy_id)
+        if not strat:
+            return
+            
+        # Evolution Boundaries (Safety Caps)
+        # Risk Multiplier: 0.5x to 1.5x
+        # Stop-Loss: Max +0.5x ATR widening
+        
+        adjustments_made = []
+        
+        if patterns.get("stop_tightness_issue"):
+            # Widen stop loss slightly
+            current_atr_sl = float(strat.get("risk_management", {}).get("stop_loss_atr_multiplier", 1.5))
+            new_atr_sl = min(current_atr_sl + 0.2, 2.0) # Cap at 2.0 (i.e. +0.5 from base 1.5)
+            
+            if new_atr_sl > current_atr_sl:
+                strat["risk_management"]["stop_loss_atr_multiplier"] = new_atr_sl
+                adjustments_made.append(f"Widened Stop-Loss ATR from {current_atr_sl} to {new_atr_sl} due to premature stops.")
+                
+        if patterns.get("win_rate", 0) > 0.6:
+            # Increase risk multiplier
+            current_risk = float(strat.get("risk_management", {}).get("risk_multiplier", 1.0))
+            new_risk = min(current_risk + 0.1, 1.5) # Cap at 1.5
+            if new_risk > current_risk:
+                strat["risk_management"]["risk_multiplier"] = new_risk
+                adjustments_made.append(f"Increased Risk Multiplier from {current_risk} to {new_risk} due to high win rate.")
+        elif patterns.get("win_rate", 0) < 0.4:
+            # Decrease risk multiplier
+            current_risk = float(strat.get("risk_management", {}).get("risk_multiplier", 1.0))
+            new_risk = max(current_risk - 0.2, 0.5) # Cap at 0.5
+            if new_risk < current_risk:
+                strat["risk_management"]["risk_multiplier"] = new_risk
+                adjustments_made.append(f"Decreased Risk Multiplier from {current_risk} to {new_risk} due to low win rate.")
+                
+        if adjustments_made:
+            self.portfolio_manager.save_portfolio()
+            logger.info(f"Applied Autonomous Evolution: {adjustments_made}")
+            
+            # Send Telegram Alert if possible
+            bus = EventBus()
+            bus.publish("EVOLUTION_APPLIED", {
+                "strategy": strategy_id,
+                "adjustments": adjustments_made,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+
+    def evaluate_promotions(self) -> None:
+        """Evaluate probation strategies for promotion to LIVE/ACTIVE."""
+        strategies = self.portfolio_manager.portfolio.get("strategies", {})
+        promoted = False
+        for s_id, strat in strategies.items():
+            if strat.get("status") == "PROBATION":
+                # Check metrics
+                wr = strat.get("win_rate", {}).get("DEFAULT", 0)
+                tc = strat.get("trade_count", {}).get("DEFAULT", 0)
+                
+                if tc >= 10 and wr >= 55.0:
+                    strat["status"] = "ACTIVE"
+                    strat["history"].append({
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "event": "Promoted to ACTIVE due to proven paper/shadow performance."
+                    })
+                    promoted = True
+                    
+                    try:
+                        from integrations.notifications.telegram_bot import TelegramBotUplink
+                        tb = TelegramBotUplink()
+                        tb.send_message(
+                            f"🚀 *STRATEGY PROMOTION* 🚀\n"
+                            f"Strategy `{strat.get('name')}` ({s_id}) has proven itself in Shadow/Paper trading.\n"
+                            f"• Trades: {tc}\n"
+                            f"• Win Rate: {wr}%\n"
+                            f"Automatically promoted to ACTIVE/LIVE mode."
+                        )
+                    except Exception as e:
+                        logger.error(f"Error sending promotion alert: {e}")
+                        
+        if promoted:
+            self.portfolio_manager.save()

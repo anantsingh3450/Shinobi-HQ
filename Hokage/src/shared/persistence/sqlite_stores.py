@@ -6,18 +6,16 @@ for Hokage Alpha, conforming to the existing store protocols.
 from __future__ import annotations
 
 import json
-import sqlite3
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from bots.execution.models import TradeRecord, TradeDirection, TradeStatus
-from bots.portfolio.models import Account, Position, EquitySnapshot
+from bots.portfolio.models import Account, Position
 from integrations.tax.models import TaxEvent, TaxComponent, TaxComponentType, TaxJurisdiction
 from hokage.ledger.prediction_ledger import PredictionRecord
 from bots.autonomous.models import NoTradeDecision, TradeAuthorization
-from hokage.memory.resolver import PathResolver
 from shared.persistence.sqlite_engine import SqliteStorageEngine
 
 logger = logging.getLogger("Hokage.SqliteStores")

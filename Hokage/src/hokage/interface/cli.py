@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 
 from hokage.orchestrator.pipeline import HokageOrchestrator
 from hokage.router.command_router import CommandRouter

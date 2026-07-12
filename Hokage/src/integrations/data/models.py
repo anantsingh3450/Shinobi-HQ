@@ -90,6 +90,7 @@ class MarketQuote:
     bid: float | None = None
     ask: float | None = None
     volume: float | None = None
+    previous_close: float | None = None
 
     def __post_init__(self) -> None:
         if self.price <= 0:

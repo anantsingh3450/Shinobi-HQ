@@ -1,7 +1,4 @@
-from __future__ import annotations
-
-from pathlib import Path
-from integrations.brokers.interfaces import BaseExecutionVenue
+from integrations.brokers.base_venue import BaseVenue
 from integrations.brokers.secrets import SecretManager
 from integrations.brokers.kite_connection import KiteConnectionManager
 from integrations.brokers.kite_account import KiteAccountService
@@ -20,7 +17,7 @@ from integrations.brokers.models import (
 from typing import Any
 
 
-class KiteVenue(BaseExecutionVenue):
+class KiteVenue(BaseVenue):
     """Zerodha Kite Connect broker venue adapter.
 
     Provides read-only access (balances, positions, holdings) while

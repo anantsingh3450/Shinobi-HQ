@@ -169,7 +169,7 @@ class ConvictionScoreEngine:
                                 reasons.append("INFLATION SHOCK regime favors hard commodities (+4)")
                             else:
                                 intel_adjustment -= 3.0
-                                reasons.append(f"INFLATION SHOCK regime reduces non-commodity sector score (-3)")
+                                reasons.append("INFLATION SHOCK regime reduces non-commodity sector score (-3)")
 
                         # 2. Sector Rotation alignment adjustments
                         strongest = [s.lower() for s in rot_details.get("strongest", [])]
@@ -636,19 +636,22 @@ class NoTradeDecisionEngine:
         reasons: list[str] = []
         no_trade = False
 
-        if vix_impact_delta >= 3.0:
+        if vix_impact_delta >= 4.0:
+            # Only block on extreme panic (VIX delta >=4.0, not 3.0)
             no_trade = True
-            reasons.append("VIX delta is extremely high (>=3.0), flagging unstable market volatility.")
-        elif vix_impact_delta >= 2.0:
-            reasons.append("Elevated volatility detected.")
+            reasons.append("VIX delta is extremely high (>=4.0), signaling market panic conditions.")
+        elif vix_impact_delta >= 2.5:
+            reasons.append("Elevated volatility detected. Sizing will be reduced.")
 
-        if regime_conf_val < 0.55:
+        if regime_conf_val < 0.45:
+            # Lowered from 55% to 45% — only block if regime is truly ambiguous
             no_trade = True
-            reasons.append("Regime classification certainty is below the safety threshold of 55%.")
+            reasons.append("Regime classification certainty is below the safety threshold of 45%.")
 
-        if flow_confidence_val < 0.50:
+        if flow_confidence_val < 0.40:
+            # Lowered from 50% to 40% — sector flows are noisy, be lenient
             no_trade = True
-            reasons.append("Sector flow forecast confidence is below the safety threshold of 50%.")
+            reasons.append("Sector flow forecast confidence is below the safety threshold of 40%.")
 
         if conflicting_signals_val:
             no_trade = True
@@ -660,7 +663,7 @@ class NoTradeDecisionEngine:
 
         if no_trade:
             recommended_action = "NO TRADE"
-        elif vix_impact_delta >= 1.5:
+        elif vix_impact_delta >= 2.5:
             recommended_action = "OBSERVE"
             reasons.append("Moderately elevated VIX. Stance set to OBSERVE only.")
         else:

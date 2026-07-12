@@ -10,10 +10,8 @@ Executes Step 5 (First Autonomous Mission) of Phase 9.2:
 from __future__ import annotations
 
 import sys
-import json
 import logging
 from pathlib import Path
-from datetime import datetime, timezone
 
 # Add src/ to python path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))

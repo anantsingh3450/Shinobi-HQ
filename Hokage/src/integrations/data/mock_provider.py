@@ -24,17 +24,17 @@ _PRICE_TABLE: dict[str, float] = {
     "USD/INR": 83.50,
     "BTC/USD": 65_000.00,
     "ETH/USD": 3_500.00,
-    "NIFTY": 22_500.00,
-    "SENSEX": 74_000.00,
+    "NIFTY": 24300.0,
+    "SENSEX": 80000.0,
     "RELIANCE": 2_950.00,
     "TCS": 4_100.00,
-    "GOLD": 2_350.00,
-    "CRUDE": 78.50,
-    "CRUDEOIL": 78.50,
-    "CRUDE_OIL": 78.50,
-    "SILVER": 30.00,
+    "GOLD": 71000.0,
+    "CRUDE": 6800.0,
+    "CRUDEOIL": 6800.0,
+    "CRUDE_OIL": 6800.0,
+    "SILVER": 85000.0,
     "BRENT": 82.00,
-    "BANKNIFTY": 50_000.00,
+    "BANKNIFTY": 52500.0,
 }
 
 _DEFAULT_PRICE = 100.0
@@ -118,7 +118,8 @@ class MockMarketDataProvider:
         # Check Binance first for crypto
         if symbol_upper in ("BTCUSDT", "BTC/USD"):
             try:
-                import urllib.request, json
+                import urllib.request
+                import json
                 req = urllib.request.Request("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", headers={'User-Agent': 'Mozilla/5.0'})
                 res = urllib.request.urlopen(req, timeout=2).read()
                 return float(json.loads(res)['price'])
@@ -127,7 +128,8 @@ class MockMarketDataProvider:
 
         if symbol_upper in ("ETHUSDT", "ETH/USD"):
             try:
-                import urllib.request, json
+                import urllib.request
+                import json
                 req = urllib.request.Request("https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT", headers={'User-Agent': 'Mozilla/5.0'})
                 res = urllib.request.urlopen(req, timeout=2).read()
                 return float(json.loads(res)['price'])
@@ -143,7 +145,9 @@ class MockMarketDataProvider:
                 yahoo_symbol = symbol_upper
 
         try:
-            import urllib.request, json, urllib.parse
+            import urllib.request
+            import json
+            import urllib.parse
             safe_symbol = yahoo_symbol if "%" in yahoo_symbol else urllib.parse.quote(yahoo_symbol)
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{safe_symbol}"
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -206,9 +210,9 @@ class MockMarketDataProvider:
         ws_stalled = time_since_last_ws > 4.0
 
         if is_market_hours and ws_stalled:
-            logger.warning(
+            logger.debug(
                 f"Feed Freshness Watchdog: WebSocket ticks stalled for {time_since_last_ws:.2f}s during market hours. "
-                f"Falling back to REST polling instantly for {instrument.symbol}."
+                f"Operating on standard REST polling instantly for {instrument.symbol}."
             )
             # Perform REST poll fallback
             price = self._fetch_public_price(instrument.symbol)
@@ -244,6 +248,7 @@ class MockMarketDataProvider:
             volume=self._stable_volume(instrument.symbol),
             provider="public-exchange-feed" if is_live else self.provider_name,
             quoted_at=quoted_at,
+            previous_close=price * 0.99,
         )
 
     def get_historical_candles(

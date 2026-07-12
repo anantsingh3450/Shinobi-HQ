@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from shared.discovery.models import HorizonMode, ProgressionPhase, RiskMode
 from integrations.brokers.models import ExecutionMode

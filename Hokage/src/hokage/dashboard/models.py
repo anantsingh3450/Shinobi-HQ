@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any
 
-from bots.execution.models import TradeDirection, TradeRecord, TradeStatus
+from bots.execution.models import TradeRecord, TradeStatus
 from bots.portfolio.models import Account, Position
 
 

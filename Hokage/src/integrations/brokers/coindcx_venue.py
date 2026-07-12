@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from integrations.brokers.interfaces import BaseExecutionVenue
 from integrations.brokers.models import (
@@ -10,7 +9,6 @@ from integrations.brokers.models import (
     ConnectionStatus,
     OrderRequest,
     OrderResponse,
-    OrderStatus,
     VenueCapabilities,
     VenuePosition,
     VenueHolding,
@@ -18,7 +16,6 @@ from integrations.brokers.models import (
     ExecutionContext,
     ExecutionMode,
 )
-from integrations.data.models import Instrument, AssetClass, Exchange
 
 logger = logging.getLogger("Hokage.CoinDcxVenue")
 
@@ -71,7 +68,11 @@ class CoinDcxVenue(BaseExecutionVenue):
             self._connection_state = ConnectionState.DISCONNECTED
             raise ValueError("CoinDCX API credentials (COINDCX_API_KEY/COINDCX_API_SECRET) not configured.")
             
-        import urllib.request, json, hmac, hashlib, time
+        import urllib.request
+        import json
+        import hmac
+        import hashlib
+        import time
         url = "https://api.coindcx.com/exchange/v1/users/info"
         body = {
             "timestamp": int(time.time() * 1000)

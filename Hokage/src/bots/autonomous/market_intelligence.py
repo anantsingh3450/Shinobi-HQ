@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import os
 import json
 import logging
-from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
@@ -117,7 +115,7 @@ class MarketIntelligenceEngine:
             reasons_list.append(f"Economic event impact is negative ({event_impact})")
         elif flows_regime == "BEARISH" or options_regime == "OVERBOUGHT":
             macro_regime = "RISK-OFF"
-            reasons_list.append(f"Institutional flows are Bearish and option PCR indicates Overbought skew")
+            reasons_list.append("Institutional flows are Bearish and option PCR indicates Overbought skew")
         else:
             reasons_list.append("General parameters are supportive of capital deployment")
             
@@ -240,7 +238,7 @@ class MarketIntelligenceEngine:
                 reasons.append("INFLATION SHOCK regime favors hard commodities (+4)")
             else:
                 adjustment -= 3.0
-                reasons.append(f"INFLATION SHOCK regime reduces non-commodity sector score (-3)")
+                reasons.append("INFLATION SHOCK regime reduces non-commodity sector score (-3)")
 
         # 2. Sector Rotation alignment
         strongest = [s.lower() for s in rotation.get("strongest", [])]

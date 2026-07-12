@@ -48,13 +48,13 @@ class HeuristicStrategyGenerator(StrategyGenerator):
         
         if "scalp" in combined_text or "intraday" in combined_text:
             timeframe = "1H"
-            entry_rule = "Enter on 1H breakouts."
+            entry_rule = "Enter on confirmed pullbacks to the VWAP or EMA(21) within an established trend (1H breakouts)."
             exit_rule = "Exit at end of session."
 
         if "bullish" in combined_text or "uptrend" in combined_text:
-            entry_rule = "Enter long on confirmed moving average crossovers."
+            entry_rule = "Enter long on confirmed pullback to the moving average."
         elif "bearish" in combined_text or "downtrend" in combined_text:
-            entry_rule = "Enter short on breakdown below support levels."
+            entry_rule = "Enter short on confirmed pullback to the moving average."
 
         # 3. Confidence Scoring
         confidence = 0.5 # Default neutral

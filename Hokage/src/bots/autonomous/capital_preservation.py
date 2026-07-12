@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -106,3 +105,43 @@ class CapitalPreservationEngine:
         # Cache results
         self.cache.write_intelligence(self.state_file, result)
         return result
+
+class RiskManager:
+    """Core portfolio kill-switch. Monitors global P&L and max daily drawdown."""
+    def __init__(self, bot_instance: Any, max_daily_drawdown_pct: float = 15.0):
+        self.bot = bot_instance
+        self.max_daily_drawdown_pct = max_daily_drawdown_pct
+        self._killed = False
+        
+    def check_portfolio_health(self, current_equity: float, starting_equity: float) -> bool:
+        """Checks if drawdown is breached. If so, halts trading and liquidates."""
+        if self._killed or starting_equity <= 0:
+            return False
+            
+        drawdown = ((starting_equity - current_equity) / starting_equity) * 100.0
+        if drawdown >= self.max_daily_drawdown_pct:
+            logger.critical(f"PORTFOLIO KILL-SWITCH TRIGGERED. Drawdown {drawdown:.1f}% exceeds limit {self.max_daily_drawdown_pct}%.")
+            
+            # 1. Engage kill switch
+            self.bot.intraday_override['halted'] = True
+            self.bot.gatekeeper_state = "KILL_SWITCH_ENGAGED"
+            self._killed = True
+            
+            # 2. Send Telegram alert
+            if getattr(self.bot, 'telegram_bot', None):
+                self.bot.telegram_bot.send_message(
+                    "🚨 *CRITICAL PORTFOLIO KILL-SWITCH ENGAGED* 🚨\n"
+                    f"Max daily drawdown of {self.max_daily_drawdown_pct}% breached.\n"
+                    "All autonomous trading has been forcefully halted and positions are being liquidated."
+                )
+            
+            # 3. Attempt to liquidate all active positions
+            try:
+                for asset, pos_data in list(self.bot._active_positions_tracking.items()):
+                    logger.warning(f"Kill-Switch liquidating {asset}")
+                    self.bot._execute_partial_exit(asset, pos_data, size_pct=1.0, reason="KILL_SWITCH")
+            except Exception as e:
+                logger.error(f"Error liquidating positions during kill-switch: {e}")
+                
+            return False
+        return True

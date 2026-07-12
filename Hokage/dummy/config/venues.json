@@ -1,0 +1,12 @@
+{
+  "venues": [
+    {
+      "venue_id": "paper_main",
+      "venue_name": "Paper Default",
+      "venue_category": "sandbox",
+      "account_id": "paper",
+      "is_active": true,
+      "metadata": {}
+    }
+  ]
+}

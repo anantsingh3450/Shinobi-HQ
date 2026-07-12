@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -107,7 +107,7 @@ class ReconciliationReport:
         
         brief = [
             "============================================================",
-            f"            HOKAGE BROKER RECONCILIATION REPORT",
+            "            HOKAGE BROKER RECONCILIATION REPORT",
             "============================================================",
             f"Report ID : {self.report_id}",
             f"Timestamp : {self.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}",

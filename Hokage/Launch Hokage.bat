@@ -1,0 +1,21 @@
+@echo off
+title Hokage AI Trading Bot
+color 0A
+echo.
+echo  ██╗  ██╗ ██████╗ ██╗  ██╗ █████╗  ██████╗ ███████╗
+echo  ██║  ██║██╔═══██╗██║ ██╔╝██╔══██╗██╔════╝ ██╔════╝
+echo  ███████║██║   ██║█████╔╝ ███████║██║  ███╗█████╗
+echo  ██╔══██║██║   ██║██╔═██╗ ██╔══██║██║   ██║██╔══╝
+echo  ██║  ██║╚██████╔╝██║  ██╗██║  ██║╚██████╔╝███████╗
+echo  ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝
+echo.
+echo  Starting Hokage AI Command Centre...
+echo  Dashboard will open at: http://127.0.0.1:5000
+echo.
+echo  REMINDER: Login to Zerodha first thing every morning!
+echo  Goto dashboard ^> Click Login to Zerodha ^> Paste URL
+echo.
+
+cd /d "C:\Users\anant\OneDrive\Documents\AI PROJECT\AI COMMAND CENTRE\Hokage"
+python start.py
+pause

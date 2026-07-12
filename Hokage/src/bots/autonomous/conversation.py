@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
 from bots.autonomous.explainability_aggregator import ExplainabilityAggregator
 
 if TYPE_CHECKING:
@@ -52,9 +52,7 @@ class CommanderConversationEngine:
             return self._explain_portfolio()
 
         # 5. Explain today's market / market regime / sector rotation
-        import sys
-        in_test = "pytest" in sys.modules or "unittest" in sys.modules
-        if (in_test and ("market" in cleaned or "regime" in cleaned or "sector rotation" in cleaned)) or (not in_test and cleaned in ("/intel", "/status")):
+        if query.strip().startswith('/') and query.strip() in ("/intel", "/status"):
             return self._explain_market()
 
         # 6. Explain today's risks
@@ -76,6 +74,22 @@ class CommanderConversationEngine:
         # 10. Explain execution quality
         if "execution" in cleaned or "slippage" in cleaned or "latency" in cleaned:
             return self._explain_execution_quality()
+
+        # 11. Explain opportunities
+        if "opportunity" in cleaned or "opportunities" in cleaned:
+            return self._explain_opportunities()
+            
+        # 12. Explain open positions / current trades
+        if "any trade" in cleaned or "open position" in cleaned or "current trade" in cleaned or "taken any" in cleaned:
+            return self._explain_open_positions()
+
+        # 13. Instructions for taking a trade
+        if any(kw in cleaned for kw in ["take a trade", "take trade", "place a trade", "buy and sell", "execute a trade"]):
+            return self._explain_manual_trade()
+            
+        # 14. Broad manual trade intent catch-all
+        if ("buy" in cleaned or "sell" in cleaned) and ("crude" in cleaned or "nifty" in cleaned or "market" in cleaned or "trade" in cleaned):
+            return self._explain_manual_trade()
 
         # Fallback to dynamic conversation using the LLMProcessor
         import os
@@ -294,3 +308,39 @@ class CommanderConversationEngine:
             f"Average simulated transaction slippage is **{quality.get('average_slippage_pct', 0.02):.3f}%** "
             f"and average latency is **{quality.get('average_latency_ms', 45.0):.1f}ms**."
         )
+
+    def _explain_opportunities(self) -> str:
+        """Explain current trading opportunities."""
+        try:
+            from hokage.router.command_router import CommandRouter
+            cr = CommandRouter(self.orchestrator)
+            res = cr.handle_hokage_opportunities()
+            return res + "\n\nIf you want me to execute a trade based on these opportunities, just say 'take a trade' or specify your order!"
+        except Exception as e:
+            return f"Commander, I encountered an issue scanning for opportunities: {e}"
+
+    def _explain_open_positions(self) -> str:
+        """Explain current open positions in the active venue."""
+        try:
+            context = self.orchestrator.get_execution_context()
+            venue = self.orchestrator.registry.get_venue(context.active_venue_id)
+            if not venue:
+                return "Commander, I cannot access the active trading venue at the moment."
+            
+            positions = venue.get_positions()
+            active_pos = [p for p in positions if p.status.name == "OPEN"]
+            
+            if not active_pos:
+                return f"No, Commander, I haven't taken any active trades on {context.active_venue_id} at this time."
+                
+            resp = f"Yes Commander, I am actively managing {len(active_pos)} open position(s) on {context.active_venue_id}:\n\n"
+            for p in active_pos:
+                side = "LONG" if p.side.name == "BUY" else "SHORT"
+                resp += f"🔹 **{p.instrument.symbol}**: {side} {p.quantity} @ {p.entry_price:.2f} (Current: {p.current_price:.2f}) | Unrealized PnL: {p.unrealized_pnl:.2f}\n"
+            return resp
+        except Exception as e:
+            return f"Commander, I encountered an error checking our positions: {e}"
+
+    def _explain_manual_trade(self) -> str:
+        """Explain how to manually execute a trade via the command palette."""
+        return "Commander, to have me execute a manual trade for you, please use the precise syntax: `buy <quantity> <symbol>` or `sell <quantity> <symbol>`. For example: `buy 100 CRUDE_OIL`. I will route this directly to the active venue."
