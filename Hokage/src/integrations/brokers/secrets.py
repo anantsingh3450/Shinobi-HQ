@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import platform
-import sys
 from pathlib import Path
 import keyring
 
@@ -23,10 +22,10 @@ class SecretManager:
             test_mode: Explicit flag to force isolated in-memory credentials for tests.
         """
         self._secrets_file_path = secrets_file_path or self.resolve_default_secrets_path()
-        # Detect test mode: explicitly requested, running under pytest, or environment override
+        # Test mode is opt-in via explicit flag or the HOKAGE_TEST_MODE config env var.
+        # Production never force-enables it; the test suite sets HOKAGE_TEST_MODE=true.
         self.test_mode = (
             test_mode
-            or ("pytest" in sys.modules)
             or (os.environ.get("HOKAGE_TEST_MODE") == "true")
         )
 
@@ -163,9 +162,9 @@ class SecretManager:
 
     def get_secret(self, key: str, broker: str = "zerodha") -> str | None:
         """Retrieve a specific secret value by key, returning None if not found or placeholder."""
-        # 1. Prioritize environment variable configuration (.env/os.environ)
-        import sys
-        if not self.test_mode and "pytest" not in sys.modules:
+        # 1. Prioritize environment variable configuration (.env/os.environ).
+        # In test mode we skip env/keyring entirely and use the mock keyring below.
+        if not self.test_mode:
             env_key = f"{broker.upper()}_{key.upper()}"
             if env_key in os.environ:
                 val = os.environ[env_key]

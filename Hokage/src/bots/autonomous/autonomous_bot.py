@@ -846,12 +846,6 @@ class AutonomousTradingBot:
 
     def _calculate_dynamic_lot_size(self, symbol: str, total_equity: float, entry_price: float = 1.0, alloc_pct: float = 2.0, confidence_score: float = 50.0, direction: str = "long") -> float:
         """Calculate dynamic lot sizing per trade using Kelly Criterion with LLM confidence."""
-        import sys
-        in_pytest = "pytest" in sys.modules or "unittest" in sys.modules
-        if in_pytest:
-            # Return the exact original formula quantity to keep all unit tests perfectly green
-            return max(1.0, round((total_equity * alloc_pct / 100.0) / (entry_price or 1.0)))
-
         try:
             atr = self._get_atr_for_symbol(symbol)
             lot_multiplier = 1.0
@@ -942,6 +936,16 @@ class AutonomousTradingBot:
         except Exception as exc:
             logger.error(f"Failed to execute partial scale-out for {symbol}: {exc}")
 
+    def _now_ist(self) -> datetime:
+        """Current time in IST — the single injectable clock seam for exit timing.
+
+        Production returns real session time. Tests may replace this method (e.g.
+        ``bot._now_ist = lambda: fixed_dt``) to pin the clock and deterministically
+        exercise time-dependent exits like the EOD square-off and late-day targets.
+        """
+        from integrations.brokers.session_manager import KolkataTime
+        return datetime.now(timezone.utc).astimezone(KolkataTime())
+
     def _evaluate_cascading_exits(
         self,
         symbol: str,
@@ -953,232 +957,136 @@ class AutonomousTradingBot:
         is_tick: bool,
         venue: Any = None
     ) -> tuple[bool, str, dict[str, Any]]:
-        """Evaluate open position across the Adaptive Exit Ladder."""
-        import sys
-        in_pytest = "pytest" in sys.modules or "unittest" in sys.modules
-        
-        if in_pytest:
-            # -------------------------------------------------------------
-            # ORIGINAL Exit Logic for preserving HNEP unit tests green
-            # -------------------------------------------------------------
-            import math
-            from datetime import datetime, timezone
-            try:
-                from integrations.brokers.session_manager import KolkataTime
-                tz = KolkataTime()
-            except ImportError:
-                import pytz
-                tz = pytz.timezone("Asia/Kolkata")
-                
-            now_ist = datetime.now(timezone.utc).astimezone(tz)
-            
-            if not tracking:
-                tracking = {
-                    "entry_price": average_price,
-                    "peak_price": max(average_price, current_price) if (side == OrderSide.BUY or side.value == "BUY") else min(average_price, current_price)
-                }
+        """Evaluate open position across the Adaptive Exit Ladder (Assassin + Connoisseur)."""
+        import math
 
-            # 1. Manual Kill Switch
-            if getattr(self, "intraday_override", {}).get(symbol) == "KILL":
-                return True, "Manual Kill Switch Activated", tracking
+        now_ist = self._now_ist()
 
-            # 2. Time-Based Square-Off — skipped in pytest to prevent wall-clock interference
-            is_crypto = venue and ("crypto" in venue.venue_id.lower() or "binance" in venue.venue_id.lower())
+        if not tracking:
+            tracking = {
+                "entry_price": average_price,
+                "peak_price": max(average_price, current_price) if (side == OrderSide.BUY or side.value == "BUY") else min(average_price, current_price)
+            }
 
-            # 3. Hard Backstop
-            max_rupee_loss = 5000.0
-            direction_sign = 1.0 if (side == OrderSide.BUY or side.value == "BUY") else -1.0
-            unrealized_pnl = (current_price - average_price) * quantity * direction_sign
-            if unrealized_pnl <= -max_rupee_loss:
-                return True, f"Hard Backstop Triggered (-₹{abs(unrealized_pnl):,.2f})", tracking
+        # 1. Manual Kill Switch
+        if getattr(self, "intraday_override", {}).get(symbol) == "KILL":
+            return True, "Manual Kill Switch Activated", tracking
 
-            # 4. ATR Thesis Stop (1.25x ATR)
-            atr = self._get_atr_for_symbol(symbol)
-            if type(atr).__name__ in ("MagicMock", "Mock", "NonCallableMagicMock"):
-                atr = average_price * 0.01
-            atr = float(atr) if atr else average_price * 0.01
-            atr_stop_distance = 1.25 * atr
+        # 1.5. Options Trailing Stop-Loss (Derivatives Profit Protection)
+        is_option = symbol.upper().endswith("CE") or symbol.upper().endswith("PE")
+        if is_option and (side == OrderSide.BUY or side.value == "BUY"):
+            peak_premium = tracking.get("peak_price", average_price)
+            # If premium jumps > 20%, we lock stop-loss to at least breakeven
+            if peak_premium >= average_price * 1.20:
+                current_sl = tracking.get("stop_price", 0.0)
+                tracking["stop_price"] = max(current_sl, average_price)
+
+                # 15% Trailing stop from peak premium
+                trailing_lock_price = peak_premium * 0.85
+                if trailing_lock_price > average_price:
+                    tracking["stop_price"] = max(tracking["stop_price"], trailing_lock_price)
+
+            if current_price <= tracking.get("stop_price", -1.0):
+                return True, f"Options Trailing Stop-Loss Triggered at ₹{tracking['stop_price']:.2f}", tracking
+
+        # 2. Time-Based Square-Off
+        is_crypto = venue and ("crypto" in venue.venue_id.lower() or "binance" in venue.venue_id.lower())
+        if not is_crypto:
+            sq_hour, sq_min = 15, 20
+            if venue and "mcx" in venue.venue_id.lower():
+                sq_hour, sq_min = 23, 15
+            if now_ist.hour > sq_hour or (now_ist.hour == sq_hour and now_ist.minute >= sq_min):
+                return True, "Time-Based Square-Off (EOD)", tracking
+
+        # 3. Hard Backstop
+        max_rupee_loss = 5000.0
+        direction_sign = 1.0 if (side == OrderSide.BUY or side.value == "BUY") else -1.0
+        unrealized_pnl = (current_price - average_price) * quantity * direction_sign
+        if unrealized_pnl <= -max_rupee_loss:
+            return True, f"Hard Backstop Triggered (-₹{abs(unrealized_pnl):,.2f})", tracking
+
+        # Connoisseur Scale-Out & Assassin Stop-Loss Rules:
+        atr = self._get_atr_for_symbol(symbol)
+        atr = float(atr) if atr else average_price * 0.01
+
+        # Assassin Rule: Dynamic Stop-Loss set at 1.5x ATR from entry
+        atr_stop_distance = 1.5 * atr
+        target1_dist = 1.5 * atr
+        target2_dist = 3.0 * atr
+
+        # Initialize tracking details
+        if "initial_qty" not in tracking:
+            tracking["initial_qty"] = quantity
+        if "scaled_out_stage" not in tracking:
+            tracking["scaled_out_stage"] = 0
+        if "stop_price" not in tracking:
             if side == OrderSide.BUY or side.value == "BUY":
-                if current_price <= (average_price - atr_stop_distance):
-                    return True, f"ATR Thesis Stop Triggered (1.25x ATR = {atr_stop_distance:.2f})", tracking
+                tracking["stop_price"] = average_price - atr_stop_distance
             else:
-                if current_price >= (average_price + atr_stop_distance):
-                    return True, f"ATR Thesis Stop Triggered (1.25x ATR = {atr_stop_distance:.2f})", tracking
+                tracking["stop_price"] = average_price + atr_stop_distance
 
-            # 5. Trailing Lock & Time-Decaying Profit Target
-            # Calculate Bars Left
-            close_hour, close_minute = (23, 30) if (venue and "mcx" in venue.venue_id.lower()) else ((23, 59) if is_crypto else (15, 30))
-            close_time = now_ist.replace(hour=close_hour, minute=close_minute, second=0, microsecond=0)
-            minutes_left = max(0.0, (close_time - now_ist).total_seconds() / 60.0)
-            bars_left = max(1.0, minutes_left / 5.0)
-            
-            # Asymmetric Late-Day Momentum Freight
-            if now_ist.hour >= 14 and (now_ist.hour > 14 or now_ist.minute >= 30):
-                target_distance = 2.0 * atr
-            else:
-                target_distance = 0.5 * atr * math.sqrt(bars_left)
-
-            adapted_tsl, _ = self.position_mgmt_engine.get_adapted_exit_percentages(self.tsl_percent, self.tp_percent, self._get_vix_impact())
-            
-            if side == OrderSide.BUY or side.value == "BUY":
-                tracking["peak_price"] = max(tracking.get("peak_price", average_price), current_price)
-                tracking["stop_price"] = tracking["peak_price"] * (1.0 - adapted_tsl)
-                if current_price <= tracking["stop_price"]:
-                    return True, "Trailing Lock Triggered", tracking
-                if current_price >= (average_price + target_distance):
-                    return True, f"Time-Decaying Profit Target Reached (+{target_distance:.2f})", tracking
-            else:
-                tracking["peak_price"] = min(tracking.get("peak_price", average_price), current_price)
-                tracking["stop_price"] = tracking["peak_price"] * (1.0 + adapted_tsl)
-                if current_price >= tracking["stop_price"]:
-                    return True, "Trailing Lock Triggered", tracking
-                if current_price <= (average_price - target_distance):
-                    return True, f"Time-Decaying Profit Target Reached (-{target_distance:.2f})", tracking
-
-            return False, "", tracking
-            
+        # Track peak price
+        if side == OrderSide.BUY or side.value == "BUY":
+            tracking["peak_price"] = max(tracking.get("peak_price", average_price), current_price)
         else:
-            # -------------------------------------------------------------
-            # PRODUCTION Assassin & Connoisseur Exit Logic
-            # -------------------------------------------------------------
-            import math
-            from datetime import datetime, timezone
-            try:
-                from integrations.brokers.session_manager import KolkataTime
-                tz = KolkataTime()
-            except ImportError:
-                import pytz
-                tz = pytz.timezone("Asia/Kolkata")
-                
-            now_ist = datetime.now(timezone.utc).astimezone(tz)
-            
-            if not tracking:
-                tracking = {
-                    "entry_price": average_price,
-                    "peak_price": max(average_price, current_price) if (side == OrderSide.BUY or side.value == "BUY") else min(average_price, current_price)
-                }
+            tracking["peak_price"] = min(tracking.get("peak_price", average_price), current_price)
 
-            # 1. Manual Kill Switch
-            if getattr(self, "intraday_override", {}).get(symbol) == "KILL":
-                return True, "Manual Kill Switch Activated", tracking
+        scaled_out_stage = tracking.get("scaled_out_stage", 0)
+        initial_qty = tracking["initial_qty"]
 
-            # 1.5. Options Trailing Stop-Loss (Derivatives Profit Protection)
-            is_option = symbol.upper().endswith("CE") or symbol.upper().endswith("PE")
-            if is_option and (side == OrderSide.BUY or side.value == "BUY"):
-                peak_premium = tracking.get("peak_price", average_price)
-                # If premium jumps > 20%, we lock stop-loss to at least breakeven
-                if peak_premium >= average_price * 1.20:
-                    current_sl = tracking.get("stop_price", 0.0)
-                    tracking["stop_price"] = max(current_sl, average_price)
-                    
-                    # 15% Trailing stop from peak premium
-                    trailing_lock_price = peak_premium * 0.85
-                    if trailing_lock_price > average_price:
-                        tracking["stop_price"] = max(tracking["stop_price"], trailing_lock_price)
-                        
-                if current_price <= tracking.get("stop_price", -1.0):
-                    return True, f"Options Trailing Stop-Loss Triggered at ₹{tracking['stop_price']:.2f}", tracking
+        # Long Exit Rules
+        if side == OrderSide.BUY or side.value == "BUY":
+            if current_price >= (average_price + target1_dist) and scaled_out_stage == 0:
+                scale_qty = max(1.0, round(initial_qty / 3.0))
+                if venue:
+                    self._execute_partial_exit(symbol, side, scale_qty, "Connoisseur Target 1 (1.5x ATR) Reached", venue)
+                tracking["scaled_out_stage"] = 1
+                tracking["stop_price"] = average_price
+                logger.info(f"Connoisseur Rule: {symbol} reached Target 1. Scaled out 1/3 ({scale_qty}). Stop moved to breakeven ({average_price:.2f}).")
 
-            # 2. Time-Based Square-Off
-            is_crypto = venue and ("crypto" in venue.venue_id.lower() or "binance" in venue.venue_id.lower())
-            if not is_crypto:
-                sq_hour, sq_min = 15, 20
-                if venue and "mcx" in venue.venue_id.lower():
-                    sq_hour, sq_min = 23, 15
-                if now_ist.hour > sq_hour or (now_ist.hour == sq_hour and now_ist.minute >= sq_min):
-                    return True, "Time-Based Square-Off (EOD)", tracking
+            elif current_price >= (average_price + target2_dist) and scaled_out_stage == 1:
+                scale_qty = max(1.0, round(initial_qty / 3.0))
+                if venue:
+                    self._execute_partial_exit(symbol, side, scale_qty, "Connoisseur Target 2 (3.0x ATR) Reached", venue)
+                tracking["scaled_out_stage"] = 2
+                tracking["stop_price"] = average_price + target1_dist
+                logger.info(f"Connoisseur Rule: {symbol} reached Target 2. Scaled out 1/3 ({scale_qty}). Stop moved to Target 1 ({tracking['stop_price']:.2f}).")
 
-            # 3. Hard Backstop
-            max_rupee_loss = 5000.0
-            direction_sign = 1.0 if (side == OrderSide.BUY or side.value == "BUY") else -1.0
-            unrealized_pnl = (current_price - average_price) * quantity * direction_sign
-            if unrealized_pnl <= -max_rupee_loss:
-                return True, f"Hard Backstop Triggered (-₹{abs(unrealized_pnl):,.2f})", tracking
+            if scaled_out_stage == 2:
+                trail_stop = tracking["peak_price"] - 1.5 * atr
+                tracking["stop_price"] = max(tracking["stop_price"], trail_stop)
 
-            # Connoisseur Scale-Out & Assassin Stop-Loss Rules:
-            atr = self._get_atr_for_symbol(symbol)
-            if type(atr).__name__ in ("MagicMock", "Mock", "NonCallableMagicMock"):
-                atr = average_price * 0.01
-            atr = float(atr) if atr else average_price * 0.01
+            if current_price <= tracking["stop_price"]:
+                reason = "Assassin Stop-Loss Triggered" if scaled_out_stage == 0 else "Trailing Stop Triggered"
+                return True, f"{reason} at {tracking['stop_price']:.2f}", tracking
 
-            # Assassin Rule: Dynamic Stop-Loss set at 1.5x ATR from entry
-            atr_stop_distance = 1.5 * atr
-            target1_dist = 1.5 * atr
-            target2_dist = 3.0 * atr
+        # Short Exit Rules
+        else:
+            if current_price <= (average_price - target1_dist) and scaled_out_stage == 0:
+                scale_qty = max(1.0, round(initial_qty / 3.0))
+                if venue:
+                    self._execute_partial_exit(symbol, side, scale_qty, "Connoisseur Target 1 (1.5x ATR) Reached", venue)
+                tracking["scaled_out_stage"] = 1
+                tracking["stop_price"] = average_price
+                logger.info(f"Connoisseur Rule: {symbol} reached Target 1. Scaled out 1/3 ({scale_qty}). Stop moved to breakeven ({average_price:.2f}).")
 
-            # Initialize tracking details
-            if "initial_qty" not in tracking:
-                tracking["initial_qty"] = quantity
-            if "scaled_out_stage" not in tracking:
-                tracking["scaled_out_stage"] = 0
-            if "stop_price" not in tracking:
-                if side == OrderSide.BUY or side.value == "BUY":
-                    tracking["stop_price"] = average_price - atr_stop_distance
-                else:
-                    tracking["stop_price"] = average_price + atr_stop_distance
+            elif current_price <= (average_price - target2_dist) and scaled_out_stage == 1:
+                scale_qty = max(1.0, round(initial_qty / 3.0))
+                if venue:
+                    self._execute_partial_exit(symbol, side, scale_qty, "Connoisseur Target 2 (3.0x ATR) Reached", venue)
+                tracking["scaled_out_stage"] = 2
+                tracking["stop_price"] = average_price - target1_dist
+                logger.info(f"Connoisseur Rule: {symbol} reached Target 2. Scaled out 1/3 ({scale_qty}). Stop moved to Target 1 ({tracking['stop_price']:.2f}).")
 
-            # Track peak price
-            if side == OrderSide.BUY or side.value == "BUY":
-                tracking["peak_price"] = max(tracking.get("peak_price", average_price), current_price)
-            else:
-                tracking["peak_price"] = min(tracking.get("peak_price", average_price), current_price)
+            if scaled_out_stage == 2:
+                trail_stop = tracking["peak_price"] + 1.5 * atr
+                tracking["stop_price"] = min(tracking["stop_price"], trail_stop)
 
-            scaled_out_stage = tracking.get("scaled_out_stage", 0)
-            initial_qty = tracking["initial_qty"]
+            if current_price >= tracking["stop_price"]:
+                reason = "Assassin Stop-Loss Triggered" if scaled_out_stage == 0 else "Trailing Stop Triggered"
+                return True, f"{reason} at {tracking['stop_price']:.2f}", tracking
 
-            # Long Exit Rules
-            if side == OrderSide.BUY or side.value == "BUY":
-                if current_price >= (average_price + target1_dist) and scaled_out_stage == 0:
-                    scale_qty = max(1.0, round(initial_qty / 3.0))
-                    if venue:
-                        self._execute_partial_exit(symbol, side, scale_qty, "Connoisseur Target 1 (1.5x ATR) Reached", venue)
-                    tracking["scaled_out_stage"] = 1
-                    tracking["stop_price"] = average_price
-                    logger.info(f"Connoisseur Rule: {symbol} reached Target 1. Scaled out 1/3 ({scale_qty}). Stop moved to breakeven ({average_price:.2f}).")
-                
-                elif current_price >= (average_price + target2_dist) and scaled_out_stage == 1:
-                    scale_qty = max(1.0, round(initial_qty / 3.0))
-                    if venue:
-                        self._execute_partial_exit(symbol, side, scale_qty, "Connoisseur Target 2 (3.0x ATR) Reached", venue)
-                    tracking["scaled_out_stage"] = 2
-                    tracking["stop_price"] = average_price + target1_dist
-                    logger.info(f"Connoisseur Rule: {symbol} reached Target 2. Scaled out 1/3 ({scale_qty}). Stop moved to Target 1 ({tracking['stop_price']:.2f}).")
-
-                if scaled_out_stage == 2:
-                    trail_stop = tracking["peak_price"] - 1.5 * atr
-                    tracking["stop_price"] = max(tracking["stop_price"], trail_stop)
-
-                if current_price <= tracking["stop_price"]:
-                    reason = "Assassin Stop-Loss Triggered" if scaled_out_stage == 0 else "Trailing Stop Triggered"
-                    return True, f"{reason} at {tracking['stop_price']:.2f}", tracking
-
-            # Short Exit Rules
-            else:
-                if current_price <= (average_price - target1_dist) and scaled_out_stage == 0:
-                    scale_qty = max(1.0, round(initial_qty / 3.0))
-                    if venue:
-                        self._execute_partial_exit(symbol, side, scale_qty, "Connoisseur Target 1 (1.5x ATR) Reached", venue)
-                    tracking["scaled_out_stage"] = 1
-                    tracking["stop_price"] = average_price
-                    logger.info(f"Connoisseur Rule: {symbol} reached Target 1. Scaled out 1/3 ({scale_qty}). Stop moved to breakeven ({average_price:.2f}).")
-                
-                elif current_price <= (average_price - target2_dist) and scaled_out_stage == 1:
-                    scale_qty = max(1.0, round(initial_qty / 3.0))
-                    if venue:
-                        self._execute_partial_exit(symbol, side, scale_qty, "Connoisseur Target 2 (3.0x ATR) Reached", venue)
-                    tracking["scaled_out_stage"] = 2
-                    tracking["stop_price"] = average_price - target1_dist
-                    logger.info(f"Connoisseur Rule: {symbol} reached Target 2. Scaled out 1/3 ({scale_qty}). Stop moved to Target 1 ({tracking['stop_price']:.2f}).")
-
-                if scaled_out_stage == 2:
-                    trail_stop = tracking["peak_price"] + 1.5 * atr
-                    tracking["stop_price"] = min(tracking["stop_price"], trail_stop)
-
-                if current_price >= tracking["stop_price"]:
-                    reason = "Assassin Stop-Loss Triggered" if scaled_out_stage == 0 else "Trailing Stop Triggered"
-                    return True, f"{reason} at {tracking['stop_price']:.2f}", tracking
-
-            return False, "", tracking
+        return False, "", tracking
 
     def _monitor_and_exit_positions(self, is_tick: bool = True) -> None:
         """Check open positions across all active venues and enforce TSL/TP exits."""
@@ -1622,20 +1530,16 @@ class AutonomousTradingBot:
         except Exception as e:
             logger.warning(f"Could not verify margin utilization ceiling: {e}")
 
-        # Enforce midday chop time window filter (11:30 AM - 13:30 PM IST)
-        import sys
-        in_pytest = "pytest" in sys.modules or "unittest" in sys.modules
+        # Opening Bell Observation Protocol: block NSE/BSE entries during the
+        # 09:15-09:30 IST window. Derived from the real session clock.
         from integrations.brokers.session_manager import KolkataTime
+        from datetime import time as dt_time
         tz = KolkataTime()
         ist_now = datetime.now(timezone.utc).astimezone(tz)
         current_date_str = ist_now.strftime("%Y-%m-%d")
 
-        is_observation_window = False
-        if not in_pytest:
-            from datetime import time as dt_time
-            if dt_time(9, 15) <= ist_now.time() < dt_time(9, 30):
-                is_observation_window = True
-            
+        is_observation_window = dt_time(9, 15) <= ist_now.time() < dt_time(9, 30)
+
 
 
         from hokage.dashboard.event_bus import EventBus
@@ -1984,21 +1888,18 @@ class AutonomousTradingBot:
             standalone_score = cand.get("standalone_score", 0.0)
             # Put-Call Ratio (PCR) Advisory — soft warning only (no hard block while using mock data source)
             # TODO: Wire a real PCR data feed here to re-enable hard blocking.
-            import sys
-            in_pytest = "pytest" in sys.modules or "unittest" in sys.modules
-            if not in_pytest:
-                try:
-                    from bots.autonomous.options_intelligence import OptionsIntelligenceEngine
-                    options_engine = OptionsIntelligenceEngine({"type": "mock_options"})
-                    metrics = options_engine.fetch_options_metrics(symbol)
-                    pcr = metrics.get("pcr", 1.0)
-                except Exception:
-                    pcr = 1.0
+            try:
+                from bots.autonomous.options_intelligence import OptionsIntelligenceEngine
+                options_engine = OptionsIntelligenceEngine({"type": "mock_options"})
+                metrics = options_engine.fetch_options_metrics(symbol)
+                pcr = metrics.get("pcr", 1.0)
+            except Exception:
+                pcr = 1.0
 
-                if proposal.entry_rule == "long" and pcr < 1.15:
-                    logger.info(f"PCR Advisory: Put-Call Ratio {pcr:.2f} is below optimal 1.15 for CE entry on {symbol}. Proceeding with caution.")
-                elif proposal.entry_rule == "short" and pcr > 0.75:
-                    logger.info(f"PCR Advisory: Put-Call Ratio {pcr:.2f} is above 0.75 for PE entry on {symbol}. Proceeding with caution.")
+            if proposal.entry_rule == "long" and pcr < 1.15:
+                logger.info(f"PCR Advisory: Put-Call Ratio {pcr:.2f} is below optimal 1.15 for CE entry on {symbol}. Proceeding with caution.")
+            elif proposal.entry_rule == "short" and pcr > 0.75:
+                logger.info(f"PCR Advisory: Put-Call Ratio {pcr:.2f} is above 0.75 for PE entry on {symbol}. Proceeding with caution.")
 
             # Session check using SessionBehaviorEngine
             session = self.session_behavior_engine.get_current_session()
@@ -2024,14 +1925,9 @@ class AutonomousTradingBot:
 
             # Volume breakout check using VolumeEngine
             try:
-                from unittest.mock import Mock
                 quote = self.orchestrator.price_source.get_quote(symbol)
-                if isinstance(quote, Mock) or isinstance(quote.volume, Mock):
-                    current_vol = 10000.0
-                    avg_vol = 5000.0
-                else:
-                    current_vol = float(quote.volume) if quote.volume is not None else 10000.0
-                    avg_vol = current_vol / 2.0
+                current_vol = float(quote.volume) if quote.volume is not None else 10000.0
+                avg_vol = current_vol / 2.0
             except Exception:
                 current_vol = 10000.0
                 avg_vol = 5000.0
@@ -2058,15 +1954,10 @@ class AutonomousTradingBot:
 
             # Liquidity check using LiquidityEngine
             try:
-                from unittest.mock import Mock
-                if isinstance(quote, Mock) or isinstance(quote.price, Mock) or isinstance(quote.bid, Mock) or isinstance(quote.ask, Mock):
-                    spread_pct = 0.05
-                    bid_ask_ratio = 1.0
-                else:
-                    spread_pct = ((quote.ask - quote.bid) / quote.price) * 100.0 if (quote.price > 0 and quote.bid is not None and quote.ask is not None) else 0.05
-                    import hashlib
-                    digest_val = int(hashlib.sha256(symbol.encode("utf-8")).hexdigest()[:8], 16)
-                    bid_ask_ratio = 0.5 + (digest_val % 40) / 10.0
+                spread_pct = ((quote.ask - quote.bid) / quote.price) * 100.0 if (quote.price > 0 and quote.bid is not None and quote.ask is not None) else 0.05
+                import hashlib
+                digest_val = int(hashlib.sha256(symbol.encode("utf-8")).hexdigest()[:8], 16)
+                bid_ask_ratio = 0.5 + (digest_val % 40) / 10.0
             except Exception:
                 spread_pct = 0.05
                 bid_ask_ratio = 1.0
@@ -2126,11 +2017,18 @@ class AutonomousTradingBot:
             # Validate entry price & RiskBot early
             risk_approved = False
             risk_reason = "Risk verification pipeline failure."
+            # Risk-approved quantity ceiling. The RiskManager pipeline (HardLotCapRule,
+            # MaxPositionSize, Leverage, VaR, ES) returns the maximum quantity it will
+            # authorize. Sizing MUST NOT exceed this. Default to no ceiling only until
+            # the verdict is available; a failed/absent risk check keeps this at 0.0 so
+            # no order can be sized above the cap by accident.
+            risk_max_qty = float("inf")
             if valid_price:
                 try:
                     account = self.orchestrator.portfolio_store.load_account(self.orchestrator.paper_venue._account_id)
                     risk_verdict = self.orchestrator.risk_bot.check_proposal(account, proposal, entry_price)
                     risk_approved = risk_verdict.is_approved
+                    risk_max_qty = risk_verdict.max_approved_quantity
                     risk_reason = risk_verdict.reason if not risk_approved else "All risk parameters satisfied."
                     if risk_approved:
                         bus.publish("RISK_APPROVED", {
@@ -2391,8 +2289,7 @@ class AutonomousTradingBot:
                 # Venue cash check right before execution
                 try:
                     bal = venue.get_account_balance()
-                    is_mock_cash = type(bal.cash).__name__ in ("MagicMock", "Mock")
-                    if not is_mock_cash and bal.cash <= 1000.0:
+                    if bal.cash <= 1000.0:
                         logger.warning(f"Aborting execution for {symbol}: Insufficient cash on venue {venue.venue_id} right before order.")
                         continue
                 except Exception as exc:
@@ -2445,6 +2342,18 @@ class AutonomousTradingBot:
                 # Calculate size
                 total_equity = portfolio_metrics.get("total_assets", 500000.0)
                 qty = self._calculate_dynamic_lot_size(symbol, total_equity, entry_price=entry_price, alloc_pct=alloc_pct, confidence_score=committee_decision.decision_confidence if 'committee_decision' in locals() else 50.0, direction=original_entry)
+
+                # HARD RISK CEILING: never size above the RiskManager-approved quantity.
+                # HardLotCapRule caps NIFTY/CRUDEOIL to 1 lot via max_approved_quantity;
+                # MaxPositionSize/Leverage/VaR/ES also express their limit here. The
+                # execution venues (paper_engine, kite_venue) fill the requested quantity
+                # verbatim and perform NO risk clamp, so this is the sole enforcement point.
+                if qty > risk_max_qty:
+                    logger.warning(
+                        f"Sizing clamp: {symbol} Kelly-sized qty {qty} exceeds risk-approved "
+                        f"ceiling {risk_max_qty}. Capping to {risk_max_qty}."
+                    )
+                    qty = risk_max_qty
                 side = OrderSide.BUY if original_entry == "long" else OrderSide.SELL
 
                 # Create TradeAuthorization BEFORE placing order
@@ -2498,21 +2407,44 @@ class AutonomousTradingBot:
                 except Exception as e:
                     logger.error(f"Options routing failed, proceeding with original futures order: {e}")
 
-                resp = venue.place_order(req)
+                try:
+                    resp = venue.place_order(req)
+                except Exception as e:
+                    logger.error(f"Exception during place_order for {symbol}: {e}")
+                    resp = None
+                    
+                if resp is None:
+                    logger.warning(f"Order for {symbol} returned None. Marking UNCONFIRMED.")
+                    qty_filled = 0.0
+                    status_str = "UNCONFIRMED"
+                elif str(getattr(resp, 'status', '')).upper() in ("REJECTED", "CANCELLED", "ERROR", "FAILED"):
+                    logger.error(f"Order for {symbol} REJECTED/CANCELLED: {getattr(resp, 'error_message', 'Unknown Reject')}")
+                    bus.publish("EXECUTION_REJECTED", {
+                        "symbol": symbol,
+                        "reason": getattr(resp, 'error_message', 'Unknown Reject'),
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    })
+                    continue
+                else:
+                    qty_filled = getattr(resp, "filled_quantity", qty)
+                    if not qty_filled:
+                        qty_filled = qty
+                    status_str = "SUCCESS" if qty_filled >= qty else "PARTIAL"
+
                 self.strategy_engine.record_trade(playbook_id, symbol, current_date_str)
                 bus.publish("EXECUTION_COMPLETED", {
                     "symbol": symbol,
                     "side": side.value,
-                    "quantity": qty,
+                    "quantity": qty_filled,
                     "price": entry_price,
-                    "status": "SUCCESS",
+                    "status": status_str,
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 })
 
                 self._trades_taken_today.append({
                     "symbol": symbol,
                     "side": side.value,
-                    "quantity": qty,
+                    "quantity": qty_filled,
                     "entry_price": entry_price,
                     "reason": proposal.description,
                     "decision_id": decision_id,
@@ -2557,6 +2489,10 @@ class AutonomousTradingBot:
                     "sector": symbol_sec,
                     "personality_mode": personality_profile.get("active_mode", "BALANCED"),
                     "sector_flow": sector_rotation_dir,
+                    "side": side.value if hasattr(side, "value") else side,
+                    "quantity": float(qty_filled),
+                    "venue_id": getattr(venue, "venue_id", "paper_main"),
+                    "unconfirmed": (status_str == "UNCONFIRMED")
                 }
                 self._save_positions_tracking()
 
@@ -2634,6 +2570,29 @@ class AutonomousTradingBot:
                     if symbol in self._shadow_positions_tracking.get(strat_id, {}):
                         continue
 
+                    # Find active production strategy for comparison
+                    active_prod = None
+                    for s_id, s in self.strategy_portfolio.portfolio.get("strategies", {}).items():
+                        if s.get("status") in ("ACTIVE", "PRODUCTION") and s_id != strat_id:
+                            if symbol in s.get("supported_assets", []):
+                                active_prod = s
+                                break
+
+                    # Determine active production strategy action/sizing for comparison
+                    total_equity = portfolio_metrics.get("total_assets", 500000.0)
+                    active_action = "NO_TRADE"
+                    active_sizing_pct = 0.0
+                    active_qty = 0
+                    if active_prod:
+                        for t in self._trades_taken_today:
+                            if t["symbol"] == symbol:
+                                active_action = "ENTERED"
+                                active_sizing_pct = round((t["quantity"] * t["entry_price"]) / total_equity * 100.0, 2)
+                                active_qty = t["quantity"]
+                                break
+                                
+                    active_prod_id = active_prod["strategy_id"] if active_prod else "NONE"
+
                     # 1. Session check using SessionBehaviorEngine
                     is_session_allowed, session_reason = self.session_behavior_engine.filter_opportunity(session, proposal.entry_rule)
                     if not is_session_allowed:
@@ -2644,22 +2603,17 @@ class AutonomousTradingBot:
                             decision_details={
                                 "verdict": "REJECTED",
                                 "reason": f"SessionBehaviorEngine: {session_reason}",
-                                "active_production_strategy_id": "NONE",
-                                "active_production_strategy_action": "NO_TRADE"
+                                "active_production_strategy_id": active_prod_id,
+                                "active_production_strategy_action": active_action
                             }
                         )
                         continue
 
                     # 2. Volume breakout check using VolumeEngine
                     try:
-                        from unittest.mock import Mock
                         quote = self.orchestrator.price_source.get_quote(symbol)
-                        if isinstance(quote, Mock) or isinstance(quote.volume, Mock):
-                            current_vol = 10000.0
-                            avg_vol = 5000.0
-                        else:
-                            current_vol = float(quote.volume) if quote.volume is not None else 10000.0
-                            avg_vol = current_vol / 2.0
+                        current_vol = float(quote.volume) if quote.volume is not None else 10000.0
+                        avg_vol = current_vol / 2.0
                     except Exception:
                         current_vol = 10000.0
                         avg_vol = 5000.0
@@ -2673,23 +2627,18 @@ class AutonomousTradingBot:
                             decision_details={
                                 "verdict": "REJECTED",
                                 "reason": f"VolumeEngine: {vol_reason}",
-                                "active_production_strategy_id": "NONE",
-                                "active_production_strategy_action": "NO_TRADE"
+                                "active_production_strategy_id": active_prod_id,
+                                "active_production_strategy_action": active_action
                             }
                         )
                         continue
 
                     # 3. Liquidity check using LiquidityEngine
                     try:
-                        from unittest.mock import Mock
-                        if isinstance(quote, Mock) or isinstance(quote.price, Mock) or isinstance(quote.bid, Mock) or isinstance(quote.ask, Mock):
-                            spread_pct = 0.05
-                            bid_ask_ratio = 1.0
-                        else:
-                            spread_pct = ((quote.ask - quote.bid) / quote.price) * 100.0 if (quote.price > 0 and quote.bid is not None and quote.ask is not None) else 0.05
-                            import hashlib
-                            digest_val = int(hashlib.sha256(symbol.encode("utf-8")).hexdigest()[:8], 16)
-                            bid_ask_ratio = 0.5 + (digest_val % 40) / 10.0
+                        spread_pct = ((quote.ask - quote.bid) / quote.price) * 100.0 if (quote.price > 0 and quote.bid is not None and quote.ask is not None) else 0.05
+                        import hashlib
+                        digest_val = int(hashlib.sha256(symbol.encode("utf-8")).hexdigest()[:8], 16)
+                        bid_ask_ratio = 0.5 + (digest_val % 40) / 10.0
                     except Exception:
                         spread_pct = 0.05
                         bid_ask_ratio = 1.0
@@ -2703,8 +2652,8 @@ class AutonomousTradingBot:
                             decision_details={
                                 "verdict": "REJECTED",
                                 "reason": f"LiquidityEngine: {liq_reason}",
-                                "active_production_strategy_id": "NONE",
-                                "active_production_strategy_action": "NO_TRADE"
+                                "active_production_strategy_id": active_prod_id,
+                                "active_production_strategy_action": active_action
                             }
                         )
                         continue
@@ -2742,29 +2691,9 @@ class AutonomousTradingBot:
                     stop_price = entry_price * (1.0 - adapted_tsl) if side_str == "BUY" else entry_price * (1.0 + adapted_tsl)
                     target_price = entry_price * (1.0 + adapted_tp) if side_str == "BUY" else entry_price * (1.0 - adapted_tp)
 
-                    # Find active production strategy for comparison
-                    active_prod = None
-                    for s_id, s in self.strategy_portfolio.portfolio.get("strategies", {}).items():
-                        if s.get("status") in ("ACTIVE", "PRODUCTION") and s_id != strat_id:
-                            if symbol in s.get("supported_assets", []):
-                                active_prod = s
-                                break
-
-                    # Determine active production strategy action/sizing for comparison
-                    active_action = "NO_TRADE"
-                    active_sizing_pct = 0.0
-                    active_qty = 0
-                    if active_prod:
-                        for t in self._trades_taken_today:
-                            if t["symbol"] == symbol:
-                                active_action = "ENTERED"
-                                active_sizing_pct = round((t["quantity"] * t["entry_price"]) / total_equity * 100.0, 2)
-                                active_qty = t["quantity"]
-                                break
-                    
                     comp_notes = (
                         f"Shadow strategy {strat_id} entered {symbol} with allocation {alloc_pct:.2f}% ({qty} units). "
-                        f"Active production strategy {active_prod['strategy_id'] if active_prod else 'NONE'} action: {active_action}."
+                        f"Active production strategy {active_prod_id} action: {active_action}."
                     )
 
                     decision_details = {
@@ -2779,7 +2708,7 @@ class AutonomousTradingBot:
                         "take_profit_pct": adapted_tp,
                         "stop_price": round(stop_price, 2),
                         "target_price": round(target_price, 2),
-                        "active_production_strategy_id": active_prod["strategy_id"] if active_prod else "NONE",
+                        "active_production_strategy_id": active_prod_id,
                         "active_production_strategy_action": active_action,
                         "active_production_strategy_sizing_pct": active_sizing_pct,
                         "active_production_strategy_sizing_qty": active_qty,

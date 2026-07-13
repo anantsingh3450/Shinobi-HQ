@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 
@@ -95,11 +96,22 @@ _YAHOO_MAPPING: dict[str, str] = {
 class MockMarketDataProvider:
     """Mock market data provider for deterministic local testing with live unauthenticated fallback support."""
 
+    def __init__(self, allow_public_fallback: bool | None = None) -> None:
+        """Configure the mock provider.
+
+        Args:
+            allow_public_fallback: When True, unauthenticated public feeds
+                (Binance/Yahoo) may be queried for a live price if no broker
+                credentials are configured. When None (default), this is enabled
+                unless the ``HOKAGE_DISABLE_PUBLIC_FEED=true`` offline config flag
+                is set (the test suite sets it to keep runs hermetic).
+        """
+        if allow_public_fallback is None:
+            allow_public_fallback = os.environ.get("HOKAGE_DISABLE_PUBLIC_FEED") != "true"
+        self._allow_public_fallback = allow_public_fallback
+
     def _are_credentials_configured(self) -> bool:
         """Check if real broker credentials are configured via environment or keyring."""
-        import sys
-        if "pytest" in sys.modules:
-            return True
         try:
             from integrations.brokers.secrets import SecretManager
             sm = SecretManager()
@@ -230,7 +242,7 @@ class MockMarketDataProvider:
 
         price = None
         is_live = False
-        if not self._are_credentials_configured():
+        if getattr(self, "_allow_public_fallback", True) and not self._are_credentials_configured():
             price = self._fetch_public_price(instrument.symbol)
             if price is not None:
                 is_live = True

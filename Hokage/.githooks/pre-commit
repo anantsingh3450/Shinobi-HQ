@@ -1,0 +1,19 @@
+#!/usr/bin/env sh
+# Phase 1.5 tripwire — block commits that reintroduce test-environment sniffs
+# in production src/. Runs the fast, dedicated tripwire test only.
+#
+# Enabled via:  git config core.hooksPath .githooks
+
+python -m pytest tests/test_no_mock_sniffing_in_src.py -q
+status=$?
+if [ "$status" -ne 0 ]; then
+  echo ""
+  echo "=============================================================="
+  echo "COMMIT BLOCKED: environment-sniffing detected in src/."
+  echo "Project Law: production code must never detect or branch on a"
+  echo "test environment. Fix the TEST or add a real DI/config seam —"
+  echo "never 'pytest' in sys.modules / isinstance(x, Mock)."
+  echo "=============================================================="
+  exit 1
+fi
+exit 0

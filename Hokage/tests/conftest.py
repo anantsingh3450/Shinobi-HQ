@@ -2,6 +2,19 @@
 
 from __future__ import annotations
 
+# Force credential isolation for the whole suite via the production-supported
+# config flag (NOT an in-production test sniff). SecretManager and other
+# components honor HOKAGE_TEST_MODE=true to use isolated in-memory credentials
+# instead of the real OS keyring. Set at conftest import so it is in effect
+# before any SecretManager is constructed.
+import os as _os
+_os.environ.setdefault("HOKAGE_TEST_MODE", "true")
+# Keep the suite hermetic: never let the mock data provider reach out to
+# Binance/Yahoo public feeds during tests. Production leaves this unset.
+_os.environ.setdefault("HOKAGE_DISABLE_PUBLIC_FEED", "true")
+# Never make real external LLM (Gemini) calls during tests.
+_os.environ.setdefault("HOKAGE_DISABLE_LLM", "true")
+
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -87,3 +100,58 @@ def mock_source(sample_finding: ResearchFinding) -> MockResearchSource:
         _name="Market Data",
         findings=(sample_finding,),
     )
+
+from integrations.brokers.models import OrderResponse, OrderStatus, OrderSide, OrderRequest
+
+@pytest.fixture
+def filled_order_response():
+    def _factory(req: OrderRequest) -> OrderResponse:
+        return OrderResponse(
+            venue_order_id="TEST_ORDER_1",
+            venue_id="paper_main",
+            instrument=req.instrument,
+            side=req.side,
+            status=OrderStatus.FILLED,
+            quantity=req.quantity,
+            filled_quantity=req.quantity,
+            average_price=req.price if req.price and req.price > 0 else 100.0,
+        )
+    return _factory
+
+@pytest.fixture
+def partial_order_response():
+    def _factory(req: OrderRequest) -> OrderResponse:
+        return OrderResponse(
+            venue_order_id="TEST_ORDER_2",
+            venue_id="paper_main",
+            instrument=req.instrument,
+            side=req.side,
+            status=OrderStatus.PARTIALLY_FILLED,
+            quantity=req.quantity,
+            filled_quantity=req.quantity / 2.0,
+            average_price=req.price if req.price and req.price > 0 else 100.0,
+        )
+    return _factory
+
+@pytest.fixture
+def rejected_order_response():
+    def _factory(req: OrderRequest) -> OrderResponse:
+        return OrderResponse(
+            venue_order_id="TEST_ORDER_3",
+            venue_id="paper_main",
+            instrument=req.instrument,
+            side=req.side,
+            status=OrderStatus.REJECTED,
+            quantity=req.quantity,
+            filled_quantity=0.0,
+            average_price=0.0,
+            error_message="Insufficient margin"
+        )
+    return _factory
+
+@pytest.fixture
+def timeout_order_response():
+    def _factory(req: OrderRequest) -> None:
+        return None
+    return _factory
+

@@ -872,3 +872,40 @@ class ExpectedShortfallRiskRule(RiskManager):
                 f"Max qty within {self.max_es_pct * 100:.1f}% ES budget: {max_qty}."
             ),
         )
+
+class HardLotCapRule(RiskManager):
+    """Enforces a strict per-asset lot cap at the order layer."""
+
+    def __init__(self, resolver=None) -> None:
+        self.resolver = resolver
+
+    def check_order(
+        self,
+        account: Account,
+        proposal: StrategyProposal,
+        entry_price: float,
+    ) -> RiskVerdict:
+        cap = float("inf")
+        if self.resolver:
+            try:
+                from hokage.memory.profile import ProfileService
+                ps = ProfileService(self.resolver)
+                prof = ps.get_profile()
+                caps = prof.get("asset_lot_caps", {})
+                if proposal.market in caps:
+                    cap = float(caps[proposal.market])
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"Failed to read asset_lot_caps: {e}")
+        
+        if cap == float("inf"):
+            if "NIFTY" in proposal.market:
+                cap = 1.0
+            elif "CRUDEOIL" in proposal.market:
+                cap = 1.0
+        
+        return RiskVerdict(
+            is_approved=True,
+            max_approved_quantity=cap,
+            reason=f"HardLotCapRule limit capped at {cap} lots for {proposal.market}."
+        )

@@ -3,14 +3,21 @@ from __future__ import annotations
 import logging
 import json
 import os
-import sys
 from pathlib import Path
 from typing import Any
 
-is_testing = "pytest" in sys.modules or any("pytest" in arg for arg in sys.argv)
-if not is_testing:
-    from dotenv import load_dotenv
-    load_dotenv(r"C:\Users\anant\OneDrive\Documents\AI PROJECT\AI COMMAND CENTRE\Hokage\.env")
+def _load_project_dotenv() -> None:
+    """Load the repo-root .env if present (portable; does not override existing env)."""
+    try:
+        from dotenv import load_dotenv
+    except Exception:
+        return
+    env_path = Path(__file__).resolve().parents[3] / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+
+
+_load_project_dotenv()
 
 logger = logging.getLogger("Hokage.LLMProcessor")
 HISTORY_FILE = Path("hokage_brain/intelligence/conversation_history.json")
@@ -22,13 +29,14 @@ def get_ai_api_key_info() -> tuple[str | None, str | None]:
     """
     from pathlib import Path
 
-    if is_testing:
+    # Offline / safe mode: skip all external LLM key discovery (prevents real
+    # Gemini calls). Production leaves this unset; the test suite sets it.
+    if os.environ.get("HOKAGE_DISABLE_LLM") == "true":
         return None, None
 
     def is_valid_key(key: str) -> bool:
         if not key:
             return False
-        return key.startswith("AIza") or key.startswith("AQ.")
         return key.startswith("AIza") or key.startswith("AQ.")
     
     for name in ["GEMINI_API_KEY", "GOOGLE_API_KEY", "API_KEY", "AI_KEY"]:

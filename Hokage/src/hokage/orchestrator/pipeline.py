@@ -30,6 +30,7 @@ from bots.risk.rules import (
     PortfolioBetaRiskRule,
     DynamicVaRSizingRule,
     ExpectedShortfallRiskRule,
+    HardLotCapRule,
 )
 from bots.strategy.generators import HeuristicStrategyGenerator
 from bots.strategy.strategy_bot import StrategyBot
@@ -150,6 +151,7 @@ class HokageOrchestrator:
                     PortfolioBetaRiskRule(),
                     DynamicVaRSizingRule(),
                     ExpectedShortfallRiskRule(),
+                    HardLotCapRule(resolver=self.resolver),
                 ]
             )
         )

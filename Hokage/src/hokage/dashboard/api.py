@@ -6,11 +6,21 @@ Built on Flask, backed by DashboardService (read-only).
 from __future__ import annotations
 
 import os
-import sys
-is_testing = "pytest" in sys.modules or any("pytest" in arg for arg in sys.argv)
-if not is_testing:
-    from dotenv import load_dotenv
-    load_dotenv(r"C:\Users\anant\OneDrive\Documents\AI PROJECT\AI COMMAND CENTRE\Hokage\.env")
+
+
+def _load_project_dotenv() -> None:
+    """Load the repo-root .env if present (portable; does not override existing env)."""
+    try:
+        from dotenv import load_dotenv
+    except Exception:
+        return
+    from pathlib import Path
+    env_path = Path(__file__).resolve().parents[3] / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+
+
+_load_project_dotenv()
 
 from datetime import datetime, timezone
 import json

@@ -102,16 +102,26 @@ def test_position_allocation_engine(mock_venue, mock_cache):
     awareness = PortfolioAwarenessEngine(mock_venue, mock_cache)
     engine = PositionAllocationEngine(awareness)
     
-    # TCS (IT sector) has existing exposure = 16%.
-    # Strong Buy (Conviction 90) suggest base 2.0% allocation.
+    # Real fractional-Kelly sizing (the prior "STRONG BUY / 1.5" table was a
+    # now-removed `if "pytest" in sys.modules` bypass, never the real logic).
+    # High conviction (90): Kelly wants >5%, capped to 5% single-position, then
+    # scaled to the 2.0% default Capital-Preservation ceiling. Action is BUY —
+    # the Kelly path never emits "STRONG BUY".
     res_tcs = engine.evaluate_allocation("TCS", conviction_score=90)
-    assert res_tcs["action"] == "STRONG BUY"
+    assert res_tcs["action"] == "BUY"
     assert res_tcs["suggested_allocation_pct"] == 2.0
-    
-    # Banking has 0% exposure. Allocation should be fully suggested.
+
+    # Conviction 80: same Kelly saturation → BUY, capped to the 2.0% ceiling.
+    # NOTE (design debt, Phase 4): with payoff ratio b=1.5, every conviction
+    # p>~0.66 saturates the 5% cap, so 71–100 all collapse to the same size.
     res_sbin = engine.evaluate_allocation("SBIN", conviction_score=80)
     assert res_sbin["action"] == "BUY"
-    assert res_sbin["suggested_allocation_pct"] == 1.5
+    assert res_sbin["suggested_allocation_pct"] == 2.0
+
+    # Low conviction (30): Kelly fraction goes <= 0 → AVOID, zero allocation.
+    res_low = engine.evaluate_allocation("SBIN", conviction_score=30)
+    assert res_low["action"] == "AVOID"
+    assert res_low["suggested_allocation_pct"] == 0.0
 
 
 def test_portfolio_constraint_enforcement(mock_venue, mock_cache):

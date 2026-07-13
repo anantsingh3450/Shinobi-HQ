@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import pytest
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 from bots.autonomous.autonomous_bot import AutonomousTradingBot
 from bots.strategy.models import StrategyProposal
 from bots.backtest.models import BacktestResult
 from integrations.brokers.models import ExecutionMode, ExecutionContext, AccountBalance
+from bots.risk.models import RiskVerdict
 
 @pytest.fixture
 def mock_orchestrator():
@@ -30,6 +32,15 @@ def mock_orchestrator():
     
     orch.registry.get_venue.return_value = mock_venue
     orch.paper_venue._account_id = "paper"
+
+    # RiskBot must return a real RiskVerdict — the entry path reads
+    # max_approved_quantity to clamp sizing, so a bare MagicMock would break the
+    # numeric comparison. inf = approved with no quantity ceiling for this test.
+    orch.risk_bot.check_proposal.return_value = RiskVerdict(
+        is_approved=True,
+        max_approved_quantity=float("inf"),
+        reason="Approved",
+    )
     
     # Mock price source
     orch.price_source.get_price.return_value = 100.0
@@ -51,10 +62,12 @@ def isolate_path_resolver(tmp_path):
     with patch.object(PathResolver, "__init__", mock_init):
         yield
 
-def test_shadow_mode_lifecycle_and_promotion(mock_orchestrator, tmp_path):
+def test_shadow_mode_lifecycle_and_promotion(mock_orchestrator, tmp_path, filled_order_response):
     # Initialize bot
     bot = AutonomousTradingBot(mock_orchestrator, watchlist=["TCS"], scan_interval_seconds=1)
     
+    mock_orchestrator.registry.get_venue.return_value.place_order.side_effect = filled_order_response
+
     # 1. Register candidate strategy under SHADOW_MODE
     strat_id = bot.strategy_portfolio.register_strategy(
         name="ShadowAlpha",
@@ -137,9 +150,10 @@ def test_shadow_mode_lifecycle_and_promotion(mock_orchestrator, tmp_path):
     hold_dec = json.loads(lines[-1])
     assert hold_dec["decision_type"] == "HOLD"
     
-    # 3. Run monitoring loop - trailing stop hit (price drops below peak * (1 - tsl))
-    # Adapted TSL is 0.05. Peak is 102.0. Stop price is 102 * 0.95 = 96.9.
-    # Set price to 95.0.
+    # 3. Run monitoring loop - stop hit. Entry 100, ATR fallback = 95*1.5% = 1.425,
+    # Assassin stop = 100 - 1.5*1.425 = ~97.86; price 95 is below it -> exit.
+    # Pin the clock mid-session so the EOD square-off does not pre-empt the stop.
+    bot._now_ist = lambda: datetime(2026, 7, 13, 11, 0, tzinfo=timezone.utc)
     bot.orchestrator.price_source.get_price.return_value = 95.0
     bot._monitor_and_exit_positions()
     
@@ -155,7 +169,9 @@ def test_shadow_mode_lifecycle_and_promotion(mock_orchestrator, tmp_path):
     lines = shadow_file.read_text().splitlines()
     exit_dec = json.loads(lines[-1])
     assert exit_dec["decision_type"] == "EXIT"
-    assert "ATR Thesis Stop" in exit_dec["details"]["exit_reason"] or "Trailing Stop-Loss Triggered" in exit_dec["details"]["exit_reason"]
+    # Production Assassin/Connoisseur ladder (was "ATR Thesis Stop" under the removed
+    # pytest-only exit branch).
+    assert "Assassin Stop-Loss" in exit_dec["details"]["exit_reason"] or "Trailing Stop" in exit_dec["details"]["exit_reason"]
     
     # 4. Check statistical validation transitions
     # Register probation strategy

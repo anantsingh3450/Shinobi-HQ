@@ -5,13 +5,12 @@ import pytest
 from unittest.mock import MagicMock
 
 from bots.autonomous.cache import IntelligenceCache
+from bots.autonomous.conviction import ConvictionScoreEngine, NoTradeDecisionEngine
 from bots.autonomous.predictive import (
     MarketRegimeEngine,
     MacroCorrelationEngine,
     EventImpactPredictor,
     SectorFlowForecastEngine,
-    ConvictionScoreEngine,
-    NoTradeDecisionEngine,
     PredictionAccuracyTracker,
 )
 from bots.autonomous.discovery import OpportunityDiscoveryEngine

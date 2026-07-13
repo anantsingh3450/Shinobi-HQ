@@ -71,10 +71,9 @@ class ConvictionScoreEngine:
         sector: str | None = None,
     ) -> dict[str, Any]:
         """Compute weighted conviction score, grade, breakdown, and decision_id."""
-        # Clean potential Mock/MagicMock values passed from unit tests
+        # Coerce inputs to float, falling back to the default for any
+        # non-numeric value.
         def _clean_val(val, default):
-            if type(val).__name__ in ("MagicMock", "Mock", "NonCallableMagicMock"):
-                return default
             try:
                 return float(val)
             except Exception:

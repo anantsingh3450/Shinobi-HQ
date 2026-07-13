@@ -10,7 +10,6 @@ import sqlite3
 import logging
 import shutil
 import threading
-import sys
 from datetime import datetime, timezone
 
 from hokage.memory.resolver import PathResolver
@@ -21,16 +20,13 @@ class SqliteStorageEngine:
 
     @staticmethod
     def is_active(resolver: PathResolver) -> bool:
-        """Check if the SQLite database is active (exists and schema version >= 1)."""
-        # If running under pytest, only activate SQLite if we are running the persistence tests.
-        # This keeps the test suite completely isolated, prevents cross-test contamination,
-        # and ensures 100% backward compatibility for all 383 legacy JSON-based tests.
-        if "pytest" in sys.modules:
-            import sys as py_sys
-            is_persistence_test = any("test_sqlite_persistence" in arg for arg in py_sys.argv)
-            if not is_persistence_test:
-                return False
+        """Check if the SQLite database is active (exists and schema version >= 1).
 
+        The backend is selected purely on real state: a migrated ``hokage.db``
+        under the active brain root activates the SQLite stores; otherwise the
+        legacy JSON stores are used. Test isolation comes from each test's
+        tmp_path brain root, not from detecting the test environment.
+        """
         db_path = resolver.resolve_brain_root() / "hokage.db"
         if not db_path.exists():
             return False

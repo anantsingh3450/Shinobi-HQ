@@ -136,12 +136,30 @@ class RiskManager:
                 )
             
             # 3. Attempt to liquidate all active positions
-            try:
-                for asset, pos_data in list(self.bot._active_positions_tracking.items()):
+            for asset, pos_data in list(self.bot._active_positions_tracking.items()):
+                try:
                     logger.warning(f"Kill-Switch liquidating {asset}")
-                    self.bot._execute_partial_exit(asset, pos_data, size_pct=1.0, reason="KILL_SWITCH")
-            except Exception as e:
-                logger.error(f"Error liquidating positions during kill-switch: {e}")
+                    side_str = pos_data.get("side", "BUY")
+                    from integrations.brokers.models import OrderSide
+                    side = OrderSide(side_str) if hasattr(OrderSide, side_str) else (OrderSide.BUY if side_str == "BUY" else OrderSide.SELL)
+                    qty = float(pos_data.get("quantity", 1.0))
+                    venue_id = pos_data.get("venue_id", "paper_main")
+                    venue = self.bot.orchestrator.registry.get_venue(venue_id)
+                    if not venue:
+                        venue = getattr(self.bot.orchestrator, 'paper_venue', None)
+                        
+                    if not venue:
+                        raise ValueError(f"Venue {venue_id} not found and paper_venue unavailable.")
+
+                    self.bot._execute_partial_exit(
+                        symbol=asset,
+                        side=side,
+                        quantity=qty,
+                        reason="KILL_SWITCH",
+                        venue=venue
+                    )
+                except Exception as e:
+                    logger.error(f"Error liquidating position {asset} during kill-switch: {e}")
                 
             return False
         return True

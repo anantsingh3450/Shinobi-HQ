@@ -79,16 +79,24 @@ def test_autonomous_bot_monitor_exit_long_tsl(mock_orchestrator):
     
     mock_venue = mock_orchestrator.registry.get_venue.return_value
     mock_venue.get_positions.return_value = [pos]
-    
+
+    # Real price so _get_atr_for_symbol returns a numeric ATR (fallback = price*1.5%).
+    mock_orchestrator.price_source.get_price.return_value = 2800.0
+    # Pin the exit clock to mid-session (11:00 IST) so the EOD square-off does not fire.
+    bot._now_ist = lambda: datetime(2026, 7, 13, 11, 0, tzinfo=timezone.utc)
+
     bot._monitor_and_exit_positions()
-    
+
     # Verify exit order was placed
     mock_venue.place_order.assert_called_once()
     exit_req = mock_venue.place_order.call_args[0][0]
     assert exit_req.instrument.symbol == "TCS"
     assert exit_req.side == OrderSide.SELL
     assert exit_req.quantity == 5.0
-    assert "ATR Thesis Stop" in exit_req.execution_reason or "Trailing" in exit_req.execution_reason
+    # Production Assassin rule: stop at 1.5x ATR below entry (3000 - 1.5*42 = 2937);
+    # current 2800 is below it -> full exit. (Was "ATR Thesis Stop" under the removed
+    # pytest-only exit branch.)
+    assert "Assassin Stop-Loss" in exit_req.execution_reason or "Trailing" in exit_req.execution_reason
 
 
 def test_autonomous_bot_monitor_take_profit(mock_orchestrator):
@@ -110,15 +118,23 @@ def test_autonomous_bot_monitor_take_profit(mock_orchestrator):
     
     mock_venue = mock_orchestrator.registry.get_venue.return_value
     mock_venue.get_positions.return_value = [pos]
-    
+
+    # Real price so _get_atr_for_symbol returns a numeric ATR (fallback = price*1.5%).
+    mock_orchestrator.price_source.get_price.return_value = 1150.0
+    # Pin the exit clock to mid-session (11:00 IST) so the EOD square-off does not fire.
+    bot._now_ist = lambda: datetime(2026, 7, 13, 11, 0, tzinfo=timezone.utc)
+
     bot._monitor_and_exit_positions()
-    
-    # Verify take profit exit order was placed
+
+    # Verify profit-taking exit order was placed. Production Connoisseur rule scales
+    # out 1/3 at Target 1 (entry + 1.5x ATR = 1000 + 1.5*17.25 = ~1025.9); current 1150
+    # clears it, firing a partial exit. (Was "Time-Decaying Profit Target" under the
+    # removed pytest-only exit branch.)
     mock_venue.place_order.assert_called_once()
     exit_req = mock_venue.place_order.call_args[0][0]
     assert exit_req.instrument.symbol == "INFY"
     assert exit_req.side == OrderSide.SELL
-    assert "Time-Decaying" in exit_req.execution_reason or "Take Profit" in exit_req.execution_reason
+    assert "Connoisseur" in exit_req.execution_reason or "Time-Decaying" in exit_req.execution_reason
 
 
 def test_autonomous_bot_scan_and_entry(mock_orchestrator, tmp_path):
@@ -200,7 +216,12 @@ def test_autonomous_bot_scan_and_entry(mock_orchestrator, tmp_path):
         assert entry_req.instrument.symbol == "TCS"
         from integrations.brokers.models import OrderSide
         assert entry_req.side == OrderSide.BUY
-        assert entry_req.quantity == 3
+        # RiskManager approved a maximum of 2.0 units (max_approved_quantity above).
+        # The dynamic Kelly sizer wants far more, but the entry path MUST clamp the
+        # order to the risk-approved ceiling. (Previously this asserted 3 — the fixed
+        # output of a now-removed `if "pytest" in sys.modules` sizing bypass, which
+        # never exercised real sizing or the risk clamp at all.)
+        assert entry_req.quantity == 2.0
 
 
 def test_autonomous_bot_daily_report(mock_orchestrator):

@@ -609,51 +609,30 @@ class PositionAllocationEngine:
         """Determine asset deployment eligibility, sizing percentages, and portfolio impact."""
         metrics = self.awareness.compute_portfolio_metrics()
 
-        import sys
-        in_pytest = "pytest" in sys.modules or "unittest" in sys.modules
-        
-        if in_pytest:
-            # Map conviction score to rating (original threshold logic for tests)
-            if conviction_score >= 86:
-                action = "STRONG BUY"
-                base_allocation = 2.0
-            elif conviction_score >= 71:
-                action = "BUY"
-                base_allocation = 1.5
-            elif conviction_score >= 51:
-                action = "WATCH"
-                base_allocation = 0.5
-            elif conviction_score >= 31:
-                action = "LOW"
-                base_allocation = 0.0
-            else:
-                action = "AVOID"
-                base_allocation = 0.0
+        # Fractional Kelly Sizing:
+        # p is the probability of winning (defaulting to conviction_score / 100)
+        p = float(conviction_score) / 100.0
+        try:
+            accuracy_data = self.awareness.cache.read_intelligence("prediction_accuracy.json") or {}
+            cached_win_rate = accuracy_data.get("overall_accuracy", 100.0) / 100.0
+            if 0.1 <= cached_win_rate <= 0.9:
+                p = (p + cached_win_rate) / 2.0
+        except Exception:
+            pass
+
+        p = max(0.1, min(0.9, p))
+        b = 1.5 # payoff ratio: target distance vs stop distance
+
+        kelly_f = p - (1.0 - p) / b
+        if kelly_f <= 0.0:
+            action = "AVOID"
+            base_allocation = 0.0
         else:
-            # Fractional Kelly Sizing:
-            # p is the probability of winning (defaulting to conviction_score / 100)
-            p = float(conviction_score) / 100.0
-            try:
-                accuracy_data = self.awareness.cache.read_intelligence("prediction_accuracy.json") or {}
-                cached_win_rate = accuracy_data.get("overall_accuracy", 100.0) / 100.0
-                if 0.1 <= cached_win_rate <= 0.9:
-                    p = (p + cached_win_rate) / 2.0
-            except Exception:
-                pass
-                
-            p = max(0.1, min(0.9, p))
-            b = 1.5 # payoff ratio: target distance vs stop distance
-            
-            kelly_f = p - (1.0 - p) / b
-            if kelly_f <= 0.0:
-                action = "AVOID"
-                base_allocation = 0.0
-            else:
-                # Half-Kelly for safety
-                base_allocation = round(kelly_f * 0.5 * 100.0, 2)
-                # Cap at 5.0% single-position exposure, floor at 0.5%
-                base_allocation = max(0.5, min(5.0, base_allocation))
-                action = "BUY" if base_allocation >= 1.5 else "WATCH"
+            # Half-Kelly for safety
+            base_allocation = round(kelly_f * 0.5 * 100.0, 2)
+            # Cap at 5.0% single-position exposure, floor at 0.5%
+            base_allocation = max(0.5, min(5.0, base_allocation))
+            action = "BUY" if base_allocation >= 1.5 else "WATCH"
 
         symbol_upper = symbol.upper()
         sector = self.awareness.symbol_sectors.get(symbol_upper, "other")
@@ -800,17 +779,15 @@ class PositionAllocationEngine:
             entry_price = opp.get("entry_price", 1.0)
 
             # Standalone score (win_rate * conviction * profit_factor)
-            win_rate = backtest.win_rate
-            if type(win_rate).__name__ in ("MagicMock", "Mock", "NonCallableMagicMock"):
+            try:
+                win_rate = float(backtest.win_rate or 65.0)
+            except Exception:
                 win_rate = 65.0
-            else:
-                win_rate = float(win_rate or 65.0)
 
-            pf = backtest.profit_factor
-            if type(pf).__name__ in ("MagicMock", "Mock", "NonCallableMagicMock"):
+            try:
+                pf = float(backtest.profit_factor or 1.5)
+            except Exception:
                 pf = 1.5
-            else:
-                pf = float(pf or 1.5)
 
             win_rate_factor = win_rate / 100.0
             standalone_score = win_rate_factor * conviction * pf

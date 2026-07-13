@@ -1,0 +1,12 @@
+# Optional: for teams using the pre-commit framework (`pip install pre-commit`
+# then `pre-commit install`). The same check also ships as a native git hook in
+# .githooks/pre-commit (enable with: git config core.hooksPath .githooks).
+repos:
+  - repo: local
+    hooks:
+      - id: no-mock-sniffing-in-src
+        name: No test-environment sniffing in src/
+        entry: python -m pytest tests/test_no_mock_sniffing_in_src.py -q
+        language: system
+        pass_filenames: false
+        always_run: true
