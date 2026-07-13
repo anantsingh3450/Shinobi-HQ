@@ -12,23 +12,46 @@ class HeuristicStrategyGenerator(StrategyGenerator):
     by an LLMStrategyGenerator.
     """
 
+    #: Topics too generic to be a tradable symbol — fall through to text parsing.
+    _GENERIC_TOPICS = {"market", "macro", "general", "trade", "trading", "forex", "equity", "crypto"}
+
+    #: Known tradable symbols recognised inside free-form query text.
+    _KNOWN_SYMBOLS = (
+        "EUR/USD", "GBP/USD", "USD/JPY", "USD/INR", "BTC/USD", "ETH/USD",
+        "BTCUSDT", "ETHUSDT", "BANKNIFTY", "NIFTY", "SENSEX",
+        "CRUDE_OIL", "CRUDEOIL", "CRUDE OIL", "NATURALGAS", "GOLD", "SILVER",
+        "TCS", "INFY", "RELIANCE", "HDFCBANK", "ICICIBANK", "SBIN",
+    )
+
+    def _resolve_market(self, report: ResearchReport) -> str:
+        """Resolve a concrete tradable symbol; placeholder names are a last resort.
+
+        Order: specific query topic → known symbol inside the query text →
+        specific finding tag → generic topic verbatim → UNKNOWN. Placeholder
+        results ("MARKET"/"UNKNOWN") are blocked from execution downstream.
+        """
+        topic = report.query.topics[0].upper() if report.query.topics else ""
+        if topic and topic.lower() not in self._GENERIC_TOPICS:
+            return topic
+
+        text = (report.query.text or "").upper()
+        for sym in self._KNOWN_SYMBOLS:
+            if sym in text:
+                return "CRUDE_OIL" if sym == "CRUDE OIL" else sym
+
+        for finding in report.findings:
+            if finding.tags:
+                specific_tags = [t for t in finding.tags if t.lower() not in self._GENERIC_TOPICS]
+                if specific_tags:
+                    return specific_tags[0].upper()
+
+        return topic or "UNKNOWN"
+
     def generate(self, report: ResearchReport) -> StrategyProposal:
         """Convert a ResearchReport into a StrategyProposal dynamically."""
-        
+
         # 1. Market Identification
-        # Prefer structured data (topics or tags) over parsing free-form text
-        market = "UNKNOWN"
-        if report.query.topics:
-            market = report.query.topics[0].upper()
-        else:
-            # Check finding tags if query topics are empty
-            for finding in report.findings:
-                if finding.tags:
-                    # Look for non-generic tags (e.g., skip 'macro')
-                    specific_tags = [t for t in finding.tags if t.lower() != "macro"]
-                    if specific_tags:
-                        market = specific_tags[0].upper()
-                        break
+        market = self._resolve_market(report)
         
         # 2. Heuristic Analysis of Content
         combined_text = report.executive_summary.lower()

@@ -19,14 +19,15 @@ def test_trade_command_pipeline_integration(tmp_path: Path, monkeypatch: pytest.
     router = CommandRouter(orchestrator)
 
     # Act: Process a trade command
-    result = router.handle_command("trade EUR/USD macro breakout")
+    result = router.handle_command("trade GBP/USD macro breakout")
 
     # Assert
     assert isinstance(result, dict)
-    assert result["market"] == "MARKET"
+    # Generator now resolves the concrete symbol from the query text.
+    assert result["market"] == "GBP/USD"
     assert result["direction"] in ("LONG", "SHORT")
     assert result["quantity"] > 0
-    assert result["entry_price"] == 100.0  # Mock price for MARKET (default)
+    assert result["entry_price"] == 1.27  # Mock price table value for GBP/USD
     assert result["simulated_value"] == result["quantity"] * result["entry_price"]
     assert result["status"] == "OPEN"
     assert result["mode"] == "PAPER"
@@ -60,7 +61,7 @@ def test_trade_command_syncs_portfolio_state(tmp_path: Path, monkeypatch: pytest
     router = CommandRouter(orchestrator)
 
     # Act
-    result = router.handle_command("trade EUR/USD macro breakout")
+    result = router.handle_command("trade GBP/USD macro breakout")
 
     # 1. Trade history written
     trades_file = tmp_path / "trades.jsonl"
@@ -161,11 +162,11 @@ def test_research_command_does_not_persist_trades(tmp_path: Path, monkeypatch: p
     router = CommandRouter(orchestrator)
 
     # Act: Process a research command
-    result = router.handle_command("research EUR/USD macro breakout")
+    result = router.handle_command("research GBP/USD macro breakout")
 
     # Assert: Result is a dictionary representing the StrategyProposal
     assert isinstance(result, dict)
-    assert result["market"] == "MARKET"
+    assert result["market"] == "GBP/USD"
     assert "entry_rule" in result
     assert "exit_rule" in result
 
@@ -201,7 +202,7 @@ def test_full_trade_pipeline_with_backtest(tmp_path: Path, monkeypatch: pytest.M
     router = CommandRouter(orchestrator)
 
     # Act: Process a full-trade command
-    result = router.handle_command("full-trade EUR/USD momentum strategy")
+    result = router.handle_command("full-trade NIFTY momentum strategy")
 
     # Assert: Verify backtest results are in the output
     assert isinstance(result, dict)
@@ -219,11 +220,14 @@ def test_full_trade_pipeline_with_backtest(tmp_path: Path, monkeypatch: pytest.M
     assert "backtest_summary" in result
     assert "simulated_tax" in result
 
-    # Assert: Verify trade execution happened after backtest passed
-    assert result["market"] == "MARKET"  # DummySource returns MARKET
+    # Assert: Verify trade execution happened after backtest passed.
+    # The generator resolves the concrete symbol from the query text; the old
+    # "MARKET" placeholder is no longer executable (it once created a ghost
+    # paper position at a default price).
+    assert result["market"] == "NIFTY"
     assert result["direction"] in ("LONG", "SHORT")
     assert result["quantity"] > 0
-    assert result["entry_price"] == 100.0  # Mock price
+    assert result["entry_price"] == 24300.0  # Mock price table value for NIFTY
     assert result["status"] == "OPEN"
     assert result["mode"] == "PAPER"
     assert result["trade_id"]
@@ -298,7 +302,7 @@ def test_full_trade_backtest_failure_blocks_execution(
 
     with pytest.raises(ValueError) as exc_info:
         orchestrator.execute_full_pipeline(
-            "EUR/USD momentum strategy"
+            "GBP/USD momentum strategy"
         )
 
     assert "Backtest failed" in str(exc_info.value)

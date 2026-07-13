@@ -114,8 +114,12 @@ class RiskManager:
         self._killed = False
         
     def check_portfolio_health(self, current_equity: float, starting_equity: float) -> bool:
-        """Checks if drawdown is breached. If so, halts trading and liquidates."""
-        if self._killed or starting_equity <= 0:
+        """Checks if drawdown is breached. If so, halts trading and liquidates.
+
+        Requires REAL positive equity on both sides: zero/absent equity means
+        data-not-ready, never a 100% drawdown.
+        """
+        if self._killed or starting_equity <= 0 or current_equity <= 0:
             return False
             
         drawdown = ((starting_equity - current_equity) / starting_equity) * 100.0

@@ -18,7 +18,7 @@ def test_portable_brain_recovery_and_portability(tmp_path: Path) -> None:
     assert (brain_root / "config" / "venues.json").exists()
 
     # 3. Execute paper trade using the full pipeline (ensures trades, predictions, portfolio, and tax are touched)
-    result = orch1.execute_full_pipeline("EUR/USD trend breakout")
+    result = orch1.execute_full_pipeline("CRUDE_OIL trend breakout")
 
     trade_id = result["trade_id"]
     assert trade_id
@@ -59,7 +59,7 @@ def test_portable_brain_recovery_and_portability(tmp_path: Path) -> None:
     assert trades2[0].market == trades1[0].market
 
     assert len(account2.positions) == 1
-    assert "pos_0" in account2.positions or any(pos.market == "MARKET" for pos in account2.positions.values())
+    assert "pos_0" in account2.positions or any(pos.market == "CRUDE_OIL" for pos in account2.positions.values())
     assert account2.cash == account1.cash
     assert account2.realized_pnl == account1.realized_pnl
 

@@ -605,12 +605,21 @@ class AutonomousTradingBot:
                 # 1. Active Exit Monitors across all active venues (Runs on both is_tick=True and is_tick=False)
                 self._monitor_and_exit_positions(is_tick=is_tick)
                 
-                # Check portfolio health (kill-switch)
+                # Check portfolio health (kill-switch). Only evaluate on REAL,
+                # positive equity data: a fresh brain, a failed balance query, or
+                # missing metrics must never read as a crashed portfolio (this
+                # falsely fired the kill-switch on first clean-brain boot).
                 if self.portfolio_intel:
                     metrics = self.portfolio_intel.compute_portfolio_metrics()
-                    curr_eq = metrics.get("total_assets", 100000.0)
-                    start_eq = metrics.get("peak_equity", 100000.0)
-                    self.risk_manager.check_portfolio_health(curr_eq, start_eq)
+                    curr_eq = metrics.get("total_assets", 0.0)
+                    start_eq = metrics.get("peak_equity", 0.0)
+                    if curr_eq > 0.0 and start_eq > 0.0:
+                        self.risk_manager.check_portfolio_health(curr_eq, start_eq)
+                    else:
+                        logger.warning(
+                            f"Skipping portfolio health check: equity data not ready "
+                            f"(total_assets={curr_eq}, peak_equity={start_eq})."
+                        )
 
                 # 2. Opportunity Scan & Entry Sizing for currently tradable assets (ONLY runs on new bar closes is_tick=False)
                 if not is_tick and self.gatekeeper_state not in ("Await_Elder_Command", "KILL_SWITCH_ENGAGED"):

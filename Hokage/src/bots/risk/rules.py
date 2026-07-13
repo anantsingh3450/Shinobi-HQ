@@ -891,7 +891,9 @@ class HardLotCapRule(RiskManager):
                 from hokage.memory.profile import ProfileService
                 ps = ProfileService(self.resolver)
                 prof = ps.get_profile()
-                caps = prof.get("asset_lot_caps", {})
+                # CommanderProfile is a dataclass, not a dict — .get() raised
+                # AttributeError on every call, silently disabling profile caps.
+                caps = getattr(prof, "asset_lot_caps", None) or {}
                 if proposal.market in caps:
                     cap = float(caps[proposal.market])
             except Exception as e:

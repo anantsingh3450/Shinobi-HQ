@@ -491,8 +491,23 @@ class HokageOrchestrator:
         if not risk_verdict.is_approved:
             raise ValueError(f"Risk check failed: {risk_verdict.reason}")
 
-        # 5. Paper execution + persistence
-        trade = self.execution_bot.execute(proposal, persist=True)
+        # 5. Guard rails (same discipline as the autonomous entry path):
+        #    - never execute a placeholder/unresolved symbol ("MARKET"/"UNKNOWN"
+        #      once created a ghost paper position at a default price),
+        #    - never execute without a real positive price,
+        #    - never exceed the risk-approved quantity (HardLotCapRule etc.
+        #      express their limit via max_approved_quantity).
+        symbol_upper = (proposal.market or "").upper()
+        exec_qty = min(1.0, risk_verdict.max_approved_quantity)
+        if symbol_upper in ("", "MARKET", "UNKNOWN") or not entry_price or entry_price <= 0 or exec_qty <= 0:
+            raise ValueError(
+                f"Execution blocked: unresolved symbol '{proposal.market}', "
+                f"price={entry_price!r}, risk-approved qty={exec_qty}. "
+                "Evaluation completed but no order was placed."
+            )
+
+        # 6. Paper execution + persistence
+        trade = self.execution_bot.execute(proposal, persist=True, quantity=exec_qty)
 
         # 6. Tax simulation
         tax_event = self.tax_provider.to_tax_event(trade)
