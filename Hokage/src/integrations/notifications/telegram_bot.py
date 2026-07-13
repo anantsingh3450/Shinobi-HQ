@@ -146,6 +146,25 @@ class TelegramBotUplink:
         )
         self.send_message(msg)
 
+    def _validate_broker_session(self) -> bool:
+        """Return True only if the stored Zerodha access token passes a REAL
+        API round-trip (kite.profile()). A token string merely existing on
+        disk proves nothing — Kite expires tokens daily, and a stale token
+        must never be announced as a live broker connection."""
+        try:
+            mgr = SecretManager()
+            api_key = mgr.get_secret("api_key", broker="zerodha")
+            acc_token = mgr.get_secret("access_token", broker="zerodha")
+            if not api_key or not acc_token:
+                return False
+            kite = KiteConnect(api_key=api_key)
+            kite.set_access_token(acc_token)
+            kite.profile()
+            return True
+        except Exception as e:
+            logger.warning(f"Broker session validation failed: {e}")
+            return False
+
     def _run_loop(self) -> None:
         tz = KolkataTime()
         while not self._stop_event.is_set():
@@ -180,12 +199,10 @@ class TelegramBotUplink:
                 if ist_now.hour >= 9:
                     if self._last_confirmation_date != current_date_str:
                         self._last_confirmation_date = current_date_str
-                        mgr = SecretManager()
-                        acc_token = mgr.get_secret("access_token", broker="zerodha")
-                        if acc_token:
+                        if self._validate_broker_session():
                             self.send_message("✅ *Login Successful* - Broker Connected. Execution engines standing by.")
                         else:
-                            self.send_message("🚨 *Login Missing* - Autonomous execution halted. Please login via Dashboard or /token command.")
+                            self.send_message("🚨 *Login Missing* - No valid Zerodha session. Autonomous execution halted. Please login via Dashboard or /token command.")
                 
                 # 2. Check for updates from Telegram
                 if self.enabled:
