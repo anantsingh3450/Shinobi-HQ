@@ -21,6 +21,12 @@ class TelegramBotUplink:
         self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN")
         self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
         self.enabled = bool(self.bot_token and self.chat_id)
+        # Offline config seam: HOKAGE_DISABLE_TELEGRAM=true forces the uplink
+        # into mock-outbox mode regardless of configured credentials. The test
+        # suite sets it so tests can NEVER send real Telegram messages;
+        # production leaves it unset.
+        if os.environ.get("HOKAGE_DISABLE_TELEGRAM") == "true":
+            self.enabled = False
         self._thread = None
         self._stop_event = threading.Event()
         self._last_totp_request_date = None
@@ -33,6 +39,9 @@ class TelegramBotUplink:
         self.command_handler = None
     def start(self) -> None:
         """Start the background polling thread."""
+        if not self.enabled:
+            logger.info("Telegram uplink disabled; polling thread not started.")
+            return
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop_event.clear()

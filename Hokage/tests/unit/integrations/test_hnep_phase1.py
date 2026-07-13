@@ -11,10 +11,15 @@ def test_venue_inheritance():
     assert BaseVenue in KiteVenue.__mro__
 
 @patch("integrations.notifications.telegram_bot.requests.post")
-def test_telegram_bot_send_message(mock_post):
-    """Verify TelegramBotUplink send_message formatting and execution."""
+def test_telegram_bot_send_message(mock_post, monkeypatch):
+    """Verify TelegramBotUplink send_message formatting and execution.
+
+    Explicitly lifts the suite-wide HOKAGE_DISABLE_TELEGRAM hermeticity flag for
+    this test only — the HTTP layer is mocked, so nothing real is sent.
+    """
+    monkeypatch.delenv("HOKAGE_DISABLE_TELEGRAM", raising=False)
     mock_post.return_value = MagicMock(status_code=200)
-    
+
     bot = TelegramBotUplink(bot_token="test_token", chat_id="12345")
     assert bot.enabled is True
     

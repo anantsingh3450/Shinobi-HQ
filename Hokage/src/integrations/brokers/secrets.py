@@ -43,7 +43,13 @@ class SecretManager:
         self._migrate_if_needed()
 
     def _load_dotenv(self) -> None:
-        """Load variables from secure local .env configuration file if present."""
+        """Load variables from secure local .env configuration file if present.
+
+        Skipped in test mode: the isolated test environment must never absorb
+        real credentials (broker keys, Telegram tokens) from the developer's .env.
+        """
+        if self.test_mode:
+            return
         dotenv_path = Path(__file__).resolve().parents[3] / ".env"
         if dotenv_path.exists():
             try:

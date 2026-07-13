@@ -7,7 +7,13 @@ from pathlib import Path
 from typing import Any
 
 def _load_project_dotenv() -> None:
-    """Load the repo-root .env if present (portable; does not override existing env)."""
+    """Load the repo-root .env if present (portable; does not override existing env).
+
+    Skipped in HOKAGE_TEST_MODE: the isolated test environment must never absorb
+    real credentials (API keys, Telegram tokens) from the developer's .env.
+    """
+    if os.environ.get("HOKAGE_TEST_MODE") == "true":
+        return
     try:
         from dotenv import load_dotenv
     except Exception:
