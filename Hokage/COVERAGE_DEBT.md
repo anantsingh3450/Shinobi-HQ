@@ -21,25 +21,21 @@ Legend: 🔴 high (can move real money wrong) · 🟠 medium (safety gate untest
 - **Fix owed:** inject a clock / `now_ist` seam (production default = real time); add tests for
   in-window block + out-of-window pass.
 
-## 🟠 B1 — Volume breakout check is non-functional (fabricated average)
-- **File:** `src/bots/autonomous/autonomous_bot.py` (main entry ~line 2012, shadow path ~line 2700)
-- **Sniff removed:** `isinstance(quote, Mock)` → hardcoded `current_vol=10000, avg_vol=5000`.
-- **Deeper defect (NOT a mock issue):** even on the real path, `avg_vol = current_vol / 2.0`.
-  So the breakout ratio is ALWAYS `current/avg = 2.0`, which always clears the 1.2x threshold.
-  The volume-breakout gate can never reject anything — it is decorative.
-- **Hole:** no test exercises volume rejection with real quote data (Mock quotes fall through
-  to the exception fallback `10000/5000`, same always-pass result).
-- **Fix owed:** source a real average volume (historical N-day avg via price_source), then add
-  tests for both breakout-pass and breakout-reject.
+## ✅→🟡 B1 — Volume gate now runs on REAL volumes (residual: rejection test)
+- **RESOLVED (main defect):** `avg_vol = current_vol / 2.0` (a fabricated denominator that
+  made the gate decorative) replaced by `_get_volume_context()` — current volume from the
+  live quote, average from real 14-day daily candles. When real data is unavailable the
+  gate is SKIPPED with a log (never run on invented numbers). Early-session cumulative
+  volume biases the ratio conservative — the safe direction.
+- **Residual debt:** add explicit breakout-pass and breakout-reject tests with real-shaped
+  candle fixtures.
 
-## 🟠 B2 — Liquidity bid/ask ratio is fabricated from a hash
-- **File:** `src/bots/autonomous/autonomous_bot.py` (main entry ~line 2044, shadow path ~line 2724)
-- **Sniff removed:** `isinstance(quote, Mock)` → hardcoded `spread_pct=0.05, bid_ask_ratio=1.0`.
-- **Deeper defect:** `bid_ask_ratio` is derived from `sha256(symbol)` — a deterministic
-  pseudo-random number, NOT real order-book depth. The liquidity check runs on fiction.
-  (spread_pct itself IS real when a real quote is present.)
-- **Hole:** no test exercises liquidity rejection with real order-book data.
-- **Fix owed:** use real bid/ask sizes from the quote; add pass/reject tests.
+## ✅→🟡 B2 — Liquidity gate: real spread, neutral depth (residual: real depth feed)
+- **RESOLVED (main defect):** sha256-fabricated `bid_ask_ratio` removed. Spread is computed
+  from the live quote's real bid/ask; the order-book size ratio passes NEUTRAL (1.0) because
+  `MarketQuote` carries no depth data yet. Missing spread data skips the gate with a log.
+- **Residual debt:** extend `MarketQuote` with `bid_qty`/`ask_qty` from the Kite quote depth
+  and feed the real ratio; add pass/reject tests.
 - **Related:** interacts with the frozen spread threshold (`intelligence.py:88`, 1.5 vs 0.20).
 
 ## 🔴 C1b — SQLite persistence path untested (durability layer)

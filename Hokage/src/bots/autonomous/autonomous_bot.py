@@ -910,6 +910,41 @@ class AutonomousTradingBot:
             return 0.0
 
 
+    def _get_volume_context(self, symbol: str, quote: Any) -> tuple[float, float] | None:
+        """Return (current_day_volume, avg_daily_volume) from REAL data only.
+
+        Doctrine: no fabricated market data. current volume comes from the live
+        quote; the average is computed from actual daily candles (14 days).
+        Returns None when either side is unavailable — callers must then SKIP
+        the volume gate rather than run it on invented numbers. Note: the
+        current day's cumulative volume is naturally lower early in the session,
+        which biases the breakout ratio conservative (fewer entries) — the safe
+        direction.
+        """
+        try:
+            current_vol = float(quote.volume) if quote.volume is not None else None
+        except Exception:
+            current_vol = None
+        if not current_vol or current_vol <= 0:
+            return None
+        try:
+            from integrations.data.models import HistoricalDataRequest, CandleInterval
+            from datetime import timedelta
+            instrument = self.orchestrator.price_source.resolve_instrument(symbol)
+            req = HistoricalDataRequest(
+                instrument=instrument,
+                start=datetime.now(timezone.utc) - timedelta(days=14),
+                end=datetime.now(timezone.utc),
+                interval=CandleInterval.ONE_DAY,
+            )
+            res = self.orchestrator.price_source.get_historical_candles(req)
+            vols = [float(c.volume) for c in (res.candles if res and res.candles else []) if c.volume and c.volume > 0]
+            if not vols:
+                return None
+            return current_vol, sum(vols) / len(vols)
+        except Exception:
+            return None
+
     # Market-wide circuit breaker stand-down. NSE halts trading on a 10%/15%/20%
     # index move; we stop taking NEW entries at 9% — before the exchange halt —
     # because fills, spreads, and exits become unreliable in a limit-move regime.
@@ -2106,16 +2141,20 @@ class AutonomousTradingBot:
                 })
                 continue
 
-            # Volume breakout check using VolumeEngine
+            # Volume breakout check using VolumeEngine — REAL volumes only.
+            # (Previously avg_vol = current/2.0, a fabricated denominator that made
+            # the ratio a constant 2.0 and the gate decorative.)
             try:
                 quote = self.orchestrator.price_source.get_quote(symbol)
-                current_vol = float(quote.volume) if quote.volume is not None else 10000.0
-                avg_vol = current_vol / 2.0
             except Exception:
-                current_vol = 10000.0
-                avg_vol = 5000.0
-
-            is_vol_valid, vol_reason = self.volume_engine.validate_breakout(current_vol, avg_vol)
+                quote = None
+            vol_ctx = self._get_volume_context(symbol, quote) if quote is not None else None
+            if vol_ctx is None:
+                logger.info(f"Volume context unavailable for {symbol}; skipping volume gate (no fabricated volumes).")
+                is_vol_valid, vol_reason = True, "volume data unavailable; gate skipped"
+            else:
+                current_vol, avg_vol = vol_ctx
+                is_vol_valid, vol_reason = self.volume_engine.validate_breakout(current_vol, avg_vol)
             if not is_vol_valid:
                 logger.info(f"Opportunity for {symbol} rejected by VolumeEngine: {vol_reason}")
                 eval_results[symbol] = {
@@ -2135,17 +2174,25 @@ class AutonomousTradingBot:
                 })
                 continue
 
-            # Liquidity check using LiquidityEngine
+            # Liquidity check using LiquidityEngine. Spread is REAL (from the live
+            # quote's bid/ask). The order-book size ratio is passed NEUTRAL (1.0)
+            # because MarketQuote carries no depth data yet — previously it was
+            # fabricated from sha256(symbol), which is synthetic data. TODO: feed
+            # real depth (bid_qty/ask_qty) from the Kite quote when available.
             try:
-                spread_pct = ((quote.ask - quote.bid) / quote.price) * 100.0 if (quote.price > 0 and quote.bid is not None and quote.ask is not None) else 0.05
-                import hashlib
-                digest_val = int(hashlib.sha256(symbol.encode("utf-8")).hexdigest()[:8], 16)
-                bid_ask_ratio = 0.5 + (digest_val % 40) / 10.0
+                if quote is not None and quote.price > 0 and quote.bid is not None and quote.ask is not None:
+                    spread_pct = ((quote.ask - quote.bid) / quote.price) * 100.0
+                else:
+                    spread_pct = None
             except Exception:
-                spread_pct = 0.05
-                bid_ask_ratio = 1.0
+                spread_pct = None
+            bid_ask_ratio = 1.0
 
-            is_liq_valid, liq_reason = self.liquidity_engine.check_liquidity(spread_pct, bid_ask_ratio)
+            if spread_pct is None:
+                logger.info(f"Spread unavailable for {symbol}; skipping liquidity gate (no fabricated spreads).")
+                is_liq_valid, liq_reason = True, "spread data unavailable; gate skipped"
+            else:
+                is_liq_valid, liq_reason = self.liquidity_engine.check_liquidity(spread_pct, bid_ask_ratio)
             if not is_liq_valid:
                 logger.info(f"Opportunity for {symbol} rejected by LiquidityEngine: {liq_reason}")
                 eval_results[symbol] = {
@@ -2797,16 +2844,18 @@ class AutonomousTradingBot:
                         )
                         continue
 
-                    # 2. Volume breakout check using VolumeEngine
+                    # 2. Volume breakout check using VolumeEngine — REAL volumes only
+                    # (mirrors the production entry path; no fabricated denominators).
                     try:
                         quote = self.orchestrator.price_source.get_quote(symbol)
-                        current_vol = float(quote.volume) if quote.volume is not None else 10000.0
-                        avg_vol = current_vol / 2.0
                     except Exception:
-                        current_vol = 10000.0
-                        avg_vol = 5000.0
-
-                    is_vol_valid, vol_reason = self.volume_engine.validate_breakout(current_vol, avg_vol)
+                        quote = None
+                    vol_ctx = self._get_volume_context(symbol, quote) if quote is not None else None
+                    if vol_ctx is None:
+                        is_vol_valid, vol_reason = True, "volume data unavailable; gate skipped"
+                    else:
+                        current_vol, avg_vol = vol_ctx
+                        is_vol_valid, vol_reason = self.volume_engine.validate_breakout(current_vol, avg_vol)
                     if not is_vol_valid:
                         self.strategy_evolution.log_shadow_decision(
                             strategy_id=strat_id,
@@ -2821,17 +2870,22 @@ class AutonomousTradingBot:
                         )
                         continue
 
-                    # 3. Liquidity check using LiquidityEngine
+                    # 3. Liquidity check using LiquidityEngine — real spread, neutral
+                    # depth ratio (no sha256-fabricated order-book data; mirrors the
+                    # production entry path).
                     try:
-                        spread_pct = ((quote.ask - quote.bid) / quote.price) * 100.0 if (quote.price > 0 and quote.bid is not None and quote.ask is not None) else 0.05
-                        import hashlib
-                        digest_val = int(hashlib.sha256(symbol.encode("utf-8")).hexdigest()[:8], 16)
-                        bid_ask_ratio = 0.5 + (digest_val % 40) / 10.0
+                        if quote is not None and quote.price > 0 and quote.bid is not None and quote.ask is not None:
+                            spread_pct = ((quote.ask - quote.bid) / quote.price) * 100.0
+                        else:
+                            spread_pct = None
                     except Exception:
-                        spread_pct = 0.05
-                        bid_ask_ratio = 1.0
+                        spread_pct = None
+                    bid_ask_ratio = 1.0
 
-                    is_liq_valid, liq_reason = self.liquidity_engine.check_liquidity(spread_pct, bid_ask_ratio)
+                    if spread_pct is None:
+                        is_liq_valid, liq_reason = True, "spread data unavailable; gate skipped"
+                    else:
+                        is_liq_valid, liq_reason = self.liquidity_engine.check_liquidity(spread_pct, bid_ask_ratio)
                     if not is_liq_valid:
                         self.strategy_evolution.log_shadow_decision(
                             strategy_id=strat_id,
