@@ -326,18 +326,24 @@ def test_autonomous_bot_monitor_take_profit(mock_orchestrator):
     assert "Connoisseur" in exit_req.execution_reason or "Time-Decaying" in exit_req.execution_reason
 
 
-def test_autonomous_bot_scan_and_entry(mock_orchestrator, tmp_path):
+def _run_entry_scan(mock_orchestrator, tmp_path, place_order_side_effect=None):
+    """Drive _scan_and_enter_opportunities through a fully approved TCS long.
+
+    Research/strategy/backtest/risk/profile are all mocked to approve the trade,
+    so the scan reaches venue.place_order. `place_order_side_effect` (e.g. one of
+    the conftest OrderResponse factories) controls the venue's fill behavior.
+    Returns (bot, mock_venue).
+    """
     from hokage.memory.resolver import PathResolver
-    
+
     def mock_init(self, brain_root=None):
         self._brain_root = tmp_path
 
     with patch.object(PathResolver, "__init__", mock_init):
         bot = AutonomousTradingBot(mock_orchestrator, watchlist=["TCS"], scan_interval_seconds=1)
-        
-        # Mock Research and Strategy
+
         mock_orchestrator.research_bot.research.return_value = MagicMock()
-        
+
         proposal = StrategyProposal(
             name="AutoTrend",
             description="Auto long TCS",
@@ -351,7 +357,7 @@ def test_autonomous_bot_scan_and_entry(mock_orchestrator, tmp_path):
             sources_cited=()
         )
         mock_orchestrator.strategy_bot.generate.return_value = proposal
-        
+
         br = BacktestResult(
             proposal_id="proposal-123",
             total_trades=10,
@@ -366,26 +372,27 @@ def test_autonomous_bot_scan_and_entry(mock_orchestrator, tmp_path):
             provider="HistoricalBacktestEngine"
         )
         mock_orchestrator.backtest_bot.validate_strategy.return_value = br
-        
-        # Mock Price and Risk approval
+
         mock_orchestrator.price_source.get_price.return_value = 3000.0
         mock_orchestrator.risk_bot.check_proposal.return_value = RiskVerdict(
             is_approved=True,
             max_approved_quantity=2.0,
             reason="Approved"
         )
-        
+
         mock_venue = mock_orchestrator.registry.get_venue.return_value
         mock_venue.get_positions.return_value = []
         mock_venue.get_account_balance.return_value = AccountBalance(
             venue_id="paper_main", total_equity=400000.0, cash=400000.0, margin_available=400000.0, margin_used=0.0
         )
-        
+        if place_order_side_effect is not None:
+            mock_venue.place_order.side_effect = place_order_side_effect
+
         with patch("hokage.memory.profile.ProfileService.get_profile") as mock_get_profile:
             from hokage.memory.profile import CommanderProfile, EnvironmentConfig, HorizonConfig, RiskConfig, PortfolioConfig, TaxConfig
             from shared.discovery.models import HorizonMode, ProgressionPhase, RiskMode
             from integrations.brokers.models import ExecutionMode
-            
+
             mock_profile = CommanderProfile(
                 commander_name="Anant",
                 commander_title="Elder",
@@ -396,21 +403,53 @@ def test_autonomous_bot_scan_and_entry(mock_orchestrator, tmp_path):
                 tax=TaxConfig(tax_aware=True)
             )
             mock_get_profile.return_value = mock_profile
-    
+
             bot._scan_and_enter_opportunities()
-        
-        # Verify entry order placed
-        mock_venue.place_order.assert_called_once()
-        entry_req = mock_venue.place_order.call_args[0][0]
-        assert entry_req.instrument.symbol == "TCS"
-        from integrations.brokers.models import OrderSide
-        assert entry_req.side == OrderSide.BUY
-        # RiskManager approved a maximum of 2.0 units (max_approved_quantity above).
-        # The dynamic Kelly sizer wants far more, but the entry path MUST clamp the
-        # order to the risk-approved ceiling. (Previously this asserted 3 — the fixed
-        # output of a now-removed `if "pytest" in sys.modules` sizing bypass, which
-        # never exercised real sizing or the risk clamp at all.)
-        assert entry_req.quantity == 2.0
+
+    return bot, mock_venue
+
+
+def test_autonomous_bot_scan_and_entry(mock_orchestrator, tmp_path, filled_order_response):
+    bot, mock_venue = _run_entry_scan(mock_orchestrator, tmp_path, place_order_side_effect=filled_order_response)
+
+    # Verify entry order placed
+    mock_venue.place_order.assert_called_once()
+    entry_req = mock_venue.place_order.call_args[0][0]
+    assert entry_req.instrument.symbol == "TCS"
+    from integrations.brokers.models import OrderSide
+    assert entry_req.side == OrderSide.BUY
+    # RiskManager approved a maximum of 2.0 units (max_approved_quantity above).
+    # The dynamic Kelly sizer wants far more, but the entry path MUST clamp the
+    # order to the risk-approved ceiling. (Previously this asserted 3 — the fixed
+    # output of a now-removed `if "pytest" in sys.modules` sizing bypass, which
+    # never exercised real sizing or the risk clamp at all.)
+    assert entry_req.quantity == 2.0
+    # A FILLED response must create a confirmed tracked position.
+    tracked = bot._active_positions_tracking.get("TCS")
+    assert tracked is not None
+    assert tracked["quantity"] == 2.0
+    assert tracked["unconfirmed"] is False
+    assert len(bot._trades_taken_today) == 1
+
+
+def test_scan_and_entry_rejected_order_no_phantom_position(mock_orchestrator, tmp_path, rejected_order_response):
+    """A REJECTED order response must not create a tracked position (phantom-position bug)."""
+    bot, mock_venue = _run_entry_scan(mock_orchestrator, tmp_path, place_order_side_effect=rejected_order_response)
+
+    mock_venue.place_order.assert_called_once()
+    assert "TCS" not in bot._active_positions_tracking
+    assert len(bot._trades_taken_today) == 0
+
+
+def test_scan_and_entry_none_order_marks_unconfirmed(mock_orchestrator, tmp_path, timeout_order_response):
+    """A None (timeout) order response must be tracked as UNCONFIRMED, never as a clean fill."""
+    bot, mock_venue = _run_entry_scan(mock_orchestrator, tmp_path, place_order_side_effect=timeout_order_response)
+
+    mock_venue.place_order.assert_called_once()
+    tracked = bot._active_positions_tracking.get("TCS")
+    assert tracked is not None
+    assert tracked["unconfirmed"] is True
+    assert tracked["quantity"] == 0.0
 
 
 def test_autonomous_bot_daily_report(mock_orchestrator):

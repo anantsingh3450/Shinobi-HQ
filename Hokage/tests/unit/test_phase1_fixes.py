@@ -34,35 +34,12 @@ def test_kill_switch_liquidation_no_crash():
     assert "NIFTY" in symbols_called
     assert "CRUDEOIL" in symbols_called
 
-@pytest.fixture
-def autonomous_bot():
-    bot = AutonomousTradingBot(orchestrator=MagicMock())
-    bot._active_positions_tracking = {}
-    bot._trades_taken_today = []
-    bot.strategy_engine = MagicMock()
-    bot.journal = MagicMock()
-    bot.cache = MagicMock()
-    return bot
-
-@patch('hokage.dashboard.event_bus.EventBus.publish')
-def test_order_response_rejected(mock_publish, autonomous_bot):
-    venue_mock = MagicMock()
-    venue_mock.place_order.return_value = OrderResponse(
-        venue_order_id="1", venue_id="test_venue", instrument=MagicMock(), side=OrderSide.BUY,
-        status=OrderStatus.REJECTED, quantity=1.0, filled_quantity=0.0, average_price=0.0,
-        error_message="Margin Shortfall"
-    )
-    req = MagicMock()
-    req.side = OrderSide.BUY
-    req.quantity = 1.0
-    req.instrument.symbol = "NIFTY"
-    
-    # We will simulate the snippet from autonomous_bot.py lines 2501-2565 inline to test logic
-    # Since we modified the file, let's just write a test that executes that logic
-    # Wait, the logic is deeply embedded in `_evaluate_single_symbol`. 
-    # It's better to test the exact modified code by calling the method if possible, 
-    # but _evaluate_single_symbol is very hard to mock entirely.
-    pass
+# NOTE: the former test_order_response_rejected here was a hollow test (its body
+# was `pass`) that always reported green while testing nothing. Real coverage of
+# rejected/None order responses on the actual entry path now lives in
+# tests/unit/bots/autonomous/test_autonomous_bot.py:
+#   - test_scan_and_entry_rejected_order_no_phantom_position
+#   - test_scan_and_entry_none_order_marks_unconfirmed
 
 def test_hard_lot_cap_rule():
     from bots.risk.rules import HardLotCapRule
