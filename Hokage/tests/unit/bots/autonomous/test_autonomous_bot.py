@@ -38,6 +38,17 @@ def mock_orchestrator():
     # Real registry surface: the bot iterates list_venues() and resolves each id.
     # "paper_main" contains "paper" so PAPER mode selects it.
     orch.registry.list_venues.return_value = ["paper_main"]
+    # Live-provenance quote: the entry path refuses to execute against synthetic
+    # or stale quotes (commander doctrine), so the fixture must present a fresh,
+    # non-mock-provider quote.
+    mock_quote = MagicMock()
+    mock_quote.price = 3000.0
+    mock_quote.bid = 2999.7
+    mock_quote.ask = 3000.3
+    mock_quote.volume = 10000.0
+    mock_quote.provider = "test-live-feed"
+    mock_quote.quoted_at = datetime.now(timezone.utc)
+    orch.price_source.get_quote.return_value = mock_quote
     # Asset-venue resolution used on the entry path.
     orch.broker_registry.get_venue_for_asset.return_value = mock_venue
     orch.paper_venue._account_id = "paper"
@@ -56,12 +67,53 @@ def isolate_path_resolver(tmp_path):
 
 def test_autonomous_bot_lifecycle(mock_orchestrator):
     bot = AutonomousTradingBot(mock_orchestrator, watchlist=["TCS"], scan_interval_seconds=1)
-    
+
     assert not bot.is_active()
     bot.start()
     assert bot.is_active()
     bot.stop()
     assert not bot.is_active()
+
+
+def test_price_provenance_guard_blocks_synthetic_and_stale(mock_orchestrator):
+    """Doctrine: entry orders never execute against synthetic or stale prices."""
+    from datetime import timedelta
+
+    bot = AutonomousTradingBot(mock_orchestrator, watchlist=["TCS"], scan_interval_seconds=1)
+    quote = MagicMock()
+    quote.price = 3000.0
+
+    # 1. Synthetic provider (mock price table) -> blocked
+    quote.provider = "mock-market-data-v1"
+    quote.quoted_at = datetime.now(timezone.utc)
+    mock_orchestrator.price_source.get_quote.return_value = quote
+    price, reason = bot._get_validated_live_price("TCS")
+    assert price is None
+    assert "synthetic" in reason
+
+    # 2. Live provider but stale (1 hour old, max 600s) -> blocked
+    quote.provider = "kite"
+    quote.quoted_at = datetime.now(timezone.utc) - timedelta(seconds=3600)
+    price, reason = bot._get_validated_live_price("TCS")
+    assert price is None
+    assert "stale" in reason
+
+    # 3. Missing timestamp -> blocked
+    quote.quoted_at = None
+    price, reason = bot._get_validated_live_price("TCS")
+    assert price is None
+
+    # 4. Invalid price -> blocked
+    quote.quoted_at = datetime.now(timezone.utc)
+    quote.price = 0.0
+    price, reason = bot._get_validated_live_price("TCS")
+    assert price is None
+
+    # 5. Fresh, live-provider, valid price -> passes
+    quote.price = 3000.0
+    price, reason = bot._get_validated_live_price("TCS")
+    assert price == 3000.0
+    assert reason == "live"
 
 
 def test_autonomous_bot_monitor_exit_long_tsl(mock_orchestrator):

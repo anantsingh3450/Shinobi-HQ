@@ -52,6 +52,9 @@ def mock_orchestrator():
     mock_quote.price = 100.0
     mock_quote.bid = 99.9
     mock_quote.ask = 100.1
+    # Live provenance: entry path blocks synthetic/stale quotes (doctrine).
+    mock_quote.provider = "test-live-feed"
+    mock_quote.quoted_at = datetime.now(timezone.utc)
     orch.price_source.get_quote.return_value = mock_quote
     
     return orch

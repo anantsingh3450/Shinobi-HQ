@@ -936,6 +936,46 @@ class AutonomousTradingBot:
         except Exception as exc:
             logger.error(f"Failed to execute partial scale-out for {symbol}: {exc}")
 
+    # Commander doctrine: no synthetic prices. Entry orders may only execute
+    # against quotes from a live source (authenticated broker feed or real
+    # public feed) that are fresh. Synthetic/mock table prices never trade.
+    _SYNTHETIC_PROVIDER_TAGS = ("mock", "synthetic")
+    _MAX_QUOTE_AGE_SECONDS = 600.0
+
+    def _get_validated_live_price(self, symbol: str) -> tuple[float | None, str]:
+        """Fetch a quote and validate its provenance for order execution.
+
+        Returns (price, reason). price is None when the quote is synthetic,
+        stale, or absent — in which case NO entry order may be placed. Exits are
+        deliberately NOT gated on this (never refuse to exit on data quality).
+        """
+        try:
+            quote = self.orchestrator.price_source.get_quote(symbol)
+        except Exception as exc:
+            return None, f"quote fetch failed: {exc}"
+        if quote is None:
+            return None, "no quote returned"
+
+        price = getattr(quote, "price", None)
+        if not isinstance(price, (int, float)) or price <= 0:
+            return None, f"invalid price {price!r}"
+
+        provider = str(getattr(quote, "provider", "") or "").lower()
+        if any(tag in provider for tag in self._SYNTHETIC_PROVIDER_TAGS):
+            return None, f"synthetic provider '{provider}'"
+
+        quoted_at = getattr(quote, "quoted_at", None)
+        if not isinstance(quoted_at, datetime):
+            return None, "quote has no timestamp"
+        try:
+            age = (datetime.now(timezone.utc) - quoted_at).total_seconds()
+        except TypeError:
+            return None, "quote timestamp is not timezone-aware"
+        if age > self._MAX_QUOTE_AGE_SECONDS:
+            return None, f"stale quote ({age:.0f}s old, max {self._MAX_QUOTE_AGE_SECONDS:.0f}s)"
+
+        return float(price), "live"
+
     def _now_ist(self) -> datetime:
         """Current time in IST — the single injectable clock seam for exit timing.
 
@@ -2239,10 +2279,11 @@ class AutonomousTradingBot:
 
             try:
                 # --- Final pre-execution validations ---
-                # 1. Price check (re-query latest price to prevent execution on stale values)
-                latest_price = self.orchestrator.price_source.get_price(symbol)
-                if latest_price is None or latest_price <= 0.0:
-                    logger.warning(f"Aborting execution for {symbol}: Failed to get fresh price right before order.")
+                # 1. Price provenance check (Doctrine: no synthetic prices; also
+                # blocks stale quotes right before order placement).
+                latest_price, price_reason = self._get_validated_live_price(symbol)
+                if latest_price is None:
+                    logger.warning(f"Aborting execution for {symbol}: price provenance check failed ({price_reason}).")
                     continue
                 entry_price = latest_price
 
