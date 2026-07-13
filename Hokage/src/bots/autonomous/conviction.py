@@ -635,22 +635,24 @@ class NoTradeDecisionEngine:
         reasons: list[str] = []
         no_trade = False
 
-        if vix_impact_delta >= 4.0:
-            # Only block on extreme panic (VIX delta >=4.0, not 3.0)
+        if vix_impact_delta >= 3.0:
+            # Panic threshold restored to 3.0 (commander-approved revert of a
+            # silent loosening to 4.0 found in undocumented "sync" commits).
             no_trade = True
-            reasons.append("VIX delta is extremely high (>=4.0), signaling market panic conditions.")
+            reasons.append("VIX delta is extremely high (>=3.0), signaling market panic conditions.")
         elif vix_impact_delta >= 2.5:
             reasons.append("Elevated volatility detected. Sizing will be reduced.")
 
-        if regime_conf_val < 0.45:
-            # Lowered from 55% to 45% — only block if regime is truly ambiguous
+        if regime_conf_val < 0.55:
+            # Threshold restored to 55% (revert of a silent loosening to 45%
+            # found alongside the VIX loosening; tests encode 55% as the spec).
             no_trade = True
-            reasons.append("Regime classification certainty is below the safety threshold of 45%.")
+            reasons.append("Regime classification certainty is below the safety threshold of 55%.")
 
-        if flow_confidence_val < 0.40:
-            # Lowered from 50% to 40% — sector flows are noisy, be lenient
+        if flow_confidence_val < 0.50:
+            # Threshold restored to 50% (revert of a silent loosening to 40%).
             no_trade = True
-            reasons.append("Sector flow forecast confidence is below the safety threshold of 40%.")
+            reasons.append("Sector flow forecast confidence is below the safety threshold of 50%.")
 
         if conflicting_signals_val:
             no_trade = True

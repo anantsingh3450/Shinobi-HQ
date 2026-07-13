@@ -78,17 +78,28 @@ class SessionBehaviorEngine:
 class LiquidityEngine:
     """Protects against bid-ask spreads and order book skew traps."""
 
-    def check_liquidity(self, spread_pct: float, bid_ask_size_ratio: float) -> tuple[bool, str]:
+    #: Maximum tolerated bid-ask spread by asset class (percent of price).
+    #: Options (CE/PE) naturally quote wider than equities/futures — a 1.5%
+    #: spread on a ₹100 premium is ₹1.5 slippage, acceptable for derivatives.
+    #: Equities/futures get the strict 0.20% cap (commander-approved fix of a
+    #: silent loosening that applied 1.5% flat to everything).
+    MAX_SPREAD_EQUITY_PCT = 0.20
+    MAX_SPREAD_OPTION_PCT = 1.5
+
+    def check_liquidity(self, spread_pct: float, bid_ask_size_ratio: float, is_option: bool = False) -> tuple[bool, str]:
         """Verify liquidity is sufficient for low slippage execution.
-        
-        Note: Options (CE/PE) naturally have wider spreads than equities.
-        A 1.5% spread on a ₹100 premium = ₹1.5 slippage which is acceptable.
+
+        Args:
+            spread_pct: bid-ask spread as a percent of price.
+            bid_ask_size_ratio: order-book depth ratio (1.0 = balanced).
+            is_option: True for option contracts (CE/PE) — wider spread allowed.
         """
-        # Options-aware threshold: 1.5% for derivatives, 0.20% for equities
-        max_spread = 1.5  # Widened to accommodate options bid-ask spreads
+        max_spread = self.MAX_SPREAD_OPTION_PCT if is_option else self.MAX_SPREAD_EQUITY_PCT
         if spread_pct > max_spread:
             return False, f"LIQUIDITY_TRAP: Bid-ask spread {spread_pct:.2f}% exceeds max allowed {max_spread:.2f}%."
-        if bid_ask_size_ratio > 10.0 or bid_ask_size_ratio < 0.1:
+        # Depth-imbalance bounds restored to 5.0x/0.2x (revert of a silent
+        # loosening to 10.0x/0.1x; tests encode 5x as the trap threshold).
+        if bid_ask_size_ratio > 5.0 or bid_ask_size_ratio < 0.2:
             return False, f"LIQUIDITY_TRAP: Extreme book depth imbalance (bid/ask ratio={bid_ask_size_ratio:.2f}x)."
         return True, "Liquidity profile satisfied."
 

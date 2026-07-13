@@ -2192,7 +2192,8 @@ class AutonomousTradingBot:
                 logger.info(f"Spread unavailable for {symbol}; skipping liquidity gate (no fabricated spreads).")
                 is_liq_valid, liq_reason = True, "spread data unavailable; gate skipped"
             else:
-                is_liq_valid, liq_reason = self.liquidity_engine.check_liquidity(spread_pct, bid_ask_ratio)
+                is_option = symbol.upper().endswith(("CE", "PE"))
+                is_liq_valid, liq_reason = self.liquidity_engine.check_liquidity(spread_pct, bid_ask_ratio, is_option=is_option)
             if not is_liq_valid:
                 logger.info(f"Opportunity for {symbol} rejected by LiquidityEngine: {liq_reason}")
                 eval_results[symbol] = {
@@ -2885,7 +2886,8 @@ class AutonomousTradingBot:
                     if spread_pct is None:
                         is_liq_valid, liq_reason = True, "spread data unavailable; gate skipped"
                     else:
-                        is_liq_valid, liq_reason = self.liquidity_engine.check_liquidity(spread_pct, bid_ask_ratio)
+                        is_option = symbol.upper().endswith(("CE", "PE"))
+                        is_liq_valid, liq_reason = self.liquidity_engine.check_liquidity(spread_pct, bid_ask_ratio, is_option=is_option)
                     if not is_liq_valid:
                         self.strategy_evolution.log_shadow_decision(
                             strategy_id=strat_id,
