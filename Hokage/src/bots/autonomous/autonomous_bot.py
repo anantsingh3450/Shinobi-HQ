@@ -166,6 +166,9 @@ class AutonomousTradingBot:
         from integrations.notifications.telegram_bot import TelegramBotUplink
         self.trade_ledger = ledger
         self.telegram_bot = TelegramBotUplink()
+        # Attach this bot as the uplink's control-command handler so the
+        # commander can /kill /pause /resume /close_all /status from Telegram.
+        self.telegram_bot.command_handler = self
         self.allocation_engine = PositionAllocationEngine(self.portfolio_intel)
         self.trust_engine = ElderTrustEngine(self.cache)
         self.journal = DecisionJournalSystem()
@@ -902,6 +905,70 @@ class AutonomousTradingBot:
             # Fail-closed: a sizing failure must never place a blind 1-lot order.
             return 0.0
 
+
+    def handle_remote_command(self, command: str) -> str:
+        """Execute a commander control command arriving via the Telegram uplink.
+
+        Supported: /kill (halt + liquidate), /pause (halt entries), /resume,
+        /close_all (liquidate, no halt), /status. Returns an acknowledgement
+        string that the uplink sends back to the commander.
+        """
+        cmd = command.strip().lower().lstrip("/")
+        if cmd == "kill":
+            self.intraday_override["halted"] = True
+            self.gatekeeper_state = "KILL_SWITCH_ENGAGED"
+            closed = self._close_all_positions("MANUAL_KILL_SWITCH")
+            logger.critical("MANUAL KILL SWITCH engaged via Telegram. %d liquidation order(s) sent.", closed)
+            return (
+                f"🚨 *KILL SWITCH ENGAGED*. All entries halted. "
+                f"Liquidation orders sent for {closed} position(s). Restart required to clear."
+            )
+        if cmd == "pause":
+            self.intraday_override["halted"] = True
+            logger.warning("Trading PAUSED via Telegram command.")
+            return "⏸ *Trading PAUSED*. No new entries. Existing positions stay managed (exits remain active). /resume to lift."
+        if cmd == "resume":
+            if self.gatekeeper_state == "KILL_SWITCH_ENGAGED":
+                return "⛔ Kill switch is engaged — /resume refused. Restart the system to clear it."
+            self.intraday_override.pop("halted", None)
+            logger.warning("Trading RESUMED via Telegram command.")
+            return "▶️ *Trading RESUMED*. Entry scanning re-enabled."
+        if cmd == "close_all":
+            closed = self._close_all_positions("MANUAL_CLOSE_ALL")
+            logger.warning("CLOSE ALL via Telegram: %d liquidation order(s) sent.", closed)
+            return f"🛑 *CLOSE ALL*: liquidation orders sent for {closed} position(s). Entries NOT halted (use /pause or /kill)."
+        if cmd == "status":
+            return (
+                f"📡 *STATUS*: halted={self.intraday_override.get('halted', False)}, "
+                f"gatekeeper={self.gatekeeper_state}, "
+                f"tracked_positions={len(self._active_positions_tracking)}, "
+                f"loop_active={self.is_active()}"
+            )
+        return f"Unknown control command: /{cmd}"
+
+    def _close_all_positions(self, reason: str) -> int:
+        """Send liquidation orders for every locally tracked open position.
+
+        Returns the number of positions a liquidation order was sent for.
+        Used by the manual kill switch and /close_all.
+        """
+        closed = 0
+        for asset, pos_data in list(self._active_positions_tracking.items()):
+            try:
+                side_str = pos_data.get("side", "BUY")
+                side = OrderSide.BUY if side_str == "BUY" else OrderSide.SELL
+                qty = float(pos_data.get("quantity", 1.0))
+                venue_id = pos_data.get("venue_id", "paper_main")
+                venue = self.orchestrator.registry.get_venue(venue_id)
+                if not venue:
+                    venue = getattr(self.orchestrator, "paper_venue", None)
+                if not venue:
+                    raise ValueError(f"Venue {venue_id} not found and paper_venue unavailable.")
+                self._execute_partial_exit(symbol=asset, side=side, quantity=qty, reason=reason, venue=venue)
+                closed += 1
+            except Exception as e:
+                logger.error(f"Failed to liquidate {asset} during {reason}: {e}")
+        return closed
 
     def _execute_partial_exit(self, symbol: str, side: OrderSide, quantity: float, reason: str, venue: Any) -> None:
         """Place a partial exit order to scale out of a position."""

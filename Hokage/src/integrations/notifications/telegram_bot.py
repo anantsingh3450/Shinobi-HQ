@@ -28,6 +28,9 @@ class TelegramBotUplink:
         self._last_update_id = 0
         self.latest_totp = None
         self.llm_processor = LLMProcessor()
+        # Control-command handler (set by AutonomousTradingBot). Must expose
+        # handle_remote_command(command: str) -> str.
+        self.command_handler = None
     def start(self) -> None:
         """Start the background polling thread."""
         if self._thread is not None and self._thread.is_alive():
@@ -235,6 +238,18 @@ class TelegramBotUplink:
                         except Exception as e:
                             self.send_message(f"❌ *Login Failed*: {e}")
                             
+                    elif text.lower().split()[0] in ("/kill", "/pause", "/resume", "/close_all", "/status"):
+                        cmd = text.lower().split()[0]
+                        logger.warning(f"Received control command via Telegram: {cmd}")
+                        if self.command_handler is None:
+                            self.send_message("❌ Control command received but no trading bot is attached to the uplink.")
+                        else:
+                            try:
+                                ack = self.command_handler.handle_remote_command(cmd)
+                                self.send_message(ack)
+                            except Exception as e:
+                                logger.error(f"Control command {cmd} failed: {e}")
+                                self.send_message(f"❌ Command {cmd} failed: {e}")
                     elif text.isdigit() and len(text) == 6:
                         self.latest_totp = text
                         logger.info(f"Received valid 6-digit TOTP token: {text}")

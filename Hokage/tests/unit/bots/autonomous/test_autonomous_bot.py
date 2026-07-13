@@ -142,6 +142,49 @@ def test_negative_kelly_blocks_sizing(mock_orchestrator, monkeypatch):
     assert qty_pos > 0.0
 
 
+def test_telegram_remote_commands(mock_orchestrator):
+    """Commander control commands: /pause /resume /close_all /kill /status."""
+    bot = AutonomousTradingBot(mock_orchestrator, watchlist=["TCS"], scan_interval_seconds=1)
+    mock_venue = mock_orchestrator.registry.get_venue.return_value
+
+    # The uplink must be wired to this bot as its command handler.
+    assert bot.telegram_bot.command_handler is bot
+
+    bot._active_positions_tracking["TCS"] = {
+        "entry_price": 3000.0, "side": "BUY", "quantity": 5.0, "venue_id": "paper_main",
+    }
+
+    # /pause halts entries
+    ack = bot.handle_remote_command("/pause")
+    assert bot.intraday_override.get("halted") is True
+    assert "PAUSED" in ack
+
+    # /resume lifts the halt
+    ack = bot.handle_remote_command("/resume")
+    assert not bot.intraday_override.get("halted", False)
+    assert "RESUMED" in ack
+
+    # /close_all liquidates tracked positions WITHOUT halting entries
+    mock_venue.place_order.reset_mock()
+    ack = bot.handle_remote_command("/close_all")
+    assert mock_venue.place_order.call_count == 1
+    assert not bot.intraday_override.get("halted", False)
+
+    # /kill halts, engages the kill switch, liquidates, and refuses /resume
+    mock_venue.place_order.reset_mock()
+    ack = bot.handle_remote_command("/kill")
+    assert bot.intraday_override.get("halted") is True
+    assert bot.gatekeeper_state == "KILL_SWITCH_ENGAGED"
+    assert mock_venue.place_order.call_count == 1
+    ack = bot.handle_remote_command("/resume")
+    assert "refused" in ack
+    assert bot.intraday_override.get("halted") is True
+
+    # /status reports state
+    ack = bot.handle_remote_command("/status")
+    assert "STATUS" in ack
+
+
 def test_autonomous_bot_monitor_exit_long_tsl(mock_orchestrator):
     bot = AutonomousTradingBot(mock_orchestrator, watchlist=["TCS"], scan_interval_seconds=1, tsl_percent=0.05, tp_percent=0.10)
     
