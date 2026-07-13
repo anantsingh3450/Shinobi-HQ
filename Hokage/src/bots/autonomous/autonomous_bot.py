@@ -876,22 +876,31 @@ class AutonomousTradingBot:
                 kelly_f = (p * b - (1.0 - p) * L) / (b * L)
             else:
                 kelly_f = 0.01
-            
+
+            # NEGATIVE-KELLY BLOCK: a non-positive Kelly fraction means the
+            # empirical+theoretical blend expects this trade to LOSE money.
+            # Never take a minimum position on negative edge — take none.
             if kelly_f <= 0:
-                kelly_f = 0.01  # Minimum placeholder allocation for negative edge
-                
+                logger.warning(
+                    f"Negative-Kelly block for {symbol}: kelly_f={kelly_f:.4f} "
+                    f"(p={p:.3f}, b={b:.4f}, L={L:.4f}). Sizing 0 — no trade."
+                )
+                return 0.0
+
             fractional_kelly = kelly_f * 0.5  # Half-Kelly for safety
             fractional_kelly = min(0.05, fractional_kelly)  # Max 5% equity
-            
+
             risk_capital = fractional_kelly * total_equity
             raw_qty = risk_capital / (1.5 * atr * lot_multiplier)
             qty = max(1.0, round(raw_qty) * lot_multiplier)
             return qty
         except Exception as e:
-            from integrations.diagnostics.logger import get_logger
-            logger = get_logger("Hokage.AutonomousTrading")
+            # NOTE: this handler previously imported integrations.diagnostics.logger,
+            # a module that does not exist — so any sizing exception crashed the scan
+            # loop instead of failing safe. Use the module logger.
             logger.error(f"Failed to calculate dynamic lot size for {symbol}: {e}")
-            return 1.0
+            # Fail-closed: a sizing failure must never place a blind 1-lot order.
+            return 0.0
 
 
     def _execute_partial_exit(self, symbol: str, side: OrderSide, quantity: float, reason: str, venue: Any) -> None:
@@ -2377,6 +2386,11 @@ class AutonomousTradingBot:
                         f"ceiling {risk_max_qty}. Capping to {risk_max_qty}."
                     )
                     qty = risk_max_qty
+
+                # Negative-Kelly block / sizing failure / zero risk budget -> no trade.
+                if qty <= 0:
+                    logger.warning(f"Aborting execution for {symbol}: sized quantity is {qty} (no positive edge or no risk budget).")
+                    continue
                 side = OrderSide.BUY if original_entry == "long" else OrderSide.SELL
 
                 # Create TradeAuthorization BEFORE placing order
@@ -2705,6 +2719,10 @@ class AutonomousTradingBot:
                     alloc_pct = round(alloc_pct * scale, 2)
                     total_equity = portfolio_metrics.get("total_assets", 500000.0)
                     qty = self._calculate_dynamic_lot_size(symbol, total_equity, entry_price=entry_price, alloc_pct=alloc_pct, confidence_score=committee_decision.decision_confidence if 'committee_decision' in locals() else 50.0, direction=proposal.entry_rule)
+                    if qty <= 0:
+                        # Negative-Kelly block: shadow strategies mirror production
+                        # sizing discipline — no positive edge, no simulated entry.
+                        continue
 
                     # Trailing Stops and Take Profit management
                     adapted_tsl, adapted_tp = self.position_mgmt_engine.get_adapted_exit_percentages(

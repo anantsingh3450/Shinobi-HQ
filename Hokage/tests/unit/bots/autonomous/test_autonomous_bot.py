@@ -116,6 +116,32 @@ def test_price_provenance_guard_blocks_synthetic_and_stale(mock_orchestrator):
     assert reason == "live"
 
 
+def test_negative_kelly_blocks_sizing(mock_orchestrator, monkeypatch):
+    """A non-positive Kelly fraction must size ZERO — never a placeholder 1 lot."""
+    from bots.strategy.midnight_crucible import crucible
+
+    bot = AutonomousTradingBot(mock_orchestrator, watchlist=["TCS"], scan_interval_seconds=1)
+    # Real numeric price so the ATR fallback (price * 1.5%) is numeric.
+    mock_orchestrator.price_source.get_price.return_value = 3000.0
+
+    # Fully-blended empirical parameters with clear negative edge:
+    # kelly_f = (p*b - (1-p)*L) / (b*L) = (0.2*0.01 - 0.8*0.02) / 0.0002 < 0
+    monkeypatch.setattr(
+        crucible, "get_bayesian_kelly_parameters",
+        lambda: {"total_trades": 100, "p": 0.2, "b": 0.01, "L": 0.02},
+    )
+    qty = bot._calculate_dynamic_lot_size("TCS", 500000.0, entry_price=3000.0, alloc_pct=2.0, confidence_score=80.0)
+    assert qty == 0.0
+
+    # Clear positive edge sizes a real (positive) quantity.
+    monkeypatch.setattr(
+        crucible, "get_bayesian_kelly_parameters",
+        lambda: {"total_trades": 100, "p": 0.7, "b": 0.02, "L": 0.01},
+    )
+    qty_pos = bot._calculate_dynamic_lot_size("TCS", 500000.0, entry_price=3000.0, alloc_pct=2.0, confidence_score=80.0)
+    assert qty_pos > 0.0
+
+
 def test_autonomous_bot_monitor_exit_long_tsl(mock_orchestrator):
     bot = AutonomousTradingBot(mock_orchestrator, watchlist=["TCS"], scan_interval_seconds=1, tsl_percent=0.05, tp_percent=0.10)
     
