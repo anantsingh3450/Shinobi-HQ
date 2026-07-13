@@ -910,6 +910,36 @@ class AutonomousTradingBot:
             return 0.0
 
 
+    # Market-wide circuit breaker stand-down. NSE halts trading on a 10%/15%/20%
+    # index move; we stop taking NEW entries at 9% — before the exchange halt —
+    # because fills, spreads, and exits become unreliable in a limit-move regime.
+    _CIRCUIT_BREAKER_INDEX = "NIFTY 50"
+    _CIRCUIT_BREAKER_MOVE_PCT = 9.0
+
+    def _check_circuit_breaker(self) -> tuple[bool, str]:
+        """Detect a market-wide limit move vs previous close.
+
+        Returns (blocked, reason). Fail-open on missing/invalid index data:
+        absence of benchmark data must not freeze trading — per-symbol data
+        quality is already fail-closed by the price-provenance guard. Exits are
+        never gated by this check.
+        """
+        try:
+            quote = self.orchestrator.price_source.get_quote(self._CIRCUIT_BREAKER_INDEX)
+            price = getattr(quote, "price", None)
+            prev = getattr(quote, "previous_close", None)
+            if not isinstance(price, (int, float)) or not isinstance(prev, (int, float)) or prev <= 0:
+                return False, ""
+            move_pct = abs(price - prev) / prev * 100.0
+            if move_pct >= self._CIRCUIT_BREAKER_MOVE_PCT:
+                return True, (
+                    f"Circuit breaker: {self._CIRCUIT_BREAKER_INDEX} moved {move_pct:.2f}% vs previous "
+                    f"close (threshold {self._CIRCUIT_BREAKER_MOVE_PCT}%)."
+                )
+        except Exception:
+            return False, ""
+        return False, ""
+
     def _check_broker_session_health(self) -> None:
         """Detect mid-session broker auth failure (e.g. Kite daily token expiry).
 
@@ -1678,6 +1708,19 @@ class AutonomousTradingBot:
                     return
         except Exception as e:
             logger.warning(f"Could not verify margin utilization ceiling: {e}")
+
+        # Market-wide circuit-breaker stand-down: no new entries during a limit
+        # move; exit monitoring continues in the main loop untouched.
+        cb_blocked, cb_reason = self._check_circuit_breaker()
+        if cb_blocked:
+            logger.critical(f"{cb_reason} Aborting entry scan; exits remain active.")
+            cb_today = self._now_ist().strftime("%Y-%m-%d")
+            if getattr(self, "_last_circuit_alert_date", None) != cb_today and self.telegram_bot:
+                self._last_circuit_alert_date = cb_today
+                self.telegram_bot.send_message(
+                    f"⚡ *CIRCUIT BREAKER STAND-DOWN* ⚡\n{cb_reason}\nNo new entries. Exits remain active."
+                )
+            return
 
         # Opening Bell Observation Protocol: block NSE/BSE entries during the
         # 09:15-09:30 IST window. Derived from the real session clock.

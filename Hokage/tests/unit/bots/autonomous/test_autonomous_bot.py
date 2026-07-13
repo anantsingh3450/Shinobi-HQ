@@ -185,6 +185,38 @@ def test_telegram_remote_commands(mock_orchestrator):
     assert "STATUS" in ack
 
 
+def test_circuit_breaker_blocks_entries(mock_orchestrator):
+    """A >=9% index move vs previous close stands entries down; exits unaffected."""
+    bot = AutonomousTradingBot(mock_orchestrator, watchlist=["TCS"], scan_interval_seconds=1)
+    quote = mock_orchestrator.price_source.get_quote.return_value
+
+    # -10% limit move -> blocked
+    quote.price = 21870.0
+    quote.previous_close = 24300.0
+    blocked, reason = bot._check_circuit_breaker()
+    assert blocked
+    assert "Circuit breaker" in reason
+
+    # Scan-level integration: entry scan aborts before any order placement.
+    bot.telegram_bot.send_message = MagicMock(return_value=True)
+    mock_venue = mock_orchestrator.registry.get_venue.return_value
+    mock_venue.place_order.reset_mock()
+    bot._scan_and_enter_opportunities()
+    mock_venue.place_order.assert_not_called()
+    bot.telegram_bot.send_message.assert_called_once()
+    assert "CIRCUIT BREAKER" in bot.telegram_bot.send_message.call_args[0][0]
+
+    # Normal move -> not blocked
+    quote.price = 24000.0
+    blocked, _ = bot._check_circuit_breaker()
+    assert not blocked
+
+    # Missing benchmark data -> fail-open (never freeze on absent index data)
+    quote.previous_close = None
+    blocked, _ = bot._check_circuit_breaker()
+    assert not blocked
+
+
 def test_broker_session_health_halts_on_token_expiry(mock_orchestrator):
     """Mid-session token expiry on a LIVE venue halts entries + alerts commander."""
     bot = AutonomousTradingBot(mock_orchestrator, watchlist=["TCS"], scan_interval_seconds=1)
