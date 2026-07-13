@@ -185,6 +185,37 @@ def test_telegram_remote_commands(mock_orchestrator):
     assert "STATUS" in ack
 
 
+def test_broker_session_health_halts_on_token_expiry(mock_orchestrator):
+    """Mid-session token expiry on a LIVE venue halts entries + alerts commander."""
+    bot = AutonomousTradingBot(mock_orchestrator, watchlist=["TCS"], scan_interval_seconds=1)
+    bot.telegram_bot.send_message = MagicMock(return_value=True)
+
+    # PAPER mode: no broker-token risk, health check is a no-op.
+    bot._check_broker_session_health()
+    assert not bot.intraday_override.get("halted", False)
+
+    # LIVE mode with an auth-failing live venue -> halt + alert.
+    mock_orchestrator.get_execution_context.return_value = ExecutionContext(
+        execution_mode=ExecutionMode.LIVE,
+        active_venue_id="kite_main",
+        brain_id="primary_brain",
+        authority_level="elder",
+    )
+    mock_orchestrator.registry.list_venues.return_value = ["kite_main"]
+    live_venue = MagicMock()
+    live_venue.get_account_balance.side_effect = RuntimeError("TokenException: access token expired")
+    mock_orchestrator.registry.get_venue.return_value = live_venue
+
+    bot._check_broker_session_health()
+    assert bot.intraday_override.get("halted") is True
+    bot.telegram_bot.send_message.assert_called_once()
+    assert "BROKER SESSION EXPIRED" in bot.telegram_bot.send_message.call_args[0][0]
+
+    # Same date: alert not repeated.
+    bot._check_broker_session_health()
+    bot.telegram_bot.send_message.assert_called_once()
+
+
 def test_autonomous_bot_monitor_exit_long_tsl(mock_orchestrator):
     bot = AutonomousTradingBot(mock_orchestrator, watchlist=["TCS"], scan_interval_seconds=1, tsl_percent=0.05, tp_percent=0.10)
     

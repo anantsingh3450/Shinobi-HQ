@@ -626,6 +626,10 @@ class AutonomousTradingBot:
                         self._run_direct_broker_sync_and_flatten_ghost_positions()
                     except Exception as e:
                         logger.error(f"Error in background direct broker reconciliation sync: {e}")
+                    try:
+                        self._check_broker_session_health()
+                    except Exception as e:
+                        logger.error(f"Error in broker session health check: {e}")
 
 
             except Exception as exc:
@@ -905,6 +909,43 @@ class AutonomousTradingBot:
             # Fail-closed: a sizing failure must never place a blind 1-lot order.
             return 0.0
 
+
+    def _check_broker_session_health(self) -> None:
+        """Detect mid-session broker auth failure (e.g. Kite daily token expiry).
+
+        Probes every live (non-paper) venue; on an auth-shaped failure, halts
+        new entries and alerts the commander via Telegram once per IST date.
+        Exits remain active. Paper/mock venues carry no token risk and are
+        skipped. (Data-feed token expiry is separately fail-closed by the
+        price-provenance guard on the entry path.)
+        """
+        context = self.orchestrator.get_execution_context()
+        if context.execution_mode != ExecutionMode.LIVE:
+            return
+        try:
+            venue_ids = list(self.orchestrator.registry.list_venues())
+        except Exception:
+            return
+        for venue_id in venue_ids:
+            if "paper" in venue_id.lower() or "mock" in venue_id.lower():
+                continue
+            venue = self.orchestrator.registry.get_venue(venue_id)
+            try:
+                venue.get_account_balance()
+            except Exception as exc:
+                msg = str(exc).lower()
+                if any(tag in msg for tag in ("token", "auth", "session", "api_key", "forbidden", "403")):
+                    today = self._now_ist().strftime("%Y-%m-%d")
+                    if getattr(self, "_last_token_alert_date", None) != today:
+                        self._last_token_alert_date = today
+                        self.intraday_override["halted"] = True
+                        logger.critical(f"Broker session failure on venue {venue_id}: {exc}. Entries halted.")
+                        if self.telegram_bot:
+                            self.telegram_bot.send_message(
+                                "🚨 *BROKER SESSION EXPIRED* 🚨\n"
+                                f"Venue `{venue_id}` rejected authentication: {exc}\n"
+                                "Entries are HALTED. Re-login via the dashboard or /token, then send /resume."
+                            )
 
     def handle_remote_command(self, command: str) -> str:
         """Execute a commander control command arriving via the Telegram uplink.
