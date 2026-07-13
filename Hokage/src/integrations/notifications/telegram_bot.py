@@ -229,9 +229,16 @@ class TelegramBotUplink:
                 # Make sure message is from the configured chat ID
                 if str(chat.get("id")) == str(self.chat_id):
                     text = msg.get("text", "").strip()
-                    if text.startswith("/token "):
+                    # A pasted Kite callback URL IS a login attempt, with or
+                    # without the /token prefix. Routing a bare URL to the LLM
+                    # once produced a hallucinated "connection is solid" reply
+                    # while the token was silently discarded.
+                    if text.startswith("/token ") or "request_token=" in text:
                         # Extract token
-                        request_token = text.split("/token ", 1)[1].strip()
+                        if text.startswith("/token "):
+                            request_token = text.split("/token ", 1)[1].strip()
+                        else:
+                            request_token = text
                         if "request_token=" in request_token:
                             try:
                                 parsed = urlparse(request_token)

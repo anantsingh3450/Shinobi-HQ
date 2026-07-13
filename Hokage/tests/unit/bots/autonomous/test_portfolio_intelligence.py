@@ -69,6 +69,37 @@ def test_portfolio_awareness_metrics(mock_venue, mock_cache):
     assert metrics["portfolio_beta"] == 0.18
 
 
+def test_offline_venue_returns_not_ready_metrics_with_no_synthetic_balance(mock_cache):
+    """Regression: 2026-07-13 second false kill-switch.
+
+    When the venue query failed (pre-login boot), compute_portfolio_metrics
+    fabricated a ₹100,000 mock balance. That fake figure ratcheted
+    peak_equity in the intelligence cache; once the real (smaller) paper
+    balance loaded, the gap read as a catastrophic drawdown and fired the
+    portfolio kill-switch. Offline must mean data-not-ready: zeroed
+    metrics, data_ready=False, and NOTHING written to the cache.
+    """
+    dead_venue = MagicMock()
+    dead_venue.get_positions.side_effect = ConnectionError("venue not connected")
+    dead_venue.get_account_balance.side_effect = ConnectionError("venue not connected")
+
+    awareness = PortfolioAwarenessEngine(dead_venue, mock_cache)
+    metrics = awareness.compute_portfolio_metrics()
+
+    assert metrics["data_ready"] is False
+    assert metrics["total_assets"] == 0.0
+    assert metrics["peak_equity"] == 0.0
+    assert metrics["drawdown_pct"] == 0.0
+    # The poison vector: no cache write may occur from fabricated data.
+    mock_cache.write_intelligence.assert_not_called()
+
+
+def test_online_venue_metrics_marked_data_ready(mock_venue, mock_cache):
+    awareness = PortfolioAwarenessEngine(mock_venue, mock_cache)
+    metrics = awareness.compute_portfolio_metrics()
+    assert metrics["data_ready"] is True
+
+
 def test_portfolio_health_grading():
     # 1. STRONG
     metrics = {

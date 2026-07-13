@@ -836,6 +836,13 @@ class CommandRouter:
         except Exception as exc:
             return f"Failed to compute portfolio intelligence: {exc}"
 
+        if not metrics.get("data_ready", True):
+            return (
+                "Portfolio intelligence unavailable: venue is not connected, "
+                "so no real balance/position data could be read. No metrics "
+                "were fabricated. Connect the broker (or paper venue) and retry."
+            )
+
         lines = [
             "=== Hokage Portfolio Intelligence ===",
             f"Total Assets:            {format_inr(metrics['total_assets'])}",

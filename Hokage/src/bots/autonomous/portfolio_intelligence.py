@@ -161,12 +161,28 @@ class PortfolioAwarenessEngine:
             bal = self.venue.get_account_balance()
         except Exception as exc:
             logger.error(f"Failed to query venue for portfolio awareness: {exc}")
-            # Fallback mocks if offline / venue uninitialized
-            positions = []
-            class _LocalMockBalance:
-                cash = 100000.0
-                total_equity = 100000.0
-            bal = _LocalMockBalance()
+            # No synthetic balance, ever. A fabricated equity figure here once
+            # ratcheted a fake peak_equity into the intelligence cache; when the
+            # real (smaller) paper balance loaded later, the difference read as
+            # a catastrophic drawdown and fired the portfolio kill-switch.
+            # Offline/uninitialized venue = data not ready: zeroed metrics that
+            # every health/risk consumer must skip, and nothing is cached.
+            return {
+                "data_ready": False,
+                "total_assets": 0.0,
+                "total_value": 0.0,
+                "peak_equity": 0.0,
+                "drawdown_pct": 0.0,
+                "cash_allocation_pct": 100.0,
+                "invested_capital_pct": 0.0,
+                "available_buying_power": 0.0,
+                "sector_exposure": {},
+                "asset_class_exposure": {},
+                "rebalancing_recommendations": [
+                    "Venue unavailable; portfolio metrics not computed."
+                ],
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
 
         total_value = sum(p.quantity * (p.current_price or p.average_price) for p in positions)
         total_assets = total_value + bal.cash
@@ -471,6 +487,7 @@ class PortfolioAwarenessEngine:
         diversification_score = round((1.0 - concentration_index) * 100.0, 2) if concentration_index > 0 else 100.0
 
         metrics = {
+            "data_ready": True,
             "total_assets": round(total_assets, 2),
             "total_value": round(total_value, 2),
             "cash_allocation_pct": cash_allocation_pct,

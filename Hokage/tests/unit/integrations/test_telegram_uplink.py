@@ -30,6 +30,74 @@ def test_suite_environment_is_hermetic():
     assert "TELEGRAM_CHAT_ID" not in os.environ
 
 
+def test_bare_callback_url_is_processed_as_login_token(monkeypatch):
+    """Regression: 2026-07-13 pasted Kite callback URL without '/token ' prefix
+    was routed to the conversational LLM, which hallucinated a successful
+    broker connection while the request_token was silently discarded. Any
+    message containing request_token= must hit the token handler."""
+    uplink = TelegramBotUplink(bot_token="123456:fake", chat_id="777")
+
+    bare_url = (
+        "http://127.0.0.1:5000/api/v1/broker/zerodha/callback?"
+        "request_token=abc123token&action=login&status=success"
+    )
+
+    class _FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "result": [
+                    {
+                        "update_id": 1,
+                        "message": {"chat": {"id": 777}, "text": bare_url},
+                    }
+                ]
+            }
+
+    captured = {}
+
+    class _FakeKite:
+        def __init__(self, api_key=None):
+            pass
+
+        def generate_session(self, request_token, api_secret=None):
+            captured["request_token"] = request_token
+            return {"access_token": "new-live-token"}
+
+    class _Vault:
+        def get_secret(self, name, broker=None):
+            return "secret-value"
+
+        def set_secret(self, name, value, broker=None):
+            captured["stored_access_token"] = value
+
+    monkeypatch.setattr(
+        "integrations.notifications.telegram_bot.requests.get",
+        lambda *a, **k: _FakeResponse(),
+    )
+    monkeypatch.setattr(
+        "integrations.notifications.telegram_bot.KiteConnect", _FakeKite
+    )
+    monkeypatch.setattr(
+        "integrations.notifications.telegram_bot.SecretManager", lambda: _Vault()
+    )
+    monkeypatch.setattr(
+        "integrations.brokers.secrets.update_env_file", lambda *a, **k: None
+    )
+    uplink.llm_processor = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+    # The handler writes ZERODHA_ACCESS_TOKEN to os.environ; registering the
+    # key with monkeypatch first guarantees teardown restores the suite env.
+    monkeypatch.setenv("ZERODHA_ACCESS_TOKEN", "sentinel-before-login")
+
+    uplink._check_telegram_updates()
+
+    assert captured["request_token"] == "abc123token"
+    assert captured["stored_access_token"] == "new-live-token"
+    # The LLM must never see a login URL.
+    uplink.llm_processor.generate_response.assert_not_called()
+
+
 def test_session_validation_rejects_missing_secrets(monkeypatch):
     """Regression: 2026-07-13 false 'Login Successful' message.
 
