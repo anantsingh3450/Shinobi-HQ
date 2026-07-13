@@ -765,3 +765,30 @@ def test_bot_crash_recovery_and_duplicate_prevention(mock_orchestrator, tmp_path
     # Order placement must NOT be called for TCS because it is already merged from active tracking (duplicate prevention)
     mock_venue.place_order.assert_not_called()
 
+
+
+def test_quote_liquidity_inputs_real_depth_and_none_fallbacks():
+    """Liquidity inputs come from the live quote only: real spread from
+    bid/ask, real book ratio from bid_qty/ask_qty, None when absent."""
+    quote = MagicMock()
+    quote.price = 100.0
+    quote.bid = 99.9
+    quote.ask = 100.1
+    quote.bid_qty = 500.0
+    quote.ask_qty = 250.0
+
+    spread_pct, ratio = AutonomousTradingBot._quote_liquidity_inputs(quote)
+    assert spread_pct == pytest.approx(0.2)
+    assert ratio == pytest.approx(2.0)
+
+    # No depth data: ratio None (imbalance check skipped, not neutral-faked)
+    quote.bid_qty = None
+    quote.ask_qty = None
+    spread_pct, ratio = AutonomousTradingBot._quote_liquidity_inputs(quote)
+    assert spread_pct == pytest.approx(0.2)
+    assert ratio is None
+
+    # No quote at all: both None
+    spread_pct, ratio = AutonomousTradingBot._quote_liquidity_inputs(None)
+    assert spread_pct is None
+    assert ratio is None

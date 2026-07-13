@@ -919,6 +919,25 @@ class AutonomousTradingBot:
             return 0.0
 
 
+    @staticmethod
+    def _quote_liquidity_inputs(quote: Any) -> tuple[float | None, float | None]:
+        """Extract REAL liquidity inputs (spread %, bid/ask depth ratio) from a
+        live quote. Either value is None when the venue supplied no data for
+        it — the corresponding gate check is skipped, never fed a fabricated
+        neutral value."""
+        spread_pct = None
+        bid_ask_ratio = None
+        try:
+            if quote is not None and quote.price > 0 and quote.bid is not None and quote.ask is not None:
+                spread_pct = ((quote.ask - quote.bid) / quote.price) * 100.0
+            bid_qty = getattr(quote, "bid_qty", None)
+            ask_qty = getattr(quote, "ask_qty", None)
+            if bid_qty and ask_qty and float(ask_qty) > 0:
+                bid_ask_ratio = float(bid_qty) / float(ask_qty)
+        except Exception:
+            pass
+        return spread_pct, bid_ask_ratio
+
     def _get_volume_context(self, symbol: str, quote: Any) -> tuple[float, float] | None:
         """Return (current_day_volume, avg_daily_volume) from REAL data only.
 
@@ -2183,19 +2202,10 @@ class AutonomousTradingBot:
                 })
                 continue
 
-            # Liquidity check using LiquidityEngine. Spread is REAL (from the live
-            # quote's bid/ask). The order-book size ratio is passed NEUTRAL (1.0)
-            # because MarketQuote carries no depth data yet — previously it was
-            # fabricated from sha256(symbol), which is synthetic data. TODO: feed
-            # real depth (bid_qty/ask_qty) from the Kite quote when available.
-            try:
-                if quote is not None and quote.price > 0 and quote.bid is not None and quote.ask is not None:
-                    spread_pct = ((quote.ask - quote.bid) / quote.price) * 100.0
-                else:
-                    spread_pct = None
-            except Exception:
-                spread_pct = None
-            bid_ask_ratio = 1.0
+            # Liquidity check using LiquidityEngine. Spread AND order-book depth
+            # ratio are REAL (from the live quote); missing data means the
+            # corresponding check is skipped, never faked.
+            spread_pct, bid_ask_ratio = self._quote_liquidity_inputs(quote)
 
             if spread_pct is None:
                 logger.info(f"Spread unavailable for {symbol}; skipping liquidity gate (no fabricated spreads).")
@@ -2880,17 +2890,9 @@ class AutonomousTradingBot:
                         )
                         continue
 
-                    # 3. Liquidity check using LiquidityEngine — real spread, neutral
-                    # depth ratio (no sha256-fabricated order-book data; mirrors the
-                    # production entry path).
-                    try:
-                        if quote is not None and quote.price > 0 and quote.bid is not None and quote.ask is not None:
-                            spread_pct = ((quote.ask - quote.bid) / quote.price) * 100.0
-                        else:
-                            spread_pct = None
-                    except Exception:
-                        spread_pct = None
-                    bid_ask_ratio = 1.0
+                    # 3. Liquidity check using LiquidityEngine — real spread and
+                    # real depth ratio; mirrors the production entry path.
+                    spread_pct, bid_ask_ratio = self._quote_liquidity_inputs(quote)
 
                     if spread_pct is None:
                         is_liq_valid, liq_reason = True, "spread data unavailable; gate skipped"

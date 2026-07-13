@@ -86,12 +86,14 @@ class LiquidityEngine:
     MAX_SPREAD_EQUITY_PCT = 0.20
     MAX_SPREAD_OPTION_PCT = 1.5
 
-    def check_liquidity(self, spread_pct: float, bid_ask_size_ratio: float, is_option: bool = False) -> tuple[bool, str]:
+    def check_liquidity(self, spread_pct: float, bid_ask_size_ratio: float | None, is_option: bool = False) -> tuple[bool, str]:
         """Verify liquidity is sufficient for low slippage execution.
 
         Args:
             spread_pct: bid-ask spread as a percent of price.
-            bid_ask_size_ratio: order-book depth ratio (1.0 = balanced).
+            bid_ask_size_ratio: order-book depth ratio (1.0 = balanced), or
+                None when the venue supplied no depth data — the imbalance
+                check is then skipped; a neutral ratio must never be invented.
             is_option: True for option contracts (CE/PE) — wider spread allowed.
         """
         max_spread = self.MAX_SPREAD_OPTION_PCT if is_option else self.MAX_SPREAD_EQUITY_PCT
@@ -99,7 +101,7 @@ class LiquidityEngine:
             return False, f"LIQUIDITY_TRAP: Bid-ask spread {spread_pct:.2f}% exceeds max allowed {max_spread:.2f}%."
         # Depth-imbalance bounds restored to 5.0x/0.2x (revert of a silent
         # loosening to 10.0x/0.1x; tests encode 5x as the trap threshold).
-        if bid_ask_size_ratio > 5.0 or bid_ask_size_ratio < 0.2:
+        if bid_ask_size_ratio is not None and (bid_ask_size_ratio > 5.0 or bid_ask_size_ratio < 0.2):
             return False, f"LIQUIDITY_TRAP: Extreme book depth imbalance (bid/ask ratio={bid_ask_size_ratio:.2f}x)."
         return True, "Liquidity profile satisfied."
 

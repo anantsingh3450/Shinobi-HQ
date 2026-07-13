@@ -113,13 +113,31 @@ class KiteMarketDataProvider(MarketDataProvider):
         if last_price <= 0:
             raise ValueError(f"Could not retrieve price for {kite_symbol}")
 
-        # Retrieve bid/ask defaults if missing
-        bid = last_price
-        ask = last_price
-        if data.get("buy") and len(data["buy"]) > 0:
-            bid = float(data["buy"][0].get("price", last_price))
-        if data.get("sell") and len(data["sell"]) > 0:
-            ask = float(data["sell"][0].get("price", last_price))
+        # Kite full-quote depth lives under data["depth"]["buy"/"sell"] (five
+        # levels of {price, quantity, orders}); there are no top-level
+        # "buy"/"sell" keys. The old code read those nonexistent keys and fell
+        # back to bid = ask = last_price, so the spread was always 0.0 and the
+        # liquidity gate could never see a real spread. Missing depth is now
+        # reported as None, never as a fake zero-spread book.
+        depth = data.get("depth") or {}
+        buy_levels = depth.get("buy") or []
+        sell_levels = depth.get("sell") or []
+
+        bid = None
+        ask = None
+        if buy_levels and float(buy_levels[0].get("price", 0.0)) > 0:
+            bid = float(buy_levels[0]["price"])
+        if sell_levels and float(sell_levels[0].get("price", 0.0)) > 0:
+            ask = float(sell_levels[0]["price"])
+
+        # Order-book pressure: total pending buy/sell quantities. Fall back to
+        # summing the five visible depth levels when totals are absent.
+        bid_qty = float(data.get("buy_quantity", 0.0)) or sum(
+            float(lv.get("quantity", 0.0)) for lv in buy_levels
+        )
+        ask_qty = float(data.get("sell_quantity", 0.0)) or sum(
+            float(lv.get("quantity", 0.0)) for lv in sell_levels
+        )
 
         previous_close = data.get("ohlc", {}).get("close")
 
@@ -131,7 +149,9 @@ class KiteMarketDataProvider(MarketDataProvider):
             bid=bid,
             ask=ask,
             volume=float(data.get("volume", 0.0)),
-            previous_close=previous_close
+            previous_close=previous_close,
+            bid_qty=bid_qty if bid_qty > 0 else None,
+            ask_qty=ask_qty if ask_qty > 0 else None
         )
 
     def get_historical_candles(

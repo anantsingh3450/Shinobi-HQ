@@ -51,6 +51,18 @@ def test_liquidity_engine():
     assert not allowed
     assert "imbalance" in msg.lower()
 
+    # Thin bid-side book (ratio below 0.2x) is equally a trap
+    allowed, msg = engine.check_liquidity(0.05, 0.1)
+    assert not allowed
+    assert "imbalance" in msg.lower()
+
+    # Depth data unavailable (None): imbalance check skipped, spread still enforced
+    allowed, msg = engine.check_liquidity(0.05, None)
+    assert allowed
+    allowed, msg = engine.check_liquidity(0.25, None)
+    assert not allowed
+    assert "spread" in msg.lower()
+
 def test_volume_engine():
     engine = VolumeEngine()
     

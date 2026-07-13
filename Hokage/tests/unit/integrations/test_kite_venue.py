@@ -189,12 +189,20 @@ def test_kite_market_data_provider(mock_kite_class, tmp_path: Path):
     cm = KiteConnectionManager(sm)
     
     mock_kite = MagicMock()
+    # Real Kite full-quote shape: depth lives under "depth" with buy/sell
+    # level arrays plus book totals. (An older fixture used top-level
+    # "buy"/"sell" keys that the Kite API never sends — a bad mock that let
+    # the provider read nonexistent keys and report zero spreads.)
     mock_kite.quote.return_value = {
         "NSE:TCS": {
             "last_price": 3300.0,
             "instrument_token": 123456,
-            "buy": [{"price": 3299.0}],
-            "sell": [{"price": 3301.0}],
+            "buy_quantity": 1200.0,
+            "sell_quantity": 900.0,
+            "depth": {
+                "buy": [{"price": 3299.0, "quantity": 50, "orders": 4}],
+                "sell": [{"price": 3301.0, "quantity": 30, "orders": 2}],
+            },
             "volume": 50000.0
         }
     }
@@ -211,6 +219,8 @@ def test_kite_market_data_provider(mock_kite_class, tmp_path: Path):
     assert quote.price == 3300.0
     assert quote.bid == 3299.0
     assert quote.ask == 3301.0
+    assert quote.bid_qty == 1200.0
+    assert quote.ask_qty == 900.0
     
     # Test historical data
     inst = provider.resolve_instrument("NSE:TCS")

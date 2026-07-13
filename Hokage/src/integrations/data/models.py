@@ -91,6 +91,11 @@ class MarketQuote:
     ask: float | None = None
     volume: float | None = None
     previous_close: float | None = None
+    #: Total pending buy/sell order quantities from the venue's order book
+    #: (Kite: buy_quantity/sell_quantity). None = depth data unavailable;
+    #: consumers must skip depth checks rather than assume a neutral book.
+    bid_qty: float | None = None
+    ask_qty: float | None = None
 
     def __post_init__(self) -> None:
         if self.price <= 0:
