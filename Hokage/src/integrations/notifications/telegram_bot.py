@@ -269,7 +269,18 @@ class TelegramBotUplink:
                             
                             self.send_message("✅ *Access Granted*. Vault updated. Resuming autonomous trading operations.")
                         except Exception as e:
-                            self.send_message(f"❌ *Login Failed*: {e}")
+                            # A request_token is single-use: if the browser
+                            # already hit the dashboard callback, the token is
+                            # spent but the session it created is live. Check
+                            # before alarming the commander.
+                            if self._validate_broker_session():
+                                self.send_message(
+                                    "⚠️ That request\\_token was already used or expired — "
+                                    "but your existing Zerodha session is *VALID*. "
+                                    "Broker is connected; no further login needed."
+                                )
+                            else:
+                                self.send_message(f"❌ *Login Failed*: {e}")
                             
                     elif text.lower().split()[0] in ("/kill", "/pause", "/resume", "/close_all", "/status"):
                         cmd = text.lower().split()[0]
