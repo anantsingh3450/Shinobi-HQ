@@ -31,6 +31,9 @@ def mock_orchestrator():
     mock_venue.get_positions.return_value = []
     
     orch.registry.get_venue.return_value = mock_venue
+    # Real registry surface: the bot iterates list_venues() and resolves each id.
+    orch.registry.list_venues.return_value = ["paper_main"]
+    orch.broker_registry.get_venue_for_asset.return_value = mock_venue
     orch.paper_venue._account_id = "paper"
 
     # RiskBot must return a real RiskVerdict — the entry path reads

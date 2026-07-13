@@ -27,14 +27,11 @@ FORBIDDEN_PATTERNS: dict[str, re.Pattern[str]] = {
     "isinstance-Mock": re.compile(r"""isinstance\([^)]*,\s*(?:Mock|MagicMock|NonCallableMagicMock)\s*\)"""),
 }
 
-# --- Ratchet: the ONLY tolerated type-name guards, pending fixture-level fixes -
-# Keyed by the exact stripped source line. This set may only shrink. Adding a new
-# entry requires explicit review; removing code that matches one is always fine.
-ALLOWED_MOCK_NAME_GUARDS: set[str] = {
-    'is_mock_registry = type(self.orchestrator.registry).__name__ in ("MagicMock", "Mock")',
-    'is_mock_broker_registry = type(self.orchestrator.broker_registry).__name__ in ("MagicMock", "Mock")',
-}
-MAX_ALLOWED_GUARDS = 3  # currently: is_mock_registry appears twice + is_mock_broker_registry
+# --- Ratchet: fully tightened. Phase 1.5 complete — ZERO type-name guards are
+# tolerated in src/. Adding one requires explicit commander review and a very
+# good reason (there isn't one — use a real DI/config seam instead).
+ALLOWED_MOCK_NAME_GUARDS: set[str] = set()
+MAX_ALLOWED_GUARDS = 0
 
 MOCK_NAME_GUARD = re.compile(r"""\.__name__\s+in\s+\(\s*["'](?:MagicMock|Mock)["']""")
 

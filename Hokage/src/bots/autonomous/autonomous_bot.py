@@ -1096,23 +1096,15 @@ class AutonomousTradingBot:
 
         # Determine all active venues based on execution mode
         active_venues = []
-        is_mock_registry = type(self.orchestrator.registry).__name__ in ("MagicMock", "Mock")
-        if is_mock_registry:
-            default_venue = self.orchestrator.registry.get_venue(context.active_venue_id)
-            if not default_venue:
-                default_venue = self.orchestrator.paper_venue
-            if default_venue:
-                active_venues.append(default_venue)
-        else:
-            for venue_id in self.orchestrator.registry.list_venues():
-                venue = self.orchestrator.registry.get_venue(venue_id)
-                is_paper_venue = "paper" in venue_id.lower() or "mock" in venue_id.lower()
-                if context.execution_mode in (ExecutionMode.PAPER, ExecutionMode.HYBRID):
-                    if is_paper_venue:
-                        active_venues.append(venue)
-                elif context.execution_mode == ExecutionMode.LIVE:
-                    if not is_paper_venue:
-                        active_venues.append(venue)
+        for venue_id in self.orchestrator.registry.list_venues():
+            venue = self.orchestrator.registry.get_venue(venue_id)
+            is_paper_venue = "paper" in venue_id.lower() or "mock" in venue_id.lower()
+            if context.execution_mode in (ExecutionMode.PAPER, ExecutionMode.HYBRID):
+                if is_paper_venue:
+                    active_venues.append(venue)
+            elif context.execution_mode == ExecutionMode.LIVE:
+                if not is_paper_venue:
+                    active_venues.append(venue)
 
         # Query all positions and map symbol to the venue where it belongs
         positions_with_venue = []
@@ -1634,32 +1626,23 @@ class AutonomousTradingBot:
 
         # Check existing positions to prevent duplicates across all active venues
         existing_symbols = set()
-        is_mock_registry = type(self.orchestrator.registry).__name__ in ("MagicMock", "Mock")
-        if is_mock_registry:
-            # Fallback for mock orchestrators in unit tests
-            try:
-                for p in default_venue.get_positions():
-                    existing_symbols.add(p.instrument.symbol.upper())
-            except Exception as exc:
-                logger.error(f"Failed to query open positions: {exc}")
-        else:
-            for v_id in self.orchestrator.registry.list_venues():
-                venue = self.orchestrator.registry.get_venue(v_id)
-                is_paper_venue = "paper" in v_id.lower() or "mock" in v_id.lower()
-                if context.execution_mode in (ExecutionMode.PAPER, ExecutionMode.HYBRID):
-                    if is_paper_venue:
-                        try:
-                            for p in venue.get_positions():
-                                existing_symbols.add(p.instrument.symbol.upper())
-                        except Exception as exc:
-                            logger.error(f"Failed to query open positions for venue {v_id}: {exc}")
-                elif context.execution_mode == ExecutionMode.LIVE:
-                    if not is_paper_venue:
-                        try:
-                            for p in venue.get_positions():
-                                existing_symbols.add(p.instrument.symbol.upper())
-                        except Exception as exc:
-                            logger.error(f"Failed to query open positions for venue {v_id}: {exc}")
+        for v_id in self.orchestrator.registry.list_venues():
+            venue = self.orchestrator.registry.get_venue(v_id)
+            is_paper_venue = "paper" in v_id.lower() or "mock" in v_id.lower()
+            if context.execution_mode in (ExecutionMode.PAPER, ExecutionMode.HYBRID):
+                if is_paper_venue:
+                    try:
+                        for p in venue.get_positions():
+                            existing_symbols.add(p.instrument.symbol.upper())
+                    except Exception as exc:
+                        logger.error(f"Failed to query open positions for venue {v_id}: {exc}")
+            elif context.execution_mode == ExecutionMode.LIVE:
+                if not is_paper_venue:
+                    try:
+                        for p in venue.get_positions():
+                            existing_symbols.add(p.instrument.symbol.upper())
+                    except Exception as exc:
+                        logger.error(f"Failed to query open positions for venue {v_id}: {exc}")
 
         # Merge with locally tracked active positions to prevent double execution
         for sym in self._active_positions_tracking:
@@ -2270,11 +2253,10 @@ class AutonomousTradingBot:
                     continue
 
                 # Resolve the correct execution venue dynamically for this asset
-                is_mock_broker_registry = type(self.orchestrator.broker_registry).__name__ in ("MagicMock", "Mock")
-                if is_mock_broker_registry:
-                    venue = default_venue
-                else:
-                    venue = self.orchestrator.broker_registry.get_venue_for_asset(symbol, context.execution_mode)
+                venue = self.orchestrator.broker_registry.get_venue_for_asset(symbol, context.execution_mode)
+                if venue is None:
+                    logger.warning(f"Aborting execution for {symbol}: no venue resolved for asset in mode {context.execution_mode}.")
+                    continue
 
                 # 3. Live broker reconciliation: verify symbol is not already in active positions on broker
                 try:
