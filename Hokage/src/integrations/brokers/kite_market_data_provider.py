@@ -89,12 +89,23 @@ class KiteMarketDataProvider(MarketDataProvider):
         self._futures_symbol_cache[(kite_exchange, underlying)] = (today, tradingsymbol)
         return tradingsymbol
 
+    #: Option tradingsymbol prefixes and the exchange their contracts live on.
+    _OPTION_EXCHANGE_PREFIXES: tuple[tuple[str, str], ...] = (
+        ("NIFTY", "NFO"),
+        ("BANKNIFTY", "NFO"),
+        ("CRUDEOIL", "MCX"),
+        ("GOLD", "MCX"),
+        ("SILVER", "MCX"),
+        ("NATURALGAS", "MCX"),
+    )
+
     def _kite_quote_symbol(self, market: str) -> str:
         """Map an internal market symbol to the real Kite quote symbol.
 
         Derivative universe symbols resolve to their front-month futures
-        contract; known indices resolve to the exchange index symbol; anything
-        else falls back to NSE equity naming.
+        contract; known indices resolve to the exchange index symbol; option
+        tradingsymbols (…CE/…PE) resolve to their derivatives exchange;
+        anything else falls back to NSE equity naming.
         """
         market_upper = market.upper().strip()
         if market_upper in self._INDEX_QUOTE_SYMBOLS:
@@ -103,9 +114,70 @@ class KiteMarketDataProvider(MarketDataProvider):
         if market_upper in self._FUTURES_UNDERLYINGS:
             exch, underlying = self._FUTURES_UNDERLYINGS[market_upper]
             return f"{exch}:{self._nearest_futures_symbol(exch, underlying)}"
+        if market_upper.endswith(("CE", "PE")):
+            for prefix, exch in self._OPTION_EXCHANGE_PREFIXES:
+                if market_upper.startswith(prefix):
+                    return f"{exch}:{market_upper}"
         inst = self.resolve_instrument(market)
         exchange_str = inst.exchange.value if inst.exchange.value in ("NSE", "BSE", "MCX") else "NSE"
         return f"{exchange_str}:{inst.symbol}"
+
+    def resolve_option_contract(
+        self,
+        underlying: str,
+        option_type: str,
+        spot_price: float,
+    ) -> dict | None:
+        """Resolve the real nearest-expiry option contract closest to ATM.
+
+        Reads the venue's actual instruments dump — no synthetic symbol
+        construction, no guessed expiries. Returns a dict with tradingsymbol,
+        exchange, strike, expiry, and lot_size, or None when no live contract
+        matches (callers must fail closed: no trade, never a fabricated
+        contract).
+        """
+        from datetime import date
+
+        underlying_upper = underlying.upper().strip().replace("_", "")
+        mapping = {
+            "NIFTY": ("NFO", "NIFTY"),
+            "BANKNIFTY": ("NFO", "BANKNIFTY"),
+            "CRUDEOIL": ("MCX", "CRUDEOIL"),
+            "GOLD": ("MCX", "GOLD"),
+            "SILVER": ("MCX", "SILVER"),
+            "NATURALGAS": ("MCX", "NATURALGAS"),
+        }
+        if underlying_upper not in mapping or option_type not in ("CE", "PE") or spot_price <= 0:
+            return None
+        kite_exchange, chain_name = mapping[underlying_upper]
+
+        client = self._connection_manager.get_kite_client()
+        contracts = client.instruments(kite_exchange)
+        today = date.today()
+
+        candidates = []
+        for inst in contracts:
+            if inst.get("name") != chain_name or inst.get("instrument_type") != option_type:
+                continue
+            expiry = inst.get("expiry")
+            expiry_date = expiry.date() if hasattr(expiry, "date") and not isinstance(expiry, date) else expiry
+            strike = float(inst.get("strike") or 0.0)
+            if not expiry_date or expiry_date < today or strike <= 0:
+                continue
+            candidates.append((expiry_date, abs(strike - spot_price), strike, inst))
+        if not candidates:
+            return None
+
+        nearest_expiry = min(c[0] for c in candidates)
+        atm = min((c for c in candidates if c[0] == nearest_expiry), key=lambda c: c[1])
+        contract = atm[3]
+        return {
+            "tradingsymbol": contract["tradingsymbol"],
+            "exchange": kite_exchange,
+            "strike": atm[2],
+            "expiry": nearest_expiry,
+            "lot_size": float(contract.get("lot_size") or 0.0),
+        }
 
     def resolve_instrument(self, market: str) -> Instrument:
         """Resolve a market string (e.g. INFY, NSE:INFY) into an Instrument.

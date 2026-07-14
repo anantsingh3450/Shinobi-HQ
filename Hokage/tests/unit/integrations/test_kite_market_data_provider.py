@@ -116,6 +116,61 @@ def test_universe_symbols_map_to_front_month_futures():
     assert quote.instrument.exchange.value == "MCX"
 
 
+def test_resolve_option_contract_picks_nearest_expiry_atm_strike():
+    from datetime import date, timedelta
+
+    today = date.today()
+    client = MagicMock()
+    client.instruments.return_value = [
+        # expired — must be ignored
+        {"name": "NIFTY", "instrument_type": "CE", "expiry": today - timedelta(days=2), "strike": 24300.0, "tradingsymbol": "NIFTY_EXPIRED_CE", "lot_size": 75},
+        # nearest expiry, three strikes
+        {"name": "NIFTY", "instrument_type": "CE", "expiry": today + timedelta(days=2), "strike": 24200.0, "tradingsymbol": "NIFTY_W_24200CE", "lot_size": 75},
+        {"name": "NIFTY", "instrument_type": "CE", "expiry": today + timedelta(days=2), "strike": 24300.0, "tradingsymbol": "NIFTY_W_24300CE", "lot_size": 75},
+        {"name": "NIFTY", "instrument_type": "CE", "expiry": today + timedelta(days=2), "strike": 24400.0, "tradingsymbol": "NIFTY_W_24400CE", "lot_size": 75},
+        # later expiry closer strike — nearest expiry must still win
+        {"name": "NIFTY", "instrument_type": "CE", "expiry": today + timedelta(days=30), "strike": 24310.0, "tradingsymbol": "NIFTY_M_24310CE", "lot_size": 75},
+        # wrong type
+        {"name": "NIFTY", "instrument_type": "PE", "expiry": today + timedelta(days=2), "strike": 24300.0, "tradingsymbol": "NIFTY_W_24300PE", "lot_size": 75},
+    ]
+    manager = MagicMock()
+    manager.get_kite_client.return_value = client
+    provider = KiteMarketDataProvider(manager)
+
+    contract = provider.resolve_option_contract("NIFTY", "CE", spot_price=24310.0)
+
+    assert contract["tradingsymbol"] == "NIFTY_W_24300CE"
+    assert contract["strike"] == 24300.0
+    assert contract["lot_size"] == 75.0
+    assert contract["exchange"] == "NFO"
+
+
+def test_resolve_option_contract_returns_none_when_chain_empty():
+    client = MagicMock()
+    client.instruments.return_value = []
+    manager = MagicMock()
+    manager.get_kite_client.return_value = client
+    provider = KiteMarketDataProvider(manager)
+    assert provider.resolve_option_contract("NIFTY", "CE", 24310.0) is None
+
+
+def test_option_tradingsymbols_map_to_derivative_exchanges():
+    client = MagicMock()
+    client.quote.return_value = {"NFO:NIFTY25JUL24300CE": {"last_price": 180.0}}
+    manager = MagicMock()
+    manager.get_kite_client.return_value = client
+    provider = KiteMarketDataProvider(manager)
+
+    quote = provider.get_quote("NIFTY25JUL24300CE")
+    client.quote.assert_called_with(["NFO:NIFTY25JUL24300CE"])
+    assert quote.price == 180.0
+
+    client.quote.return_value = {"MCX:CRUDEOIL25JUL6800PE": {"last_price": 95.0}}
+    quote = provider.get_quote("CRUDEOIL25JUL6800PE")
+    client.quote.assert_called_with(["MCX:CRUDEOIL25JUL6800PE"])
+    assert quote.price == 95.0
+
+
 def test_index_benchmark_quotes_directly():
     client = MagicMock()
     client.quote.return_value = {"NSE:NIFTY 50": {"last_price": 24300.0}}

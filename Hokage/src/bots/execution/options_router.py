@@ -1,18 +1,21 @@
-"""Options Router to intercept trades and route them to derivatives (CE/PE).
+"""Options Router: converts directional underlying signals into option orders.
 
-Kite Connect symbol format for MCX Crude Oil Options:
-  CRUDEOIL{YY}{MON}{STRIKE}{CE|PE}
-  e.g. CRUDEOIL26JUL6800CE
+Hokage executes DERIVATIVES, never spot. For option-routed underlyings the
+directional signal computed on the underlying (futures/index data) becomes a
+BOUGHT option — never sold — so maximum loss is capped at the premium paid:
 
-Key rules:
-  - Strike step is 50 (nearest 50) for Crude Oil.
-  - The system always BUYS options (never sells), capping loss to premium only.
-  - BUY signal → CE (Call), SELL signal → PE (Put).
-  - Quantity is set to 1 lot (lot size = 100 barrels on MCX Crude mini is 10, standard is 100).
+  BUY  (bullish)  -> BUY nearest-expiry ATM CE
+  SELL (bearish)  -> BUY nearest-expiry ATM PE
+
+Contract resolution reads the venue's REAL instruments dump via the market
+data provider (`resolve_option_contract`): real tradingsymbol, real expiry,
+real strike, real lot size. Nothing is string-guessed. When no live contract
+or premium quote is available the router raises OptionsRoutingError and the
+caller must NOT trade (fail closed) — a directional signal must never fall
+back to an instrument class the commander has not approved.
 """
 
 import logging
-from datetime import datetime
 from typing import Any
 
 from integrations.brokers.models import OrderRequest, OrderSide
@@ -20,145 +23,135 @@ from integrations.data.models import Instrument, Exchange, AssetClass
 
 logger = logging.getLogger("Hokage.OptionsRouter")
 
-# MCX Crude Oil lot sizes
-CRUDE_LOT_SIZE = 100   # Standard lot = 100 barrels
-CRUDE_MINI_LOT_SIZE = 10  # Mini lot = 10 barrels (lower capital)
-
-# Month abbreviations that Kite uses (3-letter, uppercase)
-_MONTH_MAP = {
-    1: "JAN", 2: "FEB", 3: "MAR", 4: "APR",
-    5: "MAY", 6: "JUN", 7: "JUL", 8: "AUG",
-    9: "SEP", 10: "OCT", 11: "NOV", 12: "DEC"
+#: Underlyings that route to options, keyed by INTERNAL symbol.
+_OPTION_ROUTED_UNDERLYINGS = {
+    "NIFTY": Exchange.NSE,
+    "CRUDE_OIL": Exchange.MCX,
+    "CRUDEOIL": Exchange.MCX,
 }
+
+#: An option position's premium notional (premium x lot size) may consume at
+#: most this fraction of account cash. Conservative single-position cap.
+MAX_PREMIUM_CASH_FRACTION = 0.5
+
+
+class OptionsRoutingError(RuntimeError):
+    """No tradable option contract could be resolved — caller must not trade."""
 
 
 class OptionsRouter:
-    """Translates a directional CRUDEOIL signal into an MCX options order."""
+    """Translates a directional underlying signal into a real options order."""
 
-    def __init__(self, price_source: Any = None, use_mini_lot: bool = True) -> None:
+    def __init__(self, price_source: Any = None) -> None:
         self.price_source = price_source
-        # Use mini lot by default so capital requirement is ~10x smaller
-        self.lot_size = CRUDE_MINI_LOT_SIZE if use_mini_lot else CRUDE_LOT_SIZE
 
-    def _get_nearest_strike(self, price: float, step: int = 50) -> int:
-        """Round to the nearest option strike step (50 for Crude Oil)."""
-        return step * round(price / step)
+    @staticmethod
+    def routes(symbol: str) -> bool:
+        """True when this underlying executes as options."""
+        return symbol.upper().strip() in _OPTION_ROUTED_UNDERLYINGS
 
-    def _build_kite_option_symbol(self, strike: int, option_type: str) -> str:
+    def route_to_options(
+        self,
+        req: OrderRequest,
+        current_price: float,
+        available_cash: float | None = None,
+    ) -> OrderRequest:
+        """Convert a directional underlying OrderRequest into an option BUY.
+
+        Args:
+            req: The directional order sized/approved on the underlying.
+            current_price: Live underlying price (strike anchor).
+            available_cash: Account cash for the premium affordability check;
+                None skips the check (paper venue enforces its own balance).
+
+        Raises:
+            OptionsRoutingError: when no live contract resolves, the premium
+                quote is unavailable, or the premium is unaffordable.
         """
-        Build the exact Kite Connect symbol string for an MCX Crude Oil option.
-
-        Format: CRUDEOIL{YY}{MON}{STRIKE}{CE|PE}
-        e.g.  : CRUDEOIL26JUL6800CE
-
-        Note: Kite uses the CURRENT month's near expiry contract.
-        If today is within 5 days of expiry, automatically rolls to next month.
-        """
-        now = datetime.now()
-        year_str = now.strftime("%y")
-
-        # Check if we're near expiry (last 5 trading days of month → roll to next)
-        # MCX Crude options typically expire on the last Tuesday before 20th of each month
-        # For simplicity, if we're past the 18th, roll to next month
-        if now.day >= 18:
-            # Roll to next month
-            next_month = now.month + 1 if now.month < 12 else 1
-            next_year = now.year if now.month < 12 else now.year + 1
-            month_str = _MONTH_MAP[next_month]
-            year_str = str(next_year)[-2:]
-        else:
-            month_str = _MONTH_MAP[now.month]
-
-        symbol = f"CRUDEOIL{year_str}{month_str}{strike}{option_type}"
-        return symbol
-
-    def route_crude_oil_options(self, req: OrderRequest, current_price: float) -> OrderRequest:
-        """
-        Transform a CRUDEOIL directional order into an options order.
-
-        Directional mapping:
-          BUY  (Bullish) → BUY CE (Call Option)
-          SELL (Bearish) → BUY PE (Put Option)
-
-        We always BUY the option — never sell — to cap maximum loss to the premium paid.
-        """
-        if not req.instrument or "CRUDEOIL" not in req.instrument.symbol.upper():
+        symbol_upper = req.instrument.symbol.upper().strip()
+        if symbol_upper not in _OPTION_ROUTED_UNDERLYINGS:
+            return req
+        if symbol_upper.endswith(("CE", "PE")):
             return req
 
-        # Already an option — skip routing
-        sym = req.instrument.symbol.upper()
-        if sym.endswith("CE") or sym.endswith("PE"):
-            return req
-
-        # Map direction to option type
         if req.side == OrderSide.BUY:
-            option_type = "CE"
-            direction_label = "Bullish"
+            option_type, direction_label = "CE", "Bullish"
         elif req.side == OrderSide.SELL:
-            option_type = "PE"
-            direction_label = "Bearish"
+            option_type, direction_label = "PE", "Bearish"
         else:
-            logger.warning(f"OptionsRouter: Unknown side {req.side}. Skipping options routing.")
-            return req
+            raise OptionsRoutingError(f"Unknown order side {req.side} for {symbol_upper}.")
 
-        # Calculate ATM strike
-        strike = self._get_nearest_strike(current_price, step=50)
-        option_symbol = self._build_kite_option_symbol(strike, option_type)
-        
-        # Open Interest & Volume Pre-Check
-        if self.price_source:
-            # Check adjacent strikes if ATM is illiquid
-            test_strikes = [strike, strike + 50, strike - 50, strike + 100, strike - 100]
-            for attempt_strike in test_strikes:
-                test_symbol = self._build_kite_option_symbol(attempt_strike, option_type)
-                try:
-                    # In mock mode or if quote fails, it throws ValueError. We handle it.
-                    quote = self.price_source.get_quote(test_symbol)
-                    if quote and quote.volume is not None and quote.volume > 0:
-                        if attempt_strike != strike:
-                            logger.info(f"OptionsRouter: ATM strike {strike} had no volume. Shifting to liquid strike {attempt_strike}.")
-                        strike = attempt_strike
-                        option_symbol = test_symbol
-                        break
-                except Exception:
-                    continue
+        resolver = getattr(self.price_source, "resolve_option_contract", None)
+        if resolver is None:
+            raise OptionsRoutingError(
+                f"Market data provider {type(self.price_source).__name__} exposes no real "
+                f"option chain; refusing to fabricate a contract for {symbol_upper}."
+            )
+        contract = resolver(symbol_upper, option_type, current_price)
+        if not contract or not contract.get("tradingsymbol") or contract.get("lot_size", 0) <= 0:
+            raise OptionsRoutingError(
+                f"No live {option_type} contract found for {symbol_upper} near {current_price}."
+            )
+
+        option_symbol = contract["tradingsymbol"]
+        lot_size = float(contract["lot_size"])
+
+        # Real premium quote: provenance for the instrument we actually buy.
+        try:
+            premium_quote = self.price_source.get_quote(option_symbol)
+            premium = float(premium_quote.price)
+        except Exception as exc:
+            raise OptionsRoutingError(
+                f"Premium quote unavailable for {option_symbol}: {exc}"
+            ) from exc
+        if premium <= 0:
+            raise OptionsRoutingError(f"Invalid premium {premium} for {option_symbol}.")
+
+        premium_notional = premium * lot_size
+        if available_cash is not None and premium_notional > available_cash * MAX_PREMIUM_CASH_FRACTION:
+            raise OptionsRoutingError(
+                f"Premium notional ₹{premium_notional:,.0f} for {option_symbol} exceeds "
+                f"{MAX_PREMIUM_CASH_FRACTION:.0%} of available cash ₹{available_cash:,.0f}."
+            )
 
         logger.info(
-            f"OptionsRouter: {direction_label} signal on CRUDEOIL @ ₹{current_price:.0f} "
-            f"→ BUY {option_symbol} (ATM strike ₹{strike}, 1 lot = {self.lot_size} barrels)"
+            f"OptionsRouter: {direction_label} signal on {symbol_upper} @ {current_price:.2f} "
+            f"-> BUY {option_symbol} (strike {contract['strike']}, expiry {contract['expiry']}, "
+            f"1 lot = {lot_size:g}, premium ~₹{premium:.2f}, notional ~₹{premium_notional:,.0f})"
         )
 
-        # Build new frozen Instrument (dataclass is frozen — must create new instance)
-        metadata = req.instrument.metadata.copy() if req.instrument.metadata else {}
-        metadata.update({
-            "is_option": True,
-            "underlying": "CRUDEOIL",
-            "underlying_price": current_price,
-            "strike": strike,
-            "option_type": option_type,
-            "lot_size": self.lot_size,
-            "kite_symbol": f"MCX:{option_symbol}",
-        })
-
+        exchange = Exchange.MCX if contract["exchange"] == "MCX" else Exchange.NSE
+        asset_class = AssetClass.COMMODITY if exchange == Exchange.MCX else AssetClass.INDEX
+        metadata = dict(req.instrument.metadata or {})
+        metadata.update(
+            {
+                "is_option": True,
+                "underlying": symbol_upper,
+                "underlying_price": current_price,
+                "strike": contract["strike"],
+                "expiry": str(contract["expiry"]),
+                "option_type": option_type,
+                "lot_size": lot_size,
+                "premium_at_entry": premium,
+                "kite_symbol": f"{contract['exchange']}:{option_symbol}",
+            }
+        )
         new_instrument = Instrument(
             symbol=option_symbol,
-            asset_class=AssetClass.COMMODITY,
-            exchange=Exchange.MCX,
+            asset_class=asset_class,
+            exchange=exchange,
             currency="INR",
-            metadata=metadata
+            metadata=metadata,
         )
-
-        # Build new OrderRequest — always BUY (option buyer), quantity = 1 lot
-        new_req = OrderRequest(
+        # Always BUY the option (loss capped at premium); one lot = lot_size units.
+        return OrderRequest(
             instrument=new_instrument,
             side=OrderSide.BUY,
-            quantity=float(self.lot_size),   # 1 lot
+            quantity=lot_size,
             order_type=req.order_type,
             venue_id=req.venue_id,
             strategy_id=req.strategy_id,
-            execution_reason=f"Options CE/PE routing: {direction_label} on {option_symbol}",
+            execution_reason=f"Options routing: {direction_label} {symbol_upper} -> BUY {option_symbol}",
             playbook_id=req.playbook_id,
-            volatility_regime=req.volatility_regime
+            volatility_regime=req.volatility_regime,
         )
-
-        return new_req

@@ -2651,16 +2651,38 @@ class AutonomousTradingBot:
                     volatility_regime=volatility_regime
                 )
                 
-                # Intercept and route to Options if applicable (Crude Oil)
-                try:
-                    from bots.execution.options_router import OptionsRouter
-                    opt_router = OptionsRouter(price_source=self.orchestrator.price_source)
-                    req = opt_router.route_crude_oil_options(req, current_price=entry_price)
-                    # After options routing, side could be changed to BUY for both long and short strategies.
-                    # Ensure logging reflects the updated req.
-                    logger.info(f"Options Router transformed request: {req.side.value} {req.quantity} {req.instrument.symbol}")
-                except Exception as e:
-                    logger.error(f"Options routing failed, proceeding with original futures order: {e}")
+                # Options routing: option-routed underlyings (NIFTY, CRUDE_OIL)
+                # execute as BOUGHT nearest-expiry ATM CE/PE — loss capped at
+                # premium. FAIL CLOSED: if no real contract/premium resolves,
+                # there is NO trade. A directional signal never silently falls
+                # back to an instrument class the commander hasn't approved.
+                from bots.execution.options_router import OptionsRouter, OptionsRoutingError
+                if OptionsRouter.routes(symbol):
+                    try:
+                        cash_for_premium = None
+                        try:
+                            cash_for_premium = float(venue.get_account_balance().cash)
+                        except Exception:
+                            pass
+                        opt_router = OptionsRouter(price_source=self.orchestrator.price_source)
+                        req = opt_router.route_to_options(
+                            req, current_price=entry_price, available_cash=cash_for_premium
+                        )
+                        logger.info(
+                            f"Options Router transformed request: {req.side.value} "
+                            f"{req.quantity:g} {req.instrument.symbol}"
+                        )
+                    except OptionsRoutingError as e:
+                        logger.warning(f"Options routing blocked entry for {symbol}: {e}")
+                        eval_results[symbol] = {
+                            "state": "NO_TRADE",
+                            "blockers": [f"OptionsRouter: {e}"],
+                            "confirmations": [],
+                            "conviction": int(committee_decision.decision_confidence),
+                            "risk": 0.0,
+                            "reasons": [f"OptionsRouter: {e}"],
+                        }
+                        continue
 
                 try:
                     resp = venue.place_order(req)
@@ -2681,10 +2703,21 @@ class AutonomousTradingBot:
                     })
                     continue
                 else:
-                    qty_filled = getattr(resp, "filled_quantity", qty)
+                    qty_filled = getattr(resp, "filled_quantity", req.quantity)
                     if not qty_filled:
-                        qty_filled = qty
-                    status_str = "SUCCESS" if qty_filled >= qty else "PARTIAL"
+                        qty_filled = req.quantity
+                    status_str = "SUCCESS" if qty_filled >= req.quantity else "PARTIAL"
+
+                # Track the instrument actually filled: for option-routed
+                # entries that is the option contract (exit monitor keys off
+                # venue positions, which carry the option symbol), and its
+                # entry price is the premium paid, not the underlying level.
+                tracked_symbol = req.instrument.symbol
+                tracked_side = req.side
+                tracked_entry_price = entry_price
+                req_meta = req.instrument.metadata or {}
+                if req_meta.get("is_option"):
+                    tracked_entry_price = float(req_meta.get("premium_at_entry", entry_price))
 
                 self.strategy_engine.record_trade(playbook_id, symbol, current_date_str)
                 bus.publish("EXECUTION_COMPLETED", {
@@ -2732,11 +2765,11 @@ class AutonomousTradingBot:
                     reasoning_chain=_chain_accepted,
                 )
 
-                self._active_positions_tracking[symbol] = {
-                    "entry_price": entry_price,
-                    "peak_price": entry_price,
-                    "stop_price": entry_price * (1.0 - self.tsl_percent) if side == OrderSide.BUY else entry_price * (1.0 + self.tsl_percent),
-                    "target_price": entry_price * (1.0 + self.tp_percent),
+                self._active_positions_tracking[tracked_symbol] = {
+                    "entry_price": tracked_entry_price,
+                    "peak_price": tracked_entry_price,
+                    "stop_price": tracked_entry_price * (1.0 - self.tsl_percent) if tracked_side == OrderSide.BUY else tracked_entry_price * (1.0 + self.tsl_percent),
+                    "target_price": tracked_entry_price * (1.0 + self.tp_percent),
                     "decision_id": decision_id,
                     "strategy_id": selected_strat["strategy_id"],
                     "conviction_score": int(committee_decision.decision_confidence),
@@ -2744,18 +2777,19 @@ class AutonomousTradingBot:
                     "sector": symbol_sec,
                     "personality_mode": personality_profile.get("active_mode", "BALANCED"),
                     "sector_flow": sector_rotation_dir,
-                    "side": side.value if hasattr(side, "value") else side,
+                    "side": tracked_side.value if hasattr(tracked_side, "value") else tracked_side,
                     "quantity": float(qty_filled),
                     "venue_id": getattr(venue, "venue_id", "paper_main"),
+                    "underlying": symbol,
                     "unconfirmed": (status_str == "UNCONFIRMED")
                 }
                 self._save_positions_tracking()
 
                 if self.telegram_bot and self.telegram_bot.enabled:
                     self.telegram_bot.notify_entry(
-                        symbol=symbol,
-                        cmp=entry_price,
-                        target=self._active_positions_tracking[symbol]["target_price"],
+                        symbol=tracked_symbol,
+                        cmp=tracked_entry_price,
+                        target=self._active_positions_tracking[tracked_symbol]["target_price"],
                         edge=float(committee_decision.decision_confidence)
                     )
 
