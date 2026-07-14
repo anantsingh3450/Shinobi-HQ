@@ -14,6 +14,11 @@ from hokage.memory.resolver import PathResolver
 
 logger = logging.getLogger("Hokage.StrategyPortfolio")
 
+# Commander-approved 2026-07-14: every strategy competes with its own paper
+# war chest. Deployed capital and remaining balance are tracked per strategy
+# so the Arena scoreboard shows who is spending what.
+STRATEGY_STARTING_CAPITAL = 50_000.0
+
 
 class StrategyPortfolioManager:
     """Manages the portfolio of coexisting specialized trading strategies."""
@@ -36,12 +41,23 @@ class StrategyPortfolioManager:
             return default_portfolio
 
         try:
-            with self.file_path.open("r", encoding="utf-8") as fh:
-                return json.load(fh)
+            with self.file_path.open("r", encoding="utf-8-sig") as fh:
+                portfolio = json.load(fh)
+            self._ensure_capital_fields(portfolio)
+            return portfolio
         except Exception as exc:
             logger.error(f"Failed to read strategy portfolio: {exc}")
             default_portfolio = self._generate_default_portfolio()
             return default_portfolio
+
+    @staticmethod
+    def _ensure_capital_fields(portfolio: dict[str, Any]) -> None:
+        """Migrate persisted portfolios: every strategy gets a war chest."""
+        for strat in portfolio.get("strategies", {}).values():
+            strat.setdefault(
+                "capital",
+                {"starting": STRATEGY_STARTING_CAPITAL, "realized_pnl": 0.0},
+            )
 
     def _save_portfolio_atomic(self, data: dict[str, Any]) -> None:
         """Atomically persist portfolio to disk via write-then-rename."""
@@ -93,6 +109,7 @@ class StrategyPortfolioManager:
             "expectancy": {"DEFAULT": 0.0},
             "win_rate": {"DEFAULT": 0.0},
             "trade_count": {"DEFAULT": 0},
+            "capital": {"starting": STRATEGY_STARTING_CAPITAL, "realized_pnl": 0.0},
             "context_memory": {
                 "regime_performance": {},
                 "volatility_performance": {},
@@ -182,6 +199,7 @@ class StrategyPortfolioManager:
             "sharpe_ratio": {"DEFAULT": 1.0},
             "trade_count": {"DEFAULT": 0},
             "supporting_evidence": supporting_evidence or {},
+            "capital": {"starting": STRATEGY_STARTING_CAPITAL, "realized_pnl": 0.0},
             "context_memory": {
                 "regime_performance": {},
                 "volatility_performance": {}
@@ -366,6 +384,12 @@ class StrategyPortfolioManager:
         # Also copy histories to default key
         strat.setdefault("pnl_history", {}).setdefault("DEFAULT", pnl_history)
 
+        # War chest: realized PnL settles into the strategy's own capital.
+        capital = strat.setdefault(
+            "capital", {"starting": STRATEGY_STARTING_CAPITAL, "realized_pnl": 0.0}
+        )
+        capital["realized_pnl"] = round(capital.get("realized_pnl", 0.0) + pnl, 2)
+
         log_msg = f"Recorded trade outcome for {strat['name']} on {asset_upper}: Win={is_win}, PnL={pnl:.2f}. " \
                   f"New Win Rate: {new_win_rate:.1f}%, Expectancy: {new_expectancy:.1f}, Confidence: {new_confidence:.1f}%."
         strat["history"].append({"timestamp": now_str, "event": log_msg})
@@ -411,6 +435,37 @@ class StrategyPortfolioManager:
             if strat["status"] == "PRODUCTION":
                 strat["status"] = "ACTIVE"
         self.save()
+
+    def get_capital_report(
+        self, deployed_by_strategy: dict[str, float] | None = None
+    ) -> list[dict[str, Any]]:
+        """Per-strategy war chest report: starting, deployed, available.
+
+        deployed_by_strategy maps strategy_id to the capital currently locked
+        in open positions (real for the ACTIVE strategy, simulated for shadow
+        strategies). Available = starting + realized_pnl - deployed.
+        """
+        deployed_by_strategy = deployed_by_strategy or {}
+        report = []
+        for s_id, strat in self.portfolio.get("strategies", {}).items():
+            capital = strat.get(
+                "capital", {"starting": STRATEGY_STARTING_CAPITAL, "realized_pnl": 0.0}
+            )
+            starting = float(capital.get("starting", STRATEGY_STARTING_CAPITAL))
+            realized = float(capital.get("realized_pnl", 0.0))
+            deployed = round(float(deployed_by_strategy.get(s_id, 0.0)), 2)
+            report.append(
+                {
+                    "strategy_id": s_id,
+                    "name": strat.get("name", s_id),
+                    "status": strat.get("status", "UNKNOWN"),
+                    "starting_capital": starting,
+                    "realized_pnl": round(realized, 2),
+                    "deployed": deployed,
+                    "available": round(starting + realized - deployed, 2),
+                }
+            )
+        return report
 
     def get_selection_explanation(
         self,

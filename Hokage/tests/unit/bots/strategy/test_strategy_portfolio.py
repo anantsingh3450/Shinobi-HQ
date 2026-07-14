@@ -99,3 +99,46 @@ def test_strategy_demotion_on_poor_performance(tmp_path):
     # Check that it got demoted to ARCHIVED
     strat = manager.portfolio["strategies"][s_id]
     assert strat["status"] == "ARCHIVED"
+
+
+def test_war_chest_seeded_and_migrated(tmp_path):
+    """Every strategy gets a 50k war chest; persisted portfolios without the
+    capital block are migrated on load."""
+    import json
+    from bots.strategy.portfolio import STRATEGY_STARTING_CAPITAL
+
+    resolver = PathResolver(tmp_path)
+    manager = StrategyPortfolioManager(resolver)
+    for strat in manager.portfolio["strategies"].values():
+        assert strat["capital"] == {"starting": STRATEGY_STARTING_CAPITAL, "realized_pnl": 0.0}
+
+    # Simulate a pre-ledger portfolio on disk: strip capital, reload.
+    for strat in manager.portfolio["strategies"].values():
+        strat.pop("capital", None)
+    manager.save()
+    manager2 = StrategyPortfolioManager(resolver)
+    for strat in manager2.portfolio["strategies"].values():
+        assert strat["capital"]["starting"] == STRATEGY_STARTING_CAPITAL
+
+
+def test_war_chest_realized_pnl_and_report(tmp_path):
+    from bots.strategy.portfolio import STRATEGY_STARTING_CAPITAL
+
+    resolver = PathResolver(tmp_path)
+    manager = StrategyPortfolioManager(resolver)
+    sid = "strat-trendpullback-v2"
+
+    manager.record_trade_outcome(strategy_id=sid, asset="NIFTY", is_win=True, pnl=1500.0)
+    manager.record_trade_outcome(strategy_id=sid, asset="NIFTY", is_win=False, pnl=-400.0)
+    assert manager.portfolio["strategies"][sid]["capital"]["realized_pnl"] == 1100.0
+
+    report = manager.get_capital_report({sid: 12000.0})
+    row = next(r for r in report if r["strategy_id"] == sid)
+    assert row["starting_capital"] == STRATEGY_STARTING_CAPITAL
+    assert row["deployed"] == 12000.0
+    assert row["available"] == STRATEGY_STARTING_CAPITAL + 1100.0 - 12000.0
+
+    # Strategies with no deployment report full availability
+    idle = next(r for r in report if r["strategy_id"] != sid)
+    assert idle["deployed"] == 0.0
+    assert idle["available"] == idle["starting_capital"]

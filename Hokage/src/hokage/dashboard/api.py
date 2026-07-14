@@ -1691,6 +1691,19 @@ def create_dashboard_api(
         except Exception as exc:
             payload["no_trade_error"] = str(exc)
 
+        # 2b. War chests: per-strategy capital (starting / deployed / available)
+        try:
+            bot = getattr(orchestrator, "autonomous_bot", None)
+            if bot is not None:
+                payload["war_chests"] = bot.strategy_portfolio.get_capital_report(
+                    bot.strategy_deployed_capital()
+                )
+            else:
+                from bots.strategy.portfolio import StrategyPortfolioManager
+                payload["war_chests"] = StrategyPortfolioManager(resolver).get_capital_report()
+        except Exception as exc:
+            payload["war_chests_error"] = str(exc)
+
         # 3. Conduct-gate live state (best effort; live API calls guarded)
         try:
             bot = getattr(orchestrator, "autonomous_bot", None)

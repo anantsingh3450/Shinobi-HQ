@@ -34,9 +34,14 @@
 </head>
 <body>
   <h1>Strategy Arena <span class="dim">— the Dojo</span></h1>
-  <div class="sub">Every number is earned on live paper data. Shadow strategies trade with zero capital until promoted by evidence (30+ trades, positive expectancy). <a href="/" style="color:var(--blue)">← main dashboard</a></div>
+  <div class="sub">Every number is earned on live paper data. Each strategy fights with its own ₹50,000 war chest — shadow fills are simulated, ACTIVE fills are real paper orders; promotion needs evidence (30+ trades, positive expectancy). <a href="/" style="color:var(--blue)">← main dashboard</a></div>
 
   <div class="grid">
+    <div class="card" style="grid-column:1/-1">
+      <h2>War Chests — Tournament of Power</h2>
+      <div id="chests"></div>
+    </div>
+
     <div class="card" style="grid-column:1/-1">
       <h2>Strategy Ladder</h2>
       <div id="strategies" class="grid"></div>
@@ -74,6 +79,20 @@ async function load() {
     document.getElementById("refresh").textContent = "arena feed unavailable: " + e;
     return;
   }
+
+  const inr = v => "₹" + Number(v || 0).toLocaleString("en-IN", {maximumFractionDigits: 0});
+  const chests = d.war_chests || [];
+  document.getElementById("chests").innerHTML = chests.length
+    ? `<table><tr><th>Strategy</th><th>Status</th><th>Starting</th><th>Deployed</th><th>Realized P&L</th><th>Available</th></tr>` +
+      chests.map(c => {
+        const pnlCls = c.realized_pnl > 0 ? "ok" : c.realized_pnl < 0 ? "bad" : "dim";
+        const availCls = c.available <= 0 ? "bad" : c.deployed > 0 ? "warn" : "ok";
+        return `<tr><td>${c.name}</td><td>${badge(c.status)}</td><td>${inr(c.starting_capital)}</td>
+          <td>${c.deployed > 0 ? inr(c.deployed) : '<span class="dim">idle</span>'}</td>
+          <td class="${pnlCls}">${inr(c.realized_pnl)}</td>
+          <td class="${availCls}">${inr(c.available)}</td></tr>`;
+      }).join("") + "</table>"
+    : '<span class="dim">war chests unavailable</span>';
 
   document.getElementById("strategies").innerHTML = (d.strategies || []).map(s => `
     <div class="strat">

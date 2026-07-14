@@ -79,6 +79,10 @@ def test_shadow_mode_lifecycle_and_promotion(mock_orchestrator, tmp_path, filled
     # The shadow comparison reports the ACTIVE production strategy's action
     # for the same asset; the flagship must claim TCS for this fixture.
     bot.strategy_portfolio.portfolio["strategies"]["strat-trendpullback-v2"]["supported_assets"].append("TCS")
+    # This fixture's mock sizing produces a ~111k entry; fund the flagship's
+    # war chest so the capital gate does not veto the production entry the
+    # lifecycle assertions depend on.
+    bot.strategy_portfolio.portfolio["strategies"]["strat-trendpullback-v2"]["capital"]["starting"] = 500_000.0
 
     mock_orchestrator.registry.get_venue.return_value.place_order.side_effect = filled_order_response
 
@@ -228,3 +232,50 @@ def test_shadow_mode_lifecycle_and_promotion(mock_orchestrator, tmp_path, filled
     assert changed
     assert prob_strat["status"] == "PRODUCTION"
     assert active_prod["status"] == "PROBATION"  # demoted
+
+
+def test_war_chest_gate_blocks_oversized_entry(mock_orchestrator, tmp_path, filled_order_response):
+    """A strategy cannot deploy more than its remaining war chest: this
+    fixture's mock sizing produces a ~111k entry against the default 50k
+    chest, so the order must never reach the venue."""
+    bot = AutonomousTradingBot(mock_orchestrator, watchlist=["TCS"], scan_interval_seconds=1)
+    bot._now_ist = lambda: datetime(2026, 7, 14, 10, 0, tzinfo=timezone.utc)
+    bot._compute_underlying_bias = lambda symbol: None
+    bot._india_vix_percentile = lambda: None
+    bot.strategy_portfolio.portfolio["strategies"]["strat-trendpullback-v2"]["supported_assets"].append("TCS")
+
+    venue = mock_orchestrator.registry.get_venue.return_value
+    venue.place_order.side_effect = filled_order_response
+
+    bot.discovery_engine.discover_opportunities = MagicMock(return_value=["TCS"])
+    proposal = StrategyProposal(
+        name="ChestBuster",
+        market="TCS",
+        entry_rule="long",
+        exit_rule="trailing-stop",
+        description="Oversized entry fixture",
+        stop_loss_rule="5%",
+        take_profit_rule="10%",
+        timeframe="15m",
+        confidence_score=0.85,
+    )
+    backtest_result = BacktestResult(
+        proposal_id=proposal.proposal_id,
+        total_trades=10,
+        win_rate=60.0,
+        net_profit=1000.0,
+        max_drawdown=5.0,
+        profit_factor=2.0,
+        passed=True,
+        summary="Passed",
+    )
+    bot.orchestrator.research_bot.research.return_value = MagicMock()
+    bot.orchestrator.strategy_bot.generate.return_value = proposal
+    bot.orchestrator.backtest_bot.validate_strategy.return_value = backtest_result
+    bot.cache.write_intelligence("risk_state.json", {"risk_on_off_status": "RISK-ON", "vix_impact_delta": 0.0})
+    bot.cache.write_intelligence("market_regime.json", {"trend_score": 0.8})
+
+    bot._scan_and_enter_opportunities()
+
+    assert venue.place_order.call_count == 0
+    assert "TCS" not in bot._active_positions_tracking

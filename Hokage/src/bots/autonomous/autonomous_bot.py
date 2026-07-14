@@ -332,6 +332,36 @@ class AutonomousTradingBot:
         except Exception as exc:
             logger.error(f"Failed to save shadow positions: {exc}")
 
+    def strategy_deployed_capital(self) -> dict[str, float]:
+        """Capital locked in open positions per strategy_id.
+
+        Real tracked positions count against the executing strategy's war
+        chest; shadow positions count against their shadow strategy. Cost
+        basis = entry price * quantity (for options, entry price is the
+        premium paid so the lock equals real premium outlay).
+        """
+        deployed: dict[str, float] = {}
+        for tracking in self._active_positions_tracking.values():
+            strat_id = tracking.get("strategy_id")
+            if not strat_id:
+                continue
+            cost = float(tracking.get("entry_price", 0.0)) * float(tracking.get("quantity", 0.0))
+            deployed[strat_id] = deployed.get(strat_id, 0.0) + cost
+        for strat_id, positions in self._shadow_positions_tracking.items():
+            for tracking in positions.values():
+                cost = float(tracking.get("entry_price", 0.0)) * float(tracking.get("quantity", 0.0))
+                deployed[strat_id] = deployed.get(strat_id, 0.0) + cost
+        return deployed
+
+    def _strategy_available_capital(self, strategy_id: str) -> float:
+        """Remaining war chest for one strategy (starting + realized - deployed)."""
+        deployed = self.strategy_deployed_capital()
+        for row in self.strategy_portfolio.get_capital_report(deployed):
+            if row["strategy_id"] == strategy_id:
+                return float(row["available"])
+        from bots.strategy.portfolio import STRATEGY_STARTING_CAPITAL
+        return STRATEGY_STARTING_CAPITAL
+
     def _monitor_and_exit_shadow_positions(self, is_tick: bool = True) -> None:
         """Check shadow positions for candidate strategies and enforce trailing exits/early exits."""
         try:
@@ -2939,6 +2969,38 @@ class AutonomousTradingBot:
                             "reasons": [f"OptionsRouter: {e}"],
                         }
                         continue
+
+                # Strategy war chest gate: each strategy competes with its own
+                # paper capital. Entry cost (option premium * lots, or notional
+                # for non-option instruments) must fit the strategy's remaining
+                # balance, or the entry is refused and journaled.
+                _entry_meta = req.instrument.metadata or {}
+                if _entry_meta.get("is_option"):
+                    entry_cost = float(_entry_meta.get("premium_at_entry", entry_price)) * float(req.quantity)
+                else:
+                    entry_cost = float(entry_price) * float(req.quantity)
+                _strat_id_for_chest = selected_strat["strategy_id"]
+                available_chest = self._strategy_available_capital(_strat_id_for_chest)
+                if entry_cost > available_chest:
+                    chest_reason = (
+                        f"War chest exhausted for {selected_strat['strategy_id']}: entry cost "
+                        f"₹{entry_cost:,.0f} exceeds remaining ₹{available_chest:,.0f}."
+                    )
+                    logger.warning(chest_reason)
+                    bus.publish("OPPORTUNITY_REJECTED", {
+                        "symbol": symbol,
+                        "reason": chest_reason,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    })
+                    eval_results[symbol] = {
+                        "state": "NO_TRADE",
+                        "blockers": [chest_reason],
+                        "confirmations": [],
+                        "conviction": int(committee_decision.decision_confidence),
+                        "risk": 0.0,
+                        "reasons": [chest_reason],
+                    }
+                    continue
 
                 try:
                     resp = venue.place_order(req)

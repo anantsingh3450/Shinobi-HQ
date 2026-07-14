@@ -100,7 +100,11 @@ class HistoricalBacktestEngine(BacktestEngine):
         max_drawdown = self._max_drawdown_pct(equity_curve)
         average_win = round(gross_profit / len(wins), 6) if wins else 0.0
         average_loss = round(gross_loss / len(losses), 6) if losses else 0.0
-        passed = win_rate >= 50 and after_tax_net_profit > 0 and max_drawdown < 20
+        # Commander-approved 2026-07-14: win-rate bar lowered 50 -> 45. The
+        # candle-by-candle test punishes asymmetric-payoff strategies (profit
+        # factor carries the edge, not hit rate); 50% blocked profitable
+        # proposals all day. Profitability and drawdown caps still apply.
+        passed = win_rate >= 45 and after_tax_net_profit > 0 and max_drawdown < 20
         summary = (
             f"Historical backtest completed for {proposal.name} using "
             f"{result.provider}. Win Rate={win_rate}%, "
