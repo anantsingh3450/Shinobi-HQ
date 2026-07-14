@@ -30,6 +30,7 @@ _load_project_dotenv()
 
 from datetime import datetime, timezone
 import json
+import logging
 from pathlib import Path
 
 from flask import Blueprint, Flask, jsonify, render_template, request, redirect
@@ -42,6 +43,11 @@ from hokage.memory.resolver import PathResolver
 from hokage.router.command_router import CommandRouter
 from hokage.router.nl_router import NaturalLanguageRouter
 from hokage.orchestrator.pipeline import HokageOrchestrator
+
+# Module logger. Several handlers call logger.warning/error on partial
+# failures; without this binding the NameError aborted the whole request
+# (e.g. /dashboard/summary 500'd whenever one benchmark quote failed).
+logger = logging.getLogger("Hokage.DashboardAPI")
 
 
 def extract_text_from_file(file) -> str:
