@@ -71,7 +71,15 @@ def isolate_path_resolver(tmp_path):
 def test_shadow_mode_lifecycle_and_promotion(mock_orchestrator, tmp_path, filled_order_response):
     # Initialize bot
     bot = AutonomousTradingBot(mock_orchestrator, watchlist=["TCS"], scan_interval_seconds=1)
-    
+    # Pin session time to 10:00 IST: outside the opening-bell observation
+    # window, midday blackout, and late-entry cutoff (deterministic scan).
+    bot._now_ist = lambda: datetime(2026, 7, 14, 10, 0, tzinfo=timezone.utc)
+    bot._compute_underlying_bias = lambda symbol: None
+    bot._india_vix_percentile = lambda: None
+    # The shadow comparison reports the ACTIVE production strategy's action
+    # for the same asset; the flagship must claim TCS for this fixture.
+    bot.strategy_portfolio.portfolio["strategies"]["strat-trendpullback-v2"]["supported_assets"].append("TCS")
+
     mock_orchestrator.registry.get_venue.return_value.place_order.side_effect = filled_order_response
 
     # 1. Register candidate strategy under SHADOW_MODE
@@ -189,8 +197,8 @@ def test_shadow_mode_lifecycle_and_promotion(mock_orchestrator, tmp_path, filled
         status="PROBATION"
     )
     
-    # Get active production strategy
-    active_prod = bot.strategy_portfolio.portfolio["strategies"]["strat-autotrend-equities-v1"]
+    # Get active production strategy (Dojo v2 flagship)
+    active_prod = bot.strategy_portfolio.portfolio["strategies"]["strat-trendpullback-v2"]
     active_prod["trade_count"]["DEFAULT"] = 10
     active_prod["expectancy"]["DEFAULT"] = 500.0
     active_prod.setdefault("sharpe_ratio", {})["DEFAULT"] = 1.0

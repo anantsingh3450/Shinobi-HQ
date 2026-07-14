@@ -1629,6 +1629,106 @@ def create_dashboard_api(
             return jsonify({"error": str(e)}), 500
 
     # =====================================================================
+    # Strategy Arena (Dojo): portfolio ladder, conduct gates, exit ladder
+    # =====================================================================
+    @dashboard_bp.route("/arena", methods=["GET"])
+    def strategy_arena() -> dict:
+        """Aggregate the Strategy Dojo state for the Arena dashboard page.
+
+        Read-only: strategy portfolio with earned stats and promotion status,
+        today's no-trade reasons, conduct-gate live state (bias per universe
+        symbol, India VIX percentile), and the options exit-ladder config.
+        """
+        import json as _json
+
+        payload: dict = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "strategies": [],
+            "no_trade_today": [],
+            "conduct_gates": {},
+            "exit_ladder": {},
+        }
+
+        # 1. Strategy portfolio (statuses + earned stats)
+        try:
+            pf_path = resolver.resolve_portfolio_dir() / "strategy_portfolio.json"
+            if pf_path.exists():
+                pf = _json.loads(pf_path.read_text(encoding="utf-8"))
+                for s in pf.get("strategies", {}).values():
+                    payload["strategies"].append(
+                        {
+                            "strategy_id": s.get("strategy_id"),
+                            "name": s.get("name"),
+                            "status": s.get("status"),
+                            "supported_assets": s.get("supported_assets", []),
+                            "supported_regimes": s.get("supported_regimes", []),
+                            "win_rate": s.get("win_rate", {}),
+                            "expectancy": s.get("expectancy", {}),
+                            "trade_count": s.get("trade_count", {}),
+                            "notes": (s.get("context_memory") or {}).get("notes", ""),
+                            "last_event": (s.get("history") or [{}])[-1].get("event", ""),
+                        }
+                    )
+        except Exception as exc:
+            payload["strategies_error"] = str(exc)
+
+        # 2. Today's refusals (why Hokage did NOT trade — the real edge)
+        try:
+            bot = getattr(orchestrator, "autonomous_bot", None)
+            if bot is not None:
+                for d in bot.journal.load_no_trade_decisions():
+                    payload["no_trade_today"].append(d)
+        except Exception as exc:
+            payload["no_trade_error"] = str(exc)
+
+        # 3. Conduct-gate live state (best effort; live API calls guarded)
+        try:
+            bot = getattr(orchestrator, "autonomous_bot", None)
+            if bot is not None:
+                gates: dict = {
+                    "midday_blackout_ist": "11:30-13:30",
+                    "late_session_cutoff_ist": "14:00",
+                    "vix_block_percentile": bot._VIX_PERCENTILE_BLOCK,
+                }
+                try:
+                    vix_pct = bot._india_vix_percentile()
+                    gates["india_vix_percentile"] = round(vix_pct, 3) if vix_pct is not None else None
+                except Exception:
+                    gates["india_vix_percentile"] = None
+                bias_map = {}
+                for sym in ("NIFTY", "CRUDE_OIL"):
+                    try:
+                        bias_map[sym] = bot._compute_underlying_bias(sym)
+                    except Exception:
+                        bias_map[sym] = None
+                gates["bias"] = bias_map
+                payload["conduct_gates"] = gates
+        except Exception as exc:
+            payload["conduct_gates_error"] = str(exc)
+
+        # 4. Options exit-ladder configuration (what protects every position)
+        try:
+            from bots.autonomous.autonomous_bot import AutonomousTradingBot as _Bot
+            payload["exit_ladder"] = {
+                "order": [
+                    "KILL_SWITCH", "EOD_SQUARE_OFF (15:20 NSE / 23:15 MCX)",
+                    "TIERED_PREMIUM_BACKSTOP", "UNDERLYING_THESIS_STOP",
+                    "TARGET_HIT (adaptive)", "TRAIL_LOCK",
+                ],
+                "backstop_tiers": [
+                    {"entry_premium_at_least": t, "max_loss_pct": p}
+                    for t, p in _Bot._OPTION_BACKSTOP_TIERS
+                ],
+                "thesis_stop_atr_mult": _Bot._OPTION_THESIS_ATR_MULT,
+                "trail_lock_rupees": _Bot._OPTION_TRAIL_LOCK_RUPEES,
+                "target_clamp_pct": [_Bot._OPTION_TARGET_MIN_PCT, _Bot._OPTION_TARGET_MAX_PCT],
+            }
+        except Exception as exc:
+            payload["exit_ladder_error"] = str(exc)
+
+        return jsonify(payload)
+
+    # =====================================================================
     # Market Intelligence Endpoint (Phase 6.8)
     # =====================================================================
     @dashboard_bp.route("/market/intelligence", methods=["GET"])
@@ -3335,6 +3435,11 @@ def create_dashboard_api(
     def index() -> str:
         """Render the dashboard html page."""
         return render_template("index.html")
+
+    @app.route("/arena", methods=["GET"])
+    def arena_page() -> str:
+        """Render the Strategy Arena (Dojo) page."""
+        return render_template("arena.html")
 
     # =====================================================================
     # Error handling

@@ -63,136 +63,91 @@ class StrategyPortfolioManager:
         """Persist current in-memory state to disk."""
         self._save_portfolio_atomic(self.portfolio)
 
+    @staticmethod
+    def _seed_strategy(
+        strategy_id: str,
+        name: str,
+        status: str,
+        supported_assets: list[str],
+        supported_regimes: list[str],
+        notes: str,
+        registered_event: str,
+        now_str: str,
+    ) -> dict[str, Any]:
+        """Build a seed strategy with EARNED-ONLY statistics.
+
+        All performance figures start at zero/neutral: earlier seeds shipped
+        with fabricated win rates and expectancies for trades that never
+        happened, and Kelly sizing consumed them as real evidence. Every
+        number in the portfolio must now be earned on live paper data.
+        """
+        return {
+            "strategy_id": strategy_id,
+            "name": name,
+            "version": "2.0.0",
+            "created_at": now_str,
+            "status": status,  # ACTIVE, SHADOW_MODE, PROBATION, ARCHIVED
+            "supported_assets": supported_assets,
+            "supported_regimes": supported_regimes,
+            "domain_confidence": {"DEFAULT": 50.0},
+            "expectancy": {"DEFAULT": 0.0},
+            "win_rate": {"DEFAULT": 0.0},
+            "trade_count": {"DEFAULT": 0},
+            "context_memory": {
+                "regime_performance": {},
+                "volatility_performance": {},
+                "notes": notes,
+            },
+            "history": [{"timestamp": now_str, "event": registered_event}],
+        }
+
     def _generate_default_portfolio(self) -> dict[str, Any]:
-        """Generate baseline specialized strategies for different asset domains."""
+        """Generate the baseline strategy portfolio (Strategy Dojo seeds).
+
+        Evidence-first lineup: the trend/pullback family starts ACTIVE (the
+        entry class with the strongest measured live performance on a
+        comparable running system, PF ~1.6-3.7); breakout starts in
+        SHADOW_MODE (measured live as a net leak, PF ~0.4-0.7) and must earn
+        promotion on Hokage's own paper evidence.
+        """
         now_str = datetime.now(timezone.utc).isoformat()
-        
-        # 1. Equities Strategy: Heuristic Trend Following (AutoTrend)
-        s1_id = "strat-autotrend-equities-v1"
-        s1 = {
-            "strategy_id": s1_id,
-            "name": "AutoTrend",
-            "version": "1.0.0",
-            "created_at": now_str,
-            "status": "ACTIVE",  # ACTIVE, PROBATION, ARCHIVED
-            "supported_assets": ["TCS", "INFY", "RELIANCE", "LT"],
-            "supported_regimes": ["RISK-ON", "BULL"],
-            "domain_confidence": {
-                "TCS": 81.0,
-                "INFY": 80.0,
-                "RELIANCE": 75.0,
-                "DEFAULT": 70.0
-            },
-            "expectancy": {
-                "TCS": 500.0,
-                "INFY": 400.0,
-                "RELIANCE": 300.0,
-                "DEFAULT": 100.0
-            },
-            "win_rate": {
-                "TCS": 65.0,
-                "INFY": 62.0,
-                "RELIANCE": 60.0,
-                "DEFAULT": 55.0
-            },
-            "trade_count": {
-                "TCS": 10,
-                "INFY": 8,
-                "RELIANCE": 5,
-                "DEFAULT": 0
-            },
-            "context_memory": {
-                "regime_performance": {"BULL": "HIGH", "BEAR": "LOW", "SIDEWAYS": "MODERATE"},
-                "volatility_performance": {"LOW": "HIGH", "HIGH": "LOW"}
-            },
-            "history": [
-                {"timestamp": now_str, "event": "Strategy registered and promoted to ACTIVE for Equities domain."}
-            ]
-        }
 
-        # 2. Commodities Strategy: Volatility Breakout (MacroBreakout)
-        s2_id = "strat-macrobreakout-commodities-v1"
-        s2 = {
-            "strategy_id": s2_id,
-            "name": "MacroBreakout",
-            "version": "1.0.0",
-            "created_at": now_str,
-            "status": "ACTIVE",
-            "supported_assets": ["CRUDE_OIL", "GOLD", "SILVER"],
-            "supported_regimes": ["RISK-OFF", "HIGH-VOLATILITY"],
-            "domain_confidence": {
-                "CRUDE_OIL": 85.0,
-                "GOLD": 82.0,
-                "DEFAULT": 70.0
-            },
-            "expectancy": {
-                "CRUDE_OIL": 800.0,
-                "GOLD": 600.0,
-                "DEFAULT": 100.0
-            },
-            "win_rate": {
-                "CRUDE_OIL": 68.0,
-                "GOLD": 64.0,
-                "DEFAULT": 55.0
-            },
-            "trade_count": {
-                "CRUDE_OIL": 12,
-                "GOLD": 6,
-                "DEFAULT": 0
-            },
-            "context_memory": {
-                "regime_performance": {"BULL": "MODERATE", "BEAR": "HIGH", "SIDEWAYS": "LOW"},
-                "volatility_performance": {"LOW": "LOW", "HIGH": "HIGH"}
-            },
-            "history": [
-                {"timestamp": now_str, "event": "Strategy registered and promoted to ACTIVE for Commodities domain."}
-            ]
-        }
-
-        # 3. Range-Bound Strategy: Mean Reversion (MeanReversion)
-        s3_id = "strat-meanreversion-sideways-v1"
-        s3 = {
-            "strategy_id": s3_id,
-            "name": "MeanReversion",
-            "version": "1.0.0",
-            "created_at": now_str,
-            "status": "ACTIVE",
-            "supported_assets": ["TCS", "INFY", "HDFCBANK"],
-            "supported_regimes": ["SIDEWAYS", "LOW-VOLATILITY"],
-            "domain_confidence": {
-                "TCS": 72.0,
-                "HDFCBANK": 70.0,
-                "DEFAULT": 60.0
-            },
-            "expectancy": {
-                "TCS": 200.0,
-                "HDFCBANK": 150.0,
-                "DEFAULT": 50.0
-            },
-            "win_rate": {
-                "TCS": 58.0,
-                "HDFCBANK": 56.0,
-                "DEFAULT": 52.0
-            },
-            "trade_count": {
-                "TCS": 5,
-                "HDFCBANK": 4,
-                "DEFAULT": 0
-            },
-            "context_memory": {
-                "regime_performance": {"BULL": "LOW", "BEAR": "LOW", "SIDEWAYS": "HIGH"},
-                "volatility_performance": {"LOW": "HIGH", "HIGH": "LOW"}
-            },
-            "history": [
-                {"timestamp": now_str, "event": "Strategy registered and promoted to ACTIVE for Sideways/Mean-Reversion domains."}
-            ]
-        }
+        s1 = self._seed_strategy(
+            "strat-trendpullback-v2",
+            "TrendPullback",
+            "ACTIVE",
+            ["NIFTY", "CRUDE_OIL"],
+            ["RISK-ON", "BULL", "BEAR"],
+            "EMA(9)/EMA(21) alignment with session-VWAP bias; the entry conduct gate enforces tape agreement.",
+            "Registered ACTIVE with zeroed stats: trend/pullback entry family.",
+            now_str,
+        )
+        s2 = self._seed_strategy(
+            "strat-macrobreakout-commodities-v1",
+            "MacroBreakout",
+            "SHADOW_MODE",
+            ["CRUDE_OIL", "GOLD", "SILVER"],
+            ["RISK-OFF", "HIGH-VOLATILITY"],
+            "Breakout entries demoted to shadow: measured elsewhere as a live net leak.",
+            "Demoted to SHADOW_MODE with zeroed stats: breakouts must earn promotion.",
+            now_str,
+        )
+        s3 = self._seed_strategy(
+            "strat-meanreversion-sideways-v1",
+            "MeanReversion",
+            "SHADOW_MODE",
+            ["NIFTY"],
+            ["SIDEWAYS", "LOW-VOLATILITY"],
+            "Range rotation family; candidate habitat is balance days.",
+            "Registered SHADOW_MODE with zeroed stats: range family gathers evidence.",
+            now_str,
+        )
 
         return {
             "strategies": {
-                s1_id: s1,
-                s2_id: s2,
-                s3_id: s3
+                s1["strategy_id"]: s1,
+                s2["strategy_id"]: s2,
+                s3["strategy_id"]: s3,
             },
             "updated_at": now_str
         }
@@ -296,10 +251,14 @@ class StrategyPortfolioManager:
                 )
 
         if not best_strategy:
-            # Fallback to Heuristic strategy
-            fallback_id = "strat-autotrend-equities-v1"
-            best_strategy = self.portfolio["strategies"][fallback_id]
-            selection_reason = "No specialized match found. Defaulted to Heuristic AutoTrend."
+            # Fallback: the flagship trend family, else the first registered
+            # strategy (portfolios persisted before the v2 seeds keep working).
+            strategies = self.portfolio["strategies"]
+            fallback_id = "strat-trendpullback-v2"
+            if fallback_id not in strategies:
+                fallback_id = next(iter(strategies))
+            best_strategy = strategies[fallback_id]
+            selection_reason = f"No specialized match found. Defaulted to '{best_strategy['name']}'."
 
         return {
             "strategy": best_strategy,

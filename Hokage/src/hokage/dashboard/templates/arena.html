@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hokage — Strategy Arena</title>
+<style>
+  :root { --bg:#0d1117; --card:#161b22; --line:#30363d; --text:#e6edf3; --dim:#8b949e;
+          --green:#3fb950; --red:#f85149; --amber:#d29922; --blue:#58a6ff; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font:14px/1.5 "Segoe UI",system-ui,sans-serif; padding:20px; }
+  h1 { font-size:20px; margin-bottom:4px; }
+  .sub { color:var(--dim); margin-bottom:20px; font-size:12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px; }
+  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin-bottom:10px; }
+  .strat { border:1px solid var(--line); border-radius:6px; padding:10px; margin-bottom:10px; }
+  .strat .name { font-weight:600; font-size:15px; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; font-weight:600; margin-left:8px; vertical-align:middle; }
+  .b-active { background:rgba(63,185,80,.15); color:var(--green); border:1px solid var(--green); }
+  .b-shadow { background:rgba(88,166,255,.12); color:var(--blue); border:1px solid var(--blue); }
+  .b-probation { background:rgba(210,153,34,.15); color:var(--amber); border:1px solid var(--amber); }
+  .b-archived { background:rgba(139,148,158,.15); color:var(--dim); border:1px solid var(--dim); }
+  .kv { display:flex; justify-content:space-between; font-size:12.5px; padding:2px 0; }
+  .kv .k { color:var(--dim); }
+  .notes { color:var(--dim); font-size:12px; margin-top:6px; font-style:italic; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th, td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-weight:600; }
+  .ok { color:var(--green); } .warn { color:var(--amber); } .bad { color:var(--red); } .dim { color:var(--dim); }
+  #refresh { color:var(--dim); font-size:11px; margin-top:16px; }
+  ul.plain { list-style:none; } ul.plain li { padding:3px 0; border-bottom:1px solid var(--line); font-size:12.5px; }
+</style>
+</head>
+<body>
+  <h1>Strategy Arena <span class="dim">— the Dojo</span></h1>
+  <div class="sub">Every number is earned on live paper data. Shadow strategies trade with zero capital until promoted by evidence (30+ trades, positive expectancy). <a href="/" style="color:var(--blue)">← main dashboard</a></div>
+
+  <div class="grid">
+    <div class="card" style="grid-column:1/-1">
+      <h2>Strategy Ladder</h2>
+      <div id="strategies" class="grid"></div>
+    </div>
+
+    <div class="card">
+      <h2>Conduct Gates (live)</h2>
+      <div id="gates"></div>
+    </div>
+
+    <div class="card">
+      <h2>Options Exit Ladder</h2>
+      <div id="ladder"></div>
+    </div>
+
+    <div class="card" style="grid-column:1/-1">
+      <h2>Today's Refusals (no-trade decisions)</h2>
+      <div id="refusals" class="dim">loading…</div>
+    </div>
+  </div>
+  <div id="refresh"></div>
+
+<script>
+const badge = s => {
+  const cls = {ACTIVE:"b-active", SHADOW_MODE:"b-shadow", PROBATION:"b-probation", ARCHIVED:"b-archived"}[s] || "b-archived";
+  return `<span class="badge ${cls}">${s}</span>`;
+};
+const fmt = v => (v === null || v === undefined) ? "—" : v;
+
+async function load() {
+  let d;
+  try {
+    d = await (await fetch("/api/v1/arena")).json();
+  } catch (e) {
+    document.getElementById("refresh").textContent = "arena feed unavailable: " + e;
+    return;
+  }
+
+  document.getElementById("strategies").innerHTML = (d.strategies || []).map(s => `
+    <div class="strat">
+      <div class="name">${s.name} ${badge(s.status)}</div>
+      <div class="kv"><span class="k">Assets</span><span>${(s.supported_assets||[]).join(", ")}</span></div>
+      <div class="kv"><span class="k">Regimes</span><span>${(s.supported_regimes||[]).join(", ")}</span></div>
+      <div class="kv"><span class="k">Trades (earned)</span><span>${fmt((s.trade_count||{}).DEFAULT)}</span></div>
+      <div class="kv"><span class="k">Win rate</span><span>${fmt((s.win_rate||{}).DEFAULT)}%</span></div>
+      <div class="kv"><span class="k">Expectancy</span><span>₹${fmt((s.expectancy||{}).DEFAULT)}</span></div>
+      <div class="notes">${s.notes || ""}</div>
+      <div class="notes">${s.last_event || ""}</div>
+    </div>`).join("") || '<div class="dim">no strategies registered</div>';
+
+  const g = d.conduct_gates || {};
+  const vixPct = g.india_vix_percentile;
+  const vixClass = vixPct === null || vixPct === undefined ? "dim" : (vixPct >= (g.vix_block_percentile ?? .8) ? "bad" : "ok");
+  const biasRow = (sym, b) => {
+    const cls = b === "BULLISH" ? "ok" : b === "BEARISH" ? "bad" : b === "MIXED" ? "warn" : "dim";
+    return `<div class="kv"><span class="k">Bias — ${sym}</span><span class="${cls}">${fmt(b)}</span></div>`;
+  };
+  document.getElementById("gates").innerHTML = `
+    ${Object.entries(g.bias || {}).map(([s, b]) => biasRow(s, b)).join("")}
+    <div class="kv"><span class="k">India VIX percentile (60d)</span>
+      <span class="${vixClass}">${vixPct === null || vixPct === undefined ? "no data — guard skipped" : (vixPct*100).toFixed(0) + "%"}</span></div>
+    <div class="kv"><span class="k">Option-buy block above</span><span>${((g.vix_block_percentile ?? .8)*100).toFixed(0)}%</span></div>
+    <div class="kv"><span class="k">Midday blackout (NSE)</span><span>${fmt(g.midday_blackout_ist)}</span></div>
+    <div class="kv"><span class="k">Last new entry (NSE)</span><span>${fmt(g.late_session_cutoff_ist)}</span></div>`;
+
+  const l = d.exit_ladder || {};
+  document.getElementById("ladder").innerHTML = `
+    <ul class="plain">${(l.order || []).map((r, i) => `<li>${i+1}. ${r}</li>`).join("")}</ul>
+    <table style="margin-top:8px">
+      <tr><th>Entry premium ≥</th><th>Max premium loss</th></tr>
+      ${(l.backstop_tiers || []).map(t => `<tr><td>₹${t.entry_premium_at_least}</td><td>−${(t.max_loss_pct*100).toFixed(0)}%</td></tr>`).join("")}
+    </table>
+    <div class="kv" style="margin-top:8px"><span class="k">Thesis stop</span><span>${fmt(l.thesis_stop_atr_mult)}× underlying ATR</span></div>
+    <div class="kv"><span class="k">Trail lock</span><span>₹${fmt(l.trail_lock_rupees)} from peak</span></div>
+    <div class="kv"><span class="k">Adaptive target clamp</span><span>+${((l.target_clamp_pct||[0,0])[0]*100).toFixed(0)}% … +${((l.target_clamp_pct||[0,0])[1]*100).toFixed(0)}%</span></div>`;
+
+  const refusals = d.no_trade_today || [];
+  document.getElementById("refusals").innerHTML = refusals.length
+    ? `<table><tr><th>Asset</th><th>Time</th><th>Reasons</th></tr>` +
+      refusals.slice(-30).reverse().map(r => `<tr><td>${fmt(r.asset)}</td><td>${(r.timestamp||"").slice(11,19)}</td><td>${
+        Array.isArray(r.reasons) ? r.reasons.join("; ") : fmt(r.reasons)}</td></tr>`).join("") + "</table>"
+    : '<span class="dim">no refusals logged yet today — refusing bad trades is the edge; entries appear on the main dashboard</span>';
+
+  document.getElementById("refresh").textContent = "updated " + new Date().toLocaleTimeString() + " — refreshes every 30s";
+}
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>

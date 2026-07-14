@@ -342,6 +342,15 @@ def _run_entry_scan(mock_orchestrator, tmp_path, place_order_side_effect=None):
     with patch.object(PathResolver, "__init__", mock_init):
         bot = AutonomousTradingBot(mock_orchestrator, watchlist=["TCS"], scan_interval_seconds=1)
 
+        # Pin the session clock (10:00 IST): outside the opening-bell
+        # observation window, the midday blackout, and the late-entry cutoff,
+        # so the scan is deterministic regardless of when the suite runs.
+        bot._now_ist = lambda: datetime(2026, 7, 14, 10, 0, tzinfo=timezone.utc)
+        # Conduct-gate data feeds are absent in the harness: bias/VIX checks
+        # skip rather than fabricate.
+        bot._compute_underlying_bias = lambda symbol: None
+        bot._india_vix_percentile = lambda: None
+
         mock_orchestrator.research_bot.research.return_value = MagicMock()
 
         proposal = StrategyProposal(

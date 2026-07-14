@@ -9,7 +9,7 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, TYPE_CHECKING
 from concurrent.futures import ThreadPoolExecutor
 
@@ -919,6 +919,132 @@ class AutonomousTradingBot:
             return 0.0
 
 
+    #: Midday chop blackout and late-session cutoff for NSE entries (IST).
+    #: Measured on a comparable live system: midday entries and late-session
+    #: entries are net leaks. MCX commodities keep their own session gates.
+    _NSE_MIDDAY_BLACKOUT = ((11, 30), (13, 30))
+    _NSE_LAST_ENTRY = (14, 0)
+    #: India VIX percentile above which BUYING options is blocked — premium is
+    #: statistically rich and the move must beat an inflated price (Natenberg).
+    _VIX_PERCENTILE_BLOCK = 0.80
+    _VIX_LOOKBACK_DAYS = 60
+
+    def _entry_conduct_gate(self, symbol: str, direction: str) -> tuple[bool, str]:
+        """Time-of-day windows, underlying bias alignment, IV premium guard.
+
+        Each check runs only when its data exists — a missing feed skips that
+        check (logged), it never fabricates a value. Returns (allowed, reason).
+        """
+        symbol_upper = symbol.upper()
+        is_mcx = symbol_upper.replace("_", "").startswith(("CRUDEOIL", "GOLD", "SILVER", "NATURALGAS"))
+
+        # 1. NSE time-of-day protections (MCX runs its own sessions).
+        if not is_mcx:
+            now = self._now_ist()
+            hm = (now.hour, now.minute)
+            if self._NSE_MIDDAY_BLACKOUT[0] <= hm < self._NSE_MIDDAY_BLACKOUT[1]:
+                return False, "Midday chop blackout (11:30-13:30 IST): new entries suspended."
+            if hm >= self._NSE_LAST_ENTRY:
+                return False, "Late-session cutoff (14:00 IST): no new entries into the close."
+
+        # 2. Bias alignment on the underlying: longs only with a bullish tape,
+        # shorts only with a bearish tape, stand aside when mixed.
+        bias = self._compute_underlying_bias(symbol)
+        if bias == "MIXED":
+            return False, "Bias engine: underlying tape is MIXED — standing aside."
+        if bias == "BULLISH" and direction != "long":
+            return False, "Bias engine: bearish entry against a BULLISH tape."
+        if bias == "BEARISH" and direction != "short":
+            return False, "Bias engine: bullish entry against a BEARISH tape."
+        if bias is None:
+            logger.info(f"Bias engine: no intraday data for {symbol}; bias check skipped.")
+
+        # 3. IV premium guard: we BUY options; block when India VIX sits in the
+        # top quintile of its trailing range (premium too rich).
+        vix_pct = self._india_vix_percentile()
+        if vix_pct is not None and vix_pct >= self._VIX_PERCENTILE_BLOCK:
+            return False, (
+                f"IV premium guard: India VIX at {vix_pct:.0%} percentile of "
+                f"{self._VIX_LOOKBACK_DAYS}d range — option premium too rich to buy."
+            )
+
+        return True, "conduct gates passed"
+
+    def _compute_underlying_bias(self, symbol: str) -> str | None:
+        """Classify the underlying tape as BULLISH / BEARISH / MIXED from real
+        intraday candles (EMA(9)/EMA(21) alignment + price vs session VWAP).
+        Returns None when no intraday data is available."""
+        try:
+            from integrations.data.models import HistoricalDataRequest, CandleInterval
+            instrument = self.orchestrator.price_source.resolve_instrument(symbol)
+            req = HistoricalDataRequest(
+                instrument=instrument,
+                start=datetime.now(timezone.utc) - timedelta(days=3),
+                end=datetime.now(timezone.utc),
+                interval=CandleInterval.FIFTEEN_MINUTES,
+            )
+            res = self.orchestrator.price_source.get_historical_candles(req)
+            candles = list(res.candles) if res and res.candles else []
+        except Exception as exc:
+            logger.debug(f"Bias engine: intraday candles unavailable for {symbol}: {exc}")
+            return None
+        if len(candles) < 21:
+            return None
+
+        closes = [c.close for c in candles]
+
+        def _ema(values: list[float], period: int) -> float:
+            k = 2.0 / (period + 1.0)
+            ema = values[0]
+            for v in values[1:]:
+                ema = v * k + ema * (1.0 - k)
+            return ema
+
+        ema9 = _ema(closes[-30:], 9)
+        ema21 = _ema(closes[-42:], 21)
+
+        # Session VWAP from the current day's candles (volume-weighted; falls
+        # back to None-safe simple mean when the venue reports no volume).
+        last_day = candles[-1].timestamp.date()
+        session = [c for c in candles if c.timestamp.date() == last_day]
+        vol_sum = sum((c.volume or 0.0) for c in session)
+        if vol_sum > 0:
+            vwap = sum(((c.high + c.low + c.close) / 3.0) * (c.volume or 0.0) for c in session) / vol_sum
+        else:
+            vwap = sum(c.close for c in session) / len(session) if session else closes[-1]
+
+        price = closes[-1]
+        bullish = ema9 > ema21 and price > vwap
+        bearish = ema9 < ema21 and price < vwap
+        if bullish:
+            return "BULLISH"
+        if bearish:
+            return "BEARISH"
+        return "MIXED"
+
+    def _india_vix_percentile(self) -> float | None:
+        """Current India VIX close as a percentile of its trailing range.
+        None when the feed is unavailable (guard is then skipped, not faked)."""
+        try:
+            from integrations.data.models import HistoricalDataRequest, CandleInterval
+            instrument = self.orchestrator.price_source.resolve_instrument("INDIA VIX")
+            req = HistoricalDataRequest(
+                instrument=instrument,
+                start=datetime.now(timezone.utc) - timedelta(days=self._VIX_LOOKBACK_DAYS + 10),
+                end=datetime.now(timezone.utc),
+                interval=CandleInterval.ONE_DAY,
+            )
+            res = self.orchestrator.price_source.get_historical_candles(req)
+            closes = [c.close for c in (res.candles if res else ())][-self._VIX_LOOKBACK_DAYS:]
+        except Exception as exc:
+            logger.debug(f"IV premium guard: India VIX history unavailable: {exc}")
+            return None
+        if len(closes) < 20:
+            return None
+        current = closes[-1]
+        below = sum(1 for c in closes if c <= current)
+        return below / len(closes)
+
     @staticmethod
     def _quote_liquidity_inputs(quote: Any) -> tuple[float | None, float | None]:
         """Extract REAL liquidity inputs (spread %, bid/ask depth ratio) from a
@@ -1222,33 +1348,36 @@ class AutonomousTradingBot:
         if getattr(self, "intraday_override", {}).get(symbol) == "KILL":
             return True, "Manual Kill Switch Activated", tracking
 
-        # 1.5. Options Trailing Stop-Loss (Derivatives Profit Protection)
-        is_option = symbol.upper().endswith("CE") or symbol.upper().endswith("PE")
-        if is_option and (side == OrderSide.BUY or side.value == "BUY"):
-            peak_premium = tracking.get("peak_price", average_price)
-            # If premium jumps > 20%, we lock stop-loss to at least breakeven
-            if peak_premium >= average_price * 1.20:
-                current_sl = tracking.get("stop_price", 0.0)
-                tracking["stop_price"] = max(current_sl, average_price)
+        symbol_upper = symbol.upper()
+        is_option = symbol_upper.endswith("CE") or symbol_upper.endswith("PE")
+        is_mcx_instrument = symbol_upper.startswith(("CRUDEOIL", "GOLD", "SILVER", "NATURALGAS")) or (
+            venue is not None and "mcx" in venue.venue_id.lower()
+        )
 
-                # 15% Trailing stop from peak premium
-                trailing_lock_price = peak_premium * 0.85
-                if trailing_lock_price > average_price:
-                    tracking["stop_price"] = max(tracking["stop_price"], trailing_lock_price)
-
-            if current_price <= tracking.get("stop_price", -1.0):
-                return True, f"Options Trailing Stop-Loss Triggered at ₹{tracking['stop_price']:.2f}", tracking
-
-        # 2. Time-Based Square-Off
+        # 2. Time-Based Square-Off (loss protection outranks profit-taking;
+        # MCX instruments are recognized by symbol so paper-venue commodity
+        # options still square off at the 23:15 MCX close, not 15:20).
         is_crypto = venue and ("crypto" in venue.venue_id.lower() or "binance" in venue.venue_id.lower())
         if not is_crypto:
-            sq_hour, sq_min = 15, 20
-            if venue and "mcx" in venue.venue_id.lower():
-                sq_hour, sq_min = 23, 15
+            sq_hour, sq_min = (23, 15) if is_mcx_instrument else (15, 20)
             if now_ist.hour > sq_hour or (now_ist.hour == sq_hour and now_ist.minute >= sq_min):
                 return True, "Time-Based Square-Off (EOD)", tracking
 
-        # 3. Hard Backstop
+        # BOUGHT OPTIONS: dedicated premium-aware exit ladder. The generic
+        # underlying-ATR ladder below misreads premium series (an option's own
+        # "ATR" is meaningless for thesis stops), so options exit here.
+        if is_option and (side == OrderSide.BUY or side.value == "BUY"):
+            return self._evaluate_option_exit_ladder(
+                symbol=symbol_upper,
+                quantity=quantity,
+                entry_premium=average_price,
+                current_premium=current_price,
+                tracking=tracking,
+                now_ist=now_ist,
+                is_mcx=is_mcx_instrument,
+            )
+
+        # 3. Hard Backstop (futures/equity path)
         max_rupee_loss = 5000.0
         direction_sign = 1.0 if (side == OrderSide.BUY or side.value == "BUY") else -1.0
         unrealized_pnl = (current_price - average_price) * quantity * direction_sign
@@ -1335,6 +1464,109 @@ class AutonomousTradingBot:
             if current_price >= tracking["stop_price"]:
                 reason = "Assassin Stop-Loss Triggered" if scaled_out_stage == 0 else "Trailing Stop Triggered"
                 return True, f"{reason} at {tracking['stop_price']:.2f}", tracking
+
+        return False, "", tracking
+
+    #: Tiered premium hard backstop: cheap options are noisier, so their
+    #: catastrophe cap is proportionally wider. (entry premium floor, max loss %)
+    _OPTION_BACKSTOP_TIERS = ((500.0, 0.15), (200.0, 0.25), (100.0, 0.35), (0.0, 0.50))
+    #: Underlying thesis stop: adverse move >= this multiple of entry-time ATR
+    #: on the UNDERLYING invalidates the directional premise.
+    _OPTION_THESIS_ATR_MULT = 1.25
+    #: TRAIL_LOCK arms once open profit reaches this many rupees per position,
+    #: then never gives back more than the same amount from peak.
+    _OPTION_TRAIL_LOCK_RUPEES = 1000.0
+    #: Adaptive target: fraction of the expected remaining underlying move,
+    #: through an assumed ATM delta, clamped to a % band of entry premium.
+    _OPTION_TARGET_MOVE_FRACTION = 0.30
+    _OPTION_TARGET_ATM_DELTA = 0.45
+    _OPTION_TARGET_MIN_PCT = 0.06
+    _OPTION_TARGET_MAX_PCT = 0.25
+
+    def _evaluate_option_exit_ladder(
+        self,
+        symbol: str,
+        quantity: float,
+        entry_premium: float,
+        current_premium: float,
+        tracking: dict[str, Any],
+        now_ist: datetime,
+        is_mcx: bool,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        """Ordered exit ladder for BOUGHT options — first match wins.
+
+        Loss protection outranks profit taking: tiered premium backstop, then
+        the underlying-ATR thesis stop, then the adaptive TARGET_HIT, then
+        TRAIL_LOCK. Square-off/kill-switch are handled by the caller before
+        this ladder runs. Missing data (no underlying quote, no ATR) skips a
+        rung — it never fabricates a value.
+        """
+        import math
+
+        tracking["peak_price"] = max(tracking.get("peak_price", entry_premium), current_premium)
+        peak_premium = tracking["peak_price"]
+
+        # Rung 1 — tiered premium HARD BACKSTOP (catastrophe cap).
+        for tier_floor, max_loss_pct in self._OPTION_BACKSTOP_TIERS:
+            if entry_premium >= tier_floor:
+                backstop_price = entry_premium * (1.0 - max_loss_pct)
+                if current_premium <= backstop_price:
+                    return True, (
+                        f"Option Hard Backstop: premium {current_premium:.2f} fell "
+                        f"{max_loss_pct:.0%} below entry {entry_premium:.2f}"
+                    ), tracking
+                break
+
+        # Rung 2 — ATR thesis stop on the UNDERLYING: the trade's premise is a
+        # direction on the underlying; when that breaks, exit regardless of
+        # what the premium alone is doing.
+        underlying = tracking.get("underlying")
+        entry_und_price = tracking.get("entry_underlying_price")
+        entry_und_atr = tracking.get("entry_underlying_atr")
+        if underlying and entry_und_price and entry_und_atr:
+            und_price, _ = self._get_validated_live_price(underlying)
+            if und_price is not None:
+                adverse = (entry_und_price - und_price) if symbol.endswith("CE") else (und_price - entry_und_price)
+                if adverse >= self._OPTION_THESIS_ATR_MULT * float(entry_und_atr):
+                    return True, (
+                        f"Underlying Thesis Stop: {underlying} moved {adverse:.2f} against "
+                        f"position (>= {self._OPTION_THESIS_ATR_MULT} x ATR {float(entry_und_atr):.2f})"
+                    ), tracking
+
+        # Rung 3 — TARGET_HIT: adaptive, move-calibrated premium target sized
+        # to how much the market can plausibly still move today.
+        if entry_und_atr:
+            bar_minutes = 5 if is_mcx else 15
+            close_hour, close_min = (23, 15) if is_mcx else (15, 20)
+            minutes_left = (close_hour - now_ist.hour) * 60 + (close_min - now_ist.minute)
+            bars_left = max(0.0, minutes_left / bar_minutes)
+            expected_move = float(entry_und_atr) * math.sqrt(bars_left)
+            raw_target = entry_premium + (
+                self._OPTION_TARGET_MOVE_FRACTION * self._OPTION_TARGET_ATM_DELTA * expected_move
+            )
+            target = min(
+                max(raw_target, entry_premium * (1.0 + self._OPTION_TARGET_MIN_PCT)),
+                entry_premium * (1.0 + self._OPTION_TARGET_MAX_PCT),
+            )
+            tracking["target_price"] = round(target, 2)
+            if current_premium >= target:
+                return True, (
+                    f"TARGET_HIT: premium {current_premium:.2f} reached adaptive "
+                    f"target {target:.2f} (entry {entry_premium:.2f})"
+                ), tracking
+
+        # Rung 4 — TRAIL_LOCK: once peak open profit >= the lock amount, a
+        # rising floor gives back at most that amount from peak.
+        if quantity > 0:
+            peak_profit_rupees = (peak_premium - entry_premium) * quantity
+            if peak_profit_rupees >= self._OPTION_TRAIL_LOCK_RUPEES:
+                floor_premium = peak_premium - (self._OPTION_TRAIL_LOCK_RUPEES / quantity)
+                tracking["stop_price"] = max(tracking.get("stop_price", 0.0), floor_premium)
+                if current_premium <= floor_premium:
+                    return True, (
+                        f"TRAIL_LOCK: premium {current_premium:.2f} gave back "
+                        f"₹{self._OPTION_TRAIL_LOCK_RUPEES:,.0f} from peak {peak_premium:.2f}"
+                    ), tracking
 
         return False, "", tracking
 
@@ -1786,11 +2018,10 @@ class AutonomousTradingBot:
             return
 
         # Opening Bell Observation Protocol: block NSE/BSE entries during the
-        # 09:15-09:30 IST window. Derived from the real session clock.
-        from integrations.brokers.session_manager import KolkataTime
+        # 09:15-09:30 IST window. Uses the injectable clock seam so tests can
+        # pin session time deterministically.
         from datetime import time as dt_time
-        tz = KolkataTime()
-        ist_now = datetime.now(timezone.utc).astimezone(tz)
+        ist_now = self._now_ist()
         current_date_str = ist_now.strftime("%Y-%m-%d")
 
         is_observation_window = dt_time(9, 15) <= ist_now.time() < dt_time(9, 30)
@@ -1970,13 +2201,15 @@ class AutonomousTradingBot:
         
         tradable_symbols = day_filtered_symbols
 
-        # Venue-aware observation gate
+        # Venue-aware observation gate. (Exchange lives in the DATA models
+        # module; the old import from brokers.models raised ImportError, which
+        # crashed the entry scan every day inside the 09:15-09:30 window.)
         observation_blocked = set()
         if is_observation_window:
-            from integrations.brokers.models import Exchange
+            from integrations.data.models import Exchange as _DataExchange
             for s in tradable_symbols:
                 instrument = self.orchestrator.price_source.resolve_instrument(s)
-                if instrument and instrument.exchange in (Exchange.NSE, Exchange.BSE):
+                if instrument and instrument.exchange in (_DataExchange.NSE, _DataExchange.BSE):
                     observation_blocked.add(s)
 
         symbols_to_scan = [s for s in tradable_symbols if s not in existing_symbols and s not in observation_blocked]
@@ -2609,6 +2842,22 @@ class AutonomousTradingBot:
                 if qty <= 0:
                     logger.warning(f"Aborting execution for {symbol}: sized quantity is {qty} (no positive edge or no risk budget).")
                     continue
+
+                # Entry conduct gates (measured-evidence rules): time-of-day
+                # windows, underlying bias alignment, and the IV premium guard.
+                conduct_ok, conduct_reason = self._entry_conduct_gate(symbol, original_entry)
+                if not conduct_ok:
+                    logger.info(f"Entry blocked for {symbol}: {conduct_reason}")
+                    eval_results[symbol] = {
+                        "state": "NO_TRADE",
+                        "blockers": [conduct_reason],
+                        "confirmations": [],
+                        "conviction": int(committee_decision.decision_confidence),
+                        "risk": 0.0,
+                        "reasons": [conduct_reason],
+                    }
+                    continue
+
                 side = OrderSide.BUY if original_entry == "long" else OrderSide.SELL
 
                 # Create TradeAuthorization BEFORE placing order
@@ -2715,9 +2964,22 @@ class AutonomousTradingBot:
                 tracked_symbol = req.instrument.symbol
                 tracked_side = req.side
                 tracked_entry_price = entry_price
+                option_tracking_extras: dict[str, Any] = {}
                 req_meta = req.instrument.metadata or {}
                 if req_meta.get("is_option"):
                     tracked_entry_price = float(req_meta.get("premium_at_entry", entry_price))
+                    # The option exit ladder needs the underlying's entry
+                    # context: thesis stop and adaptive target both key off the
+                    # UNDERLYING price/ATR, not the premium series.
+                    entry_und_atr = self._get_atr_for_symbol(symbol)
+                    option_tracking_extras = {
+                        "entry_underlying_price": float(entry_price),
+                        "entry_underlying_atr": float(entry_und_atr) if entry_und_atr else None,
+                        "lot_size": req_meta.get("lot_size"),
+                        "option_type": req_meta.get("option_type"),
+                        "strike": req_meta.get("strike"),
+                        "expiry": req_meta.get("expiry"),
+                    }
 
                 self.strategy_engine.record_trade(playbook_id, symbol, current_date_str)
                 bus.publish("EXECUTION_COMPLETED", {
@@ -2781,7 +3043,8 @@ class AutonomousTradingBot:
                     "quantity": float(qty_filled),
                     "venue_id": getattr(venue, "venue_id", "paper_main"),
                     "underlying": symbol,
-                    "unconfirmed": (status_str == "UNCONFIRMED")
+                    "unconfirmed": (status_str == "UNCONFIRMED"),
+                    **option_tracking_extras,
                 }
                 self._save_positions_tracking()
 
