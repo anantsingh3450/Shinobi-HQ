@@ -65,19 +65,37 @@ def test_liquidity_engine():
 
 def test_volume_engine():
     engine = VolumeEngine()
-    
-    # Normal volume
+
+    # Normal volume fails the default breakout family (1.0x < 1.2x)
     allowed, msg = engine.validate_breakout(100.0, 100.0)
-    assert not allowed  # ratio is 1.0x < 1.5x
-    
+    assert not allowed
+    assert "FAKE_BREAKOUT" in msg
+
     # Breakout volume
     allowed, msg = engine.validate_breakout(200.0, 100.0)
     assert allowed
-    
+
     # Abnormal volume
     allowed, msg = engine.validate_breakout(300.0, 100.0)
     assert allowed
     assert "ABNORMAL_VOLUME" in msg
+
+
+def test_volume_engine_entry_families():
+    """Commander-approved: breakout entries keep the 1.2x surge bar; trend/
+    pullback entries only reject a dead tape (< 0.8x average)."""
+    engine = VolumeEngine()
+
+    # 0.84x: rejected for breakout, accepted for trend (the exact ratio that
+    # starved the flagship on 2026-07-14).
+    allowed, msg = engine.validate_breakout(84.0, 100.0, entry_family="breakout")
+    assert not allowed and "FAKE_BREAKOUT" in msg
+    allowed, msg = engine.validate_breakout(84.0, 100.0, entry_family="trend")
+    assert allowed
+
+    # 0.5x: dead tape rejected for every family
+    allowed, msg = engine.validate_breakout(50.0, 100.0, entry_family="trend")
+    assert not allowed and "THIN_TAPE" in msg
 
 def test_position_management_engine():
     engine = PositionManagementEngine()

@@ -109,21 +109,41 @@ class LiquidityEngine:
 class VolumeEngine:
     """Detects fake breakouts and confirms abnormal volume strength."""
 
-    def validate_breakout(self, current_volume: float, avg_volume: float) -> tuple[bool, str]:
-        """Verify breakout volume support to reject fake breakouts.
-        
-        Note: Threshold lowered to 1.2x (from 1.5x) to allow early morning 
-        setups where volume has not yet fully built up.
+    # Commander-approved 2026-07-14: the volume-surge demand is a BREAKOUT
+    # confirmation concept. Trend/pullback entries occur on quiet retracement
+    # tape by design, so demanding a 1.2x surge starved the flagship family
+    # all day. Breakouts keep the surge bar; trend entries only reject a
+    # genuinely dead tape.
+    BREAKOUT_MIN_RATIO = 1.2
+    TREND_MIN_RATIO = 0.8
+
+    def validate_breakout(
+        self,
+        current_volume: float,
+        avg_volume: float,
+        entry_family: str = "breakout",
+    ) -> tuple[bool, str]:
+        """Volume gate with entry-family-aware thresholds.
+
+        entry_family "breakout": requires a surge (>= 1.2x average) to reject
+        fake breakouts. Any other family (trend/pullback/mean-reversion):
+        requires only a live tape (>= 0.8x average).
         """
         if avg_volume <= 0:
             return True, "Volume baseline unavailable."
-        
+
         volume_ratio = current_volume / avg_volume
-        if volume_ratio < 1.2:
-            return False, f"FAKE_BREAKOUT: Volume ratio {volume_ratio:.2f}x < required 1.20x."
+        is_breakout = entry_family.lower() == "breakout"
+        min_ratio = self.BREAKOUT_MIN_RATIO if is_breakout else self.TREND_MIN_RATIO
+        if volume_ratio < min_ratio:
+            label = "FAKE_BREAKOUT" if is_breakout else "THIN_TAPE"
+            return False, (
+                f"{label}: Volume ratio {volume_ratio:.2f}x < required "
+                f"{min_ratio:.2f}x ({entry_family} entry)."
+            )
         if volume_ratio >= 2.0:
-            return True, f"ABNORMAL_VOLUME: Breakout confirmed by strong volume flow ({volume_ratio:.2f}x)."
-        return True, f"Volume support satisfied ({volume_ratio:.2f}x)."
+            return True, f"ABNORMAL_VOLUME: Entry confirmed by strong volume flow ({volume_ratio:.2f}x)."
+        return True, f"Volume support satisfied ({volume_ratio:.2f}x, {entry_family} entry)."
 
 
 class PositionManagementEngine:

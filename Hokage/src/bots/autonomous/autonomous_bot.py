@@ -332,6 +332,21 @@ class AutonomousTradingBot:
         except Exception as exc:
             logger.error(f"Failed to save shadow positions: {exc}")
 
+    def _entry_family_for(self, symbol: str) -> str:
+        """Volume-gate entry family for the strategy that would execute symbol.
+
+        "breakout" keeps the 1.2x volume-surge demand; anything else (trend/
+        pullback/mean-reversion) is validated against the thin-tape bar only.
+        Resolution: the ACTIVE strategy the portfolio would select for this
+        asset, classified by name.
+        """
+        try:
+            selected = self.strategy_portfolio.select_strategy(symbol)
+            name = (selected.get("strategy") or {}).get("name", "")
+            return "breakout" if "breakout" in name.lower() else "trend"
+        except Exception:
+            return "breakout"
+
     def strategy_deployed_capital(self) -> dict[str, float]:
         """Capital locked in open positions per strategy_id.
 
@@ -2452,7 +2467,9 @@ class AutonomousTradingBot:
                 is_vol_valid, vol_reason = True, "volume data unavailable; gate skipped"
             else:
                 current_vol, avg_vol = vol_ctx
-                is_vol_valid, vol_reason = self.volume_engine.validate_breakout(current_vol, avg_vol)
+                is_vol_valid, vol_reason = self.volume_engine.validate_breakout(
+                    current_vol, avg_vol, entry_family=self._entry_family_for(symbol)
+                )
             if not is_vol_valid:
                 logger.info(f"Opportunity for {symbol} rejected by VolumeEngine: {vol_reason}")
                 eval_results[symbol] = {
@@ -3241,7 +3258,13 @@ class AutonomousTradingBot:
                         is_vol_valid, vol_reason = True, "volume data unavailable; gate skipped"
                     else:
                         current_vol, avg_vol = vol_ctx
-                        is_vol_valid, vol_reason = self.volume_engine.validate_breakout(current_vol, avg_vol)
+                        # Shadow entries validate against the SHADOW strategy's
+                        # own entry family: MacroBreakout keeps the surge bar,
+                        # trend/mean-reversion challengers use the thin-tape bar.
+                        shadow_family = "breakout" if "breakout" in strat.get("name", "").lower() else "trend"
+                        is_vol_valid, vol_reason = self.volume_engine.validate_breakout(
+                            current_vol, avg_vol, entry_family=shadow_family
+                        )
                     if not is_vol_valid:
                         self.strategy_evolution.log_shadow_decision(
                             strategy_id=strat_id,
