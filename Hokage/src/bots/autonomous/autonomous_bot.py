@@ -1976,13 +1976,20 @@ class AutonomousTradingBot:
             
             # 4. Validate via Backtest
             backtest_result = self.orchestrator.backtest_bot.validate_strategy(proposal)
-            
+
             if backtest_result.passed:
                 return {
                     "proposal": proposal,
                     "backtest_result": backtest_result,
                     "score": proposal.confidence_score * (backtest_result.win_rate / 100.0)
                 }
+            # Surface WHY the gate failed — this rejection was previously
+            # silent, which made a hard-broken backtest window look like the
+            # market simply offering nothing all day.
+            logger.warning(
+                f"Backtest gate rejected {symbol}: {backtest_result.summary} "
+                f"(win_rate={backtest_result.win_rate}, trades={backtest_result.total_trades})"
+            )
         except Exception as exc:
             logger.error(f"Failed to scan opportunity for {symbol}: {exc}")
         return None
@@ -2171,8 +2178,8 @@ class AutonomousTradingBot:
         weekday = ist_now.weekday() # 0 = Monday, 6 = Sunday
         
         if 0 <= weekday <= 4:
-            allowed_sectors = ["it", "energy", "banking", "fintech", "defence", "us_tech", "commodity"]
-            day_desc = "Weekday (Mon-Fri) - Equities/Commodities only"
+            allowed_sectors = ["index", "it", "energy", "banking", "fintech", "defence", "us_tech", "commodity"]
+            day_desc = "Weekday (Mon-Fri) - Indices/Equities/Commodities only"
         else:
             allowed_sectors = ["crypto", "forex"]
             day_desc = "Weekend (Sat-Sun) - Forex/Crypto only"

@@ -43,7 +43,11 @@ class HistoricalBacktestEngine(BacktestEngine):
     def run_backtest(self, proposal: StrategyProposal) -> BacktestResult:
         """Run a simple directional candle backtest."""
         instrument = self._provider.resolve_instrument(proposal.market)
-        end = datetime(2026, 1, 1, tzinfo=UTC)
+        # The validation window must END NOW. A hardcoded end date froze this
+        # gate on a stale window; once the traded futures contracts postdated
+        # it, the provider returned zero candles and every proposal auto-failed
+        # ("Failed research/strategy/backtest validation" on every scan).
+        end = datetime.now(UTC)
         start = end - timedelta(days=self._lookback_days)
         request = HistoricalDataRequest(
             instrument=instrument,

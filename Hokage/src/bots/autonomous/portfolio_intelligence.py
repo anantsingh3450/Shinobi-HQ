@@ -65,6 +65,12 @@ class PortfolioAwarenessEngine:
 
         # Sector maps for symbols (lowercase for backward compatibility)
         self.symbol_sectors = {
+            # Index derivatives (the primary trading universe alongside crude).
+            # Missing entries here default to sector "other", which the
+            # Day-of-Week Isolator blocks on EVERY weekday — NIFTY was
+            # silently untradable for a full session because of that.
+            "NIFTY": "index", "BANKNIFTY": "index", "FINNIFTY": "index",
+            "MIDCPNIFTY": "index", "SENSEX": "index",
             "TCS": "it", "INFY": "it", "WIPRO": "it", "HCLTECH": "it", "TECHM": "it",
             "RELIANCE": "energy", "ONGC": "energy", "BPCL": "energy",
             "HDFCBANK": "banking", "ICICIBANK": "banking", "SBIN": "banking",

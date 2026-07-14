@@ -592,13 +592,17 @@ def create_dashboard_api(
             state = boot_mgr.state if boot_mgr else "ONLINE"
             loop_active = orchestrator.autonomous_bot.is_active()
             watchdog_active = orchestrator.watchdog._monitor_thread is not None and orchestrator.watchdog._monitor_thread.is_alive()
-            
+            # Resolve the REAL execution mode (brain.json/profile). Reading the
+            # raw default context here made the header claim READ_ONLY while
+            # the bot was trading in PAPER mode.
+            context = orchestrator.get_execution_context()
+
             return jsonify({
                 "loop_active": loop_active,
                 "watchdog_active": watchdog_active,
                 "state": state,
-                "execution_mode": orchestrator.context.execution_mode.value,
-                "active_venue_id": orchestrator.context.active_venue_id,
+                "execution_mode": context.execution_mode.value,
+                "active_venue_id": context.active_venue_id,
             })
         except Exception as e:
             return jsonify({"error": str(e)}), 500
