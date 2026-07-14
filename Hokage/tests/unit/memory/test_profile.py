@@ -100,3 +100,39 @@ def test_profile_service_flow(tmp_path: Path):
     service.reload()
     prof3 = service.get_profile()
     assert prof3.commander_name == "NewElder"
+
+
+def test_profile_service_reads_utf8_bom_file(tmp_path: Path):
+    """A UTF-8 BOM (written by PowerShell/Notepad) must not silently discard
+    the commander's profile. Regression: BOM made json.load fail and Hokage
+    ran on the DEFAULT profile (1-symbol universe, 5L capital) for a session.
+    """
+    import json
+
+    resolver = PathResolver(tmp_path)
+    profile_file = resolver.resolve_profile_path()
+    profile_file.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "commander_name": "Anant",
+        "horizon": {"active_universe": ["CRUDE_OIL", "NIFTY"]},
+        "portfolio": {"starting_capital": 50000},
+    }
+    profile_file.write_bytes(b"\xef\xbb\xbf" + json.dumps(payload).encode("utf-8"))
+
+    service = ProfileService(resolver)
+    prof = service.get_profile()
+    assert prof.horizon.active_universe == ["CRUDE_OIL", "NIFTY"]
+    assert prof.portfolio.starting_capital == 50000.0
+
+
+def test_profile_starting_capital_reads_utf8_bom_file(tmp_path: Path):
+    import json
+    from bots.portfolio.store import profile_starting_capital
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    payload = {"portfolio": {"starting_capital": 50000}}
+    (config_dir / "commander_profile.json").write_bytes(
+        b"\xef\xbb\xbf" + json.dumps(payload).encode("utf-8")
+    )
+    assert profile_starting_capital(tmp_path) == 50000.0

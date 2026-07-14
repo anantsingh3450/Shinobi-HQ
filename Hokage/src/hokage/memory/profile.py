@@ -5,11 +5,14 @@ Enforces the persistent commander profile as Hokage's single source of truth.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 
 from shared.discovery.models import HorizonMode, ProgressionPhase, RiskMode
 from integrations.brokers.models import ExecutionMode
 from hokage.memory.resolver import PathResolver
+
+logger = logging.getLogger("Hokage.Profile")
 
 
 @dataclass
@@ -197,12 +200,20 @@ class ProfileService:
             return default_profile
 
         try:
-            with open(self.profile_path, "r", encoding="utf-8") as f:
+            # utf-8-sig: editors and PowerShell often write a UTF-8 BOM, which
+            # plain utf-8 json.load rejects. A silent fallback here once made
+            # Hokage trade the DEFAULT profile (1-symbol universe, 5L capital)
+            # while the commander's real profile sat unread on disk.
+            with open(self.profile_path, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
             profile = CommanderProfile.from_dict(data)
             self._cached_profile = profile
             return profile
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                f"Failed to parse commander profile at {self.profile_path}: {exc}. "
+                "Falling back to cached/default profile - commander settings are NOT applied."
+            )
             # Fallback to cached profile if available, otherwise default
             if self._cached_profile is not None:
                 return self._cached_profile

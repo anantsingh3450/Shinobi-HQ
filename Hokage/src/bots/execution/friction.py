@@ -272,7 +272,7 @@ def resolve_active_friction_profile(resolver: Any = None) -> FrictionProfile:
             profile_path = resolver.resolve_profile_path()
             if profile_path.exists():
                 import json
-                with open(profile_path, "r", encoding="utf-8") as f:
+                with open(profile_path, "r", encoding="utf-8-sig") as f:
                     data = json.load(f)
                     profile_val = data.get("friction_profile") or data.get("environment", {}).get("friction_profile")
                     if profile_val:

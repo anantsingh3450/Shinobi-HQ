@@ -19,7 +19,8 @@ def profile_starting_capital(brain_root: Path) -> float | None:
     """
     try:
         profile_path = brain_root / "config" / "commander_profile.json"
-        with profile_path.open("r", encoding="utf-8") as fh:
+        # utf-8-sig tolerates the UTF-8 BOM that PowerShell/editors prepend.
+        with profile_path.open("r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
         capital = float(data["portfolio"]["starting_capital"])
         return capital if capital > 0 else None
