@@ -204,10 +204,13 @@ class SqlitePortfolioStore:
             row = cursor.fetchone()
             if not row:
                 logger.info(f"Account {account_id} not found in SQLite, creating new default account.")
+                from bots.portfolio.store import profile_starting_capital
+                capital = profile_starting_capital(self.engine.brain_root)
+                balance = capital if capital is not None else default_balance
                 return Account(
                     account_id=account_id,
-                    initial_balance=default_balance,
-                    cash=default_balance
+                    initial_balance=balance,
+                    cash=balance
                 )
 
             # 2. Load positions for this account

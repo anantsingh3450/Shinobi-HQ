@@ -23,6 +23,26 @@ class KiteMarketDataProvider(MarketDataProvider):
     Conforms to the MarketDataProvider protocol.
     """
 
+    #: Universe symbols that trade as derivatives: mapped to the nearest-expiry
+    #: FUTURES contract on the real venue (Hokage trades futures/options, never
+    #: spot). Key = internal symbol; value = (kite exchange, underlying name).
+    _FUTURES_UNDERLYINGS: dict[str, tuple[str, str]] = {
+        "NIFTY": ("NFO", "NIFTY"),
+        "BANKNIFTY": ("NFO", "BANKNIFTY"),
+        "CRUDE_OIL": ("MCX", "CRUDEOIL"),
+        "CRUDEOIL": ("MCX", "CRUDEOIL"),
+        "GOLD": ("MCX", "GOLD"),
+        "SILVER": ("MCX", "SILVER"),
+        "NATURALGAS": ("MCX", "NATURALGAS"),
+    }
+
+    #: Index quote symbols (benchmarks like the circuit-breaker feed) — quoted
+    #: directly, never traded.
+    _INDEX_QUOTE_SYMBOLS: dict[str, tuple[str, str]] = {
+        "NIFTY 50": ("NSE", "NIFTY 50"),
+        "INDIA VIX": ("NSE", "INDIA VIX"),
+    }
+
     def __init__(self, connection_manager: KiteConnectionManager) -> None:
         """Initialize KiteMarketDataProvider.
 
@@ -31,22 +51,95 @@ class KiteMarketDataProvider(MarketDataProvider):
         """
         self._connection_manager = connection_manager
         self._watchlist: list[str] = []
+        #: (exchange, underlying) -> (resolved_on_date, tradingsymbol)
+        self._futures_symbol_cache: dict[tuple[str, str], tuple[object, str]] = {}
 
     @property
     def provider_name(self) -> str:
         return "kite"
 
+    def _nearest_futures_symbol(self, kite_exchange: str, underlying: str) -> str:
+        """Resolve the nearest-expiry (front-month) futures tradingsymbol.
+
+        Cached per calendar day so expired contracts roll automatically at the
+        next trading day's first quote.
+        """
+        from datetime import date
+        today = date.today()
+        cached = self._futures_symbol_cache.get((kite_exchange, underlying))
+        if cached and cached[0] == today:
+            return cached[1]
+
+        client = self._connection_manager.get_kite_client()
+        contracts = client.instruments(kite_exchange)
+        futures = []
+        for inst in contracts:
+            if inst.get("name") != underlying or inst.get("instrument_type") != "FUT":
+                continue
+            expiry = inst.get("expiry")
+            expiry_date = expiry.date() if hasattr(expiry, "date") and not isinstance(expiry, date) else expiry
+            if expiry_date and expiry_date >= today:
+                futures.append((expiry_date, inst["tradingsymbol"]))
+        if not futures:
+            raise ValueError(
+                f"No live futures contract found for {underlying} on {kite_exchange}."
+            )
+        futures.sort()
+        tradingsymbol = futures[0][1]
+        self._futures_symbol_cache[(kite_exchange, underlying)] = (today, tradingsymbol)
+        return tradingsymbol
+
+    def _kite_quote_symbol(self, market: str) -> str:
+        """Map an internal market symbol to the real Kite quote symbol.
+
+        Derivative universe symbols resolve to their front-month futures
+        contract; known indices resolve to the exchange index symbol; anything
+        else falls back to NSE equity naming.
+        """
+        market_upper = market.upper().strip()
+        if market_upper in self._INDEX_QUOTE_SYMBOLS:
+            exch, sym = self._INDEX_QUOTE_SYMBOLS[market_upper]
+            return f"{exch}:{sym}"
+        if market_upper in self._FUTURES_UNDERLYINGS:
+            exch, underlying = self._FUTURES_UNDERLYINGS[market_upper]
+            return f"{exch}:{self._nearest_futures_symbol(exch, underlying)}"
+        inst = self.resolve_instrument(market)
+        exchange_str = inst.exchange.value if inst.exchange.value in ("NSE", "BSE", "MCX") else "NSE"
+        return f"{exchange_str}:{inst.symbol}"
+
     def resolve_instrument(self, market: str) -> Instrument:
-        """Resolve a market string (e.g. INFY, NSE:INFY) into an Instrument."""
+        """Resolve a market string (e.g. INFY, NSE:INFY) into an Instrument.
+
+        The Instrument keeps the INTERNAL symbol (e.g. CRUDE_OIL) so tracking,
+        risk, and exit bookkeeping stay keyed consistently; only outbound Kite
+        API calls use the mapped tradingsymbol.
+        """
         parts = market.split(":")
         if len(parts) == 2:
             exchange_str = parts[0].upper()
             symbol = parts[1]
         else:
-            exchange_str = "NSE"
+            exchange_str = ""
             symbol = market
 
-        exchange = Exchange.NSE if exchange_str == "NSE" else Exchange.BSE
+        symbol_upper = symbol.upper().strip()
+        if symbol_upper in self._FUTURES_UNDERLYINGS:
+            fut_exchange, _ = self._FUTURES_UNDERLYINGS[symbol_upper]
+            if fut_exchange == "MCX":
+                return Instrument(
+                    symbol=symbol,
+                    asset_class=AssetClass.COMMODITY,
+                    exchange=Exchange.MCX,
+                    currency="INR",
+                )
+            return Instrument(
+                symbol=symbol,
+                asset_class=AssetClass.INDEX,
+                exchange=Exchange.NSE,
+                currency="INR",
+            )
+
+        exchange = Exchange.BSE if exchange_str == "BSE" else Exchange.NSE
         return Instrument(
             symbol=symbol,
             asset_class=AssetClass.INDIAN_EQUITY,
@@ -90,9 +183,7 @@ class KiteMarketDataProvider(MarketDataProvider):
 
         client = self._connection_manager.get_kite_client()
         inst = self.resolve_instrument(market)
-
-        exchange_str = inst.exchange.value if inst.exchange.value in ("NSE", "BSE", "MCX") else "NSE"
-        kite_symbol = f"{exchange_str}:{inst.symbol}"
+        kite_symbol = self._kite_quote_symbol(market)
 
         max_retries = 3
         quotes = {}
@@ -167,8 +258,7 @@ class KiteMarketDataProvider(MarketDataProvider):
         
         client = self._connection_manager.get_kite_client()
         inst = request.instrument
-        exchange_str = inst.exchange.value if inst.exchange.value in ("NSE", "BSE", "MCX") else "NSE"
-        kite_symbol = f"{exchange_str}:{inst.symbol}"
+        kite_symbol = self._kite_quote_symbol(inst.symbol)
 
         max_retries = 3
         quotes = {}

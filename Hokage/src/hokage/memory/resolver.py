@@ -1,14 +1,23 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
 class PathResolver:
-    """Resolves directory paths for persistence layers under a specific brain root."""
+    """Resolves directory paths for persistence layers under a specific brain root.
+
+    When no explicit root is given, the HOKAGE_BRAIN_ROOT environment variable
+    wins over the CWD-relative default. This is the seam that relocates the
+    brain (portable deployments, isolated test sandboxes); without it, any
+    process started from the repo root — including the test suite — writes
+    into the production brain.
+    """
 
     def __init__(self, brain_root: Path | None = None) -> None:
         if brain_root is None:
-            self._brain_root = Path("hokage_brain").resolve()
+            env_root = os.environ.get("HOKAGE_BRAIN_ROOT", "").strip()
+            self._brain_root = Path(env_root).resolve() if env_root else Path("hokage_brain").resolve()
         else:
             self._brain_root = Path(brain_root).resolve()
 

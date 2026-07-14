@@ -19,6 +19,14 @@ _os.environ.setdefault("HOKAGE_DISABLE_LLM", "true")
 _os.environ.setdefault("HOKAGE_DISABLE_TELEGRAM", "true")
 _os.environ.pop("TELEGRAM_BOT_TOKEN", None)
 _os.environ.pop("TELEGRAM_CHAT_ID", None)
+# Sandbox the ENTIRE brain for the suite. PathResolver defaults to the
+# CWD-relative "hokage_brain" when no explicit root is passed, so any test
+# building a default orchestrator/store used to write trades, positions, and
+# audit rows straight into the PRODUCTION brain (2026-07-13 incident: pytest
+# runs planted GBP/USD ghost positions in hokage.db that the live bot then
+# tried to square off all evening). One throwaway root per test session.
+import tempfile as _tempfile
+_os.environ["HOKAGE_BRAIN_ROOT"] = _tempfile.mkdtemp(prefix="hokage_test_brain_")
 
 from dataclasses import dataclass
 from datetime import UTC, datetime

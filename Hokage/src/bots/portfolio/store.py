@@ -10,6 +10,23 @@ from pathlib import Path
 from bots.portfolio.models import Account
 
 
+def profile_starting_capital(brain_root: Path) -> float | None:
+    """Read the commander profile's configured paper starting capital.
+
+    Returns None when the profile is absent or malformed so callers fall
+    back to their own default. Reading the JSON directly (rather than via
+    ProfileService) keeps the persistence layer import-light.
+    """
+    try:
+        profile_path = brain_root / "config" / "commander_profile.json"
+        with profile_path.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        capital = float(data["portfolio"]["starting_capital"])
+        return capital if capital > 0 else None
+    except Exception:
+        return None
+
+
 class JsonPortfolioStore:
     """Persists Account state as a JSON file under a configured directory."""
 
@@ -82,11 +99,15 @@ class JsonPortfolioStore:
 
         filepath = self.account_file(account_id)
         if not filepath.exists():
-            # Initialize new account
+            # Initialize new account. The commander profile's starting capital
+            # wins over the hardcoded default — a 500k profile silently booting
+            # a 10k paper account once starved every entry of cash.
+            capital = profile_starting_capital(self._output_directory.parent)
+            balance = capital if capital is not None else default_balance
             return Account(
                 account_id=account_id,
-                initial_balance=default_balance,
-                cash=default_balance,
+                initial_balance=balance,
+                cash=balance,
             )
 
         with filepath.open("r", encoding="utf-8") as fh:

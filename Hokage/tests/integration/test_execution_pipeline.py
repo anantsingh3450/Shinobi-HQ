@@ -1,4 +1,4 @@
-"""Integration tests for the end-to-end Hokage execution pipeline."""
+﻿"""Integration tests for the end-to-end Hokage execution pipeline."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -77,7 +77,7 @@ def test_trade_command_syncs_portfolio_state(tmp_path: Path, monkeypatch: pytest
     import json
     account_file = tmp_path / "portfolio" / "account_paper.json"
     assert account_file.exists(), (
-        "account_paper.json must be created by trade command — "
+        "account_paper.json must be created by trade command â€” "
         "previously this was missing, leaving portfolio state stale"
     )
 
@@ -90,7 +90,7 @@ def test_trade_command_syncs_portfolio_state(tmp_path: Path, monkeypatch: pytest
     }
     assert len(open_positions) == len(trade_lines), (
         f"open position count ({len(open_positions)}) must equal "
-        f"trade line count ({len(trade_lines)}) — portfolio diverged from trade log"
+        f"trade line count ({len(trade_lines)}) â€” portfolio diverged from trade log"
     )
 
     # 5. The position in account matches the trade_id returned
@@ -138,7 +138,7 @@ def test_multiple_trade_commands_keep_portfolio_in_sync(
         f"expected {len(topics)} trade records, got {len(trade_lines)}"
     )
 
-    # Account must have been updated for each trade — no divergence
+    # Account must have been updated for each trade â€” no divergence
     account_file = tmp_path / "portfolio" / "account_paper.json"
     assert account_file.exists()
     account_data = json.loads(account_file.read_text(encoding="utf-8"))
@@ -149,7 +149,7 @@ def test_multiple_trade_commands_keep_portfolio_in_sync(
     }
     assert len(open_positions) == len(topics), (
         f"portfolio has {len(open_positions)} open positions but "
-        f"{len(topics)} trades were executed — state is out of sync"
+        f"{len(topics)} trades were executed â€” state is out of sync"
     )
 
 
@@ -191,7 +191,7 @@ def test_trade_command_empty_and_unknown_handling() -> None:
 
 
 def test_full_trade_pipeline_with_backtest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Test the full pipeline: Research → Strategy → Backtest → Execution."""
+    """Test the full pipeline: Research â†’ Strategy â†’ Backtest â†’ Execution."""
     # Arrange: Redirect paper trades directory to a temporary folder
     monkeypatch.setattr(hokage.orchestrator.pipeline, "_PAPER_TRADES_DIR", tmp_path)
     monkeypatch.setattr(hokage.orchestrator.pipeline, "_PORTFOLIO_DIR", tmp_path / "portfolio")
@@ -202,7 +202,7 @@ def test_full_trade_pipeline_with_backtest(tmp_path: Path, monkeypatch: pytest.M
     router = CommandRouter(orchestrator)
 
     # Act: Process a full-trade command
-    result = router.handle_command("full-trade NIFTY momentum strategy")
+    result = router.handle_command("full-trade CRUDE_OIL momentum strategy")
 
     # Assert: Verify backtest results are in the output
     assert isinstance(result, dict)
@@ -224,10 +224,10 @@ def test_full_trade_pipeline_with_backtest(tmp_path: Path, monkeypatch: pytest.M
     # The generator resolves the concrete symbol from the query text; the old
     # "MARKET" placeholder is no longer executable (it once created a ghost
     # paper position at a default price).
-    assert result["market"] == "NIFTY"
+    assert result["market"] == "CRUDE_OIL"
     assert result["direction"] in ("LONG", "SHORT")
     assert result["quantity"] > 0
-    assert result["entry_price"] == 24300.0  # Mock price table value for NIFTY
+    assert result["entry_price"] == 6800.0  # Mock price table value for CRUDE_OIL
     assert result["status"] == "OPEN"
     assert result["mode"] == "PAPER"
     assert result["trade_id"]

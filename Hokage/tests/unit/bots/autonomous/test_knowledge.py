@@ -1,8 +1,14 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import pytest
+from pathlib import Path
 from bots.autonomous.knowledge import KnowledgeManager
+
+# The six real production knowledge modules live in the repo's brain. The
+# suite's default brain root is a hermetic sandbox (HOKAGE_BRAIN_ROOT), so
+# these READ-ONLY library tests must point at the production root explicitly.
+_PRODUCTION_BRAIN = Path(__file__).resolve().parents[4] / "hokage_brain"
 
 
 @pytest.fixture
@@ -189,7 +195,7 @@ def test_knowledge_manager_search_mental_models(temp_brain):
 def test_knowledge_manager_real_production_modules_load():
     """Verify that all six real production modules load successfully."""
     # Instantiating with default paths (resolves to actual hokage_brain root)
-    manager = KnowledgeManager()
+    manager = KnowledgeManager(brain_root=_PRODUCTION_BRAIN)
     modules = manager.list_modules()
     
     # Check that all six modules are registered and loaded
@@ -217,7 +223,7 @@ def test_knowledge_manager_real_production_modules_load():
 
 def test_knowledge_manager_market_wizards_search():
     """Verify loading and specific search capabilities of the Market Wizards module."""
-    manager = KnowledgeManager()
+    manager = KnowledgeManager(brain_root=_PRODUCTION_BRAIN)
     
     # Search doctrine
     res_doc = manager.search_doctrines("Preserve Capital")
@@ -240,7 +246,7 @@ def test_knowledge_manager_market_wizards_search():
 
 def test_knowledge_manager_one_up_on_wall_street_search():
     """Verify loading and specific search capabilities of the One Up On Wall Street module."""
-    manager = KnowledgeManager()
+    manager = KnowledgeManager(brain_root=_PRODUCTION_BRAIN)
     
     # Search investor doctrine
     res_doc = manager.search_doctrines("Invest In What You Understand")
@@ -263,7 +269,7 @@ def test_knowledge_manager_one_up_on_wall_street_search():
 
 def test_knowledge_manager_common_stocks_and_uncommon_profits_search():
     """Verify loading and specific search capabilities of the Philip Fisher module."""
-    manager = KnowledgeManager()
+    manager = KnowledgeManager(brain_root=_PRODUCTION_BRAIN)
     
     # Search research doctrine
     res_doc = manager.search_doctrines("Talk To The Ecosystem")
@@ -286,7 +292,7 @@ def test_knowledge_manager_common_stocks_and_uncommon_profits_search():
 
 def test_knowledge_manager_the_intelligent_investor_search():
     """Verify loading and specific search capabilities of the Benjamin Graham module."""
-    manager = KnowledgeManager()
+    manager = KnowledgeManager(brain_root=_PRODUCTION_BRAIN)
     
     # Search investor doctrine
     res_doc = manager.search_doctrines("Margin of Safety First")
