@@ -106,6 +106,54 @@ def test_trail_lock_gives_back_at_most_1000_rupees(bot):
     assert not hit
 
 
+def test_profit_lock_breakeven_ratchet_arms_at_20pct(bot):
+    # qty 20 keeps TRAIL_LOCK dark (peak profit 44*20=880 < 1000): this is the
+    # %-based PROFIT_LOCK alone. Peak +22% arms stage 1: floor = entry + 10%
+    # of the 44-point peak gain = 204.4 — a winner can no longer lose.
+    tracking = {"entry_price": 200.0, "peak_price": 244.0}
+    hit, reason, out = _run(bot, entry=200.0, current=204.0, tracking=tracking, qty=20.0)
+    assert hit and "PROFIT_LOCK" in reason
+    assert out["stop_price"] == pytest.approx(204.4)
+
+    # Above the floor: still riding (room for option noise).
+    tracking = {"entry_price": 200.0, "peak_price": 244.0}
+    hit, _, _ = _run(bot, entry=200.0, current=206.0, tracking=tracking, qty=20.0)
+    assert not hit
+
+
+def test_profit_lock_keeps_half_the_gain_at_40pct(bot):
+    # Peak +45% arms stage 2: floor = entry + 50% of the 90-point peak gain
+    # = 245. qty 10 keeps the rupee TRAIL_LOCK dark (900 < 1000).
+    tracking = {"entry_price": 200.0, "peak_price": 290.0}
+    hit, reason, _ = _run(bot, entry=200.0, current=244.0, tracking=tracking, qty=10.0)
+    assert hit and "PROFIT_LOCK" in reason
+
+    tracking = {"entry_price": 200.0, "peak_price": 290.0}
+    hit, _, _ = _run(bot, entry=200.0, current=246.0, tracking=tracking, qty=10.0)
+    assert not hit
+
+
+def test_profit_lock_floor_only_ratchets_up(bot):
+    # First tick stores the floor; a second tick must never lower it, and a
+    # breach of the stored floor exits even if peak context were lost.
+    tracking = {"entry_price": 200.0, "peak_price": 290.0}
+    hit, _, tracking = _run(bot, entry=200.0, current=250.0, tracking=tracking, qty=10.0)
+    assert not hit
+    assert tracking["stop_price"] == pytest.approx(245.0)
+
+    hit, reason, _ = _run(bot, entry=200.0, current=244.0, tracking=tracking, qty=10.0)
+    assert hit and "PROFIT_LOCK" in reason
+
+
+def test_armed_winner_cannot_round_trip_to_a_loss(bot):
+    # Premium ran +20.5% then collapsed toward entry: the breakeven ratchet
+    # exits near entry — the old ladder would have ridden this to the -25%
+    # hard backstop (a +20% winner becoming a -25% loser).
+    tracking = {"entry_price": 200.0, "peak_price": 241.0}
+    hit, reason, _ = _run(bot, entry=200.0, current=199.0, tracking=tracking, qty=5.0)
+    assert hit and "PROFIT_LOCK" in reason
+
+
 def test_mcx_option_squares_off_at_2315_not_1520(bot):
     # 16:00 IST: NSE options are already flat, MCX crude options still live.
     bot._now_ist = lambda: datetime(2026, 7, 14, 16, 0, tzinfo=timezone.utc)

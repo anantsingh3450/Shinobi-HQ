@@ -114,8 +114,24 @@ class VolumeEngine:
     # tape by design, so demanding a 1.2x surge starved the flagship family
     # all day. Breakouts keep the surge bar; trend entries only reject a
     # genuinely dead tape.
+    #
+    # These ratios are only meaningful because the caller now supplies a
+    # TIME-OF-DAY-NORMALISED baseline (see _get_volume_context): the observed
+    # ratio compares today's cumulative volume against the typical cumulative
+    # volume at the same clock time. Against the old whole-session denominator
+    # the ratio just tracked the clock — it topped out at 0.87x on NIFTY, so
+    # BREAKOUT_MIN_RATIO was unreachable at every hour of every day and the
+    # breakout family could never fire. 1.0x now means "normal for this time
+    # of day"; do not reinterpret these numbers without re-reading that method.
+    #
+    # Commander-approved 2026-07-15, AFTER the baseline was corrected: 0.8x was
+    # itself calibrated against the broken clock-denominator, so it was never
+    # evidence-based. Against an honest baseline 0.8x rejects a tape running at
+    # 80% of typical — quiet, not dead — which is stricter than this gate's
+    # stated intent. 0.5x is the "genuinely dead tape" line the comment above
+    # always described. Breakout keeps 1.2x: a surge bar should demand a surge.
     BREAKOUT_MIN_RATIO = 1.2
-    TREND_MIN_RATIO = 0.8
+    TREND_MIN_RATIO = 0.5
 
     def validate_breakout(
         self,

@@ -93,19 +93,23 @@ def test_portfolio_awareness_metrics(mock_cache, mock_price_source):
     awareness = PortfolioAwarenessEngine(venue, mock_cache, mock_price_source)
     metrics = awareness.compute_portfolio_metrics()
 
-    # Verify basic computations
+    # Verify basic computations. total_assets is the venue's EQUITY, not
+    # cash + position value: the paper cash model never debits entries, so
+    # cash+value double-counts every open position (the 2026-07-16 fake
+    # kill-switch spike). This fixture's balance declares equity 150,000.
     total_value = (10 * 4100.0) + (2 * 1550.0)  # 41000 + 3100 = 44100
-    total_assets = total_value + 100000.0       # 144100
+    total_assets = 150000.0
     assert metrics["total_assets"] == total_assets
     assert metrics["total_value"] == total_value
     
-    # Exposure percentages
-    expected_invested = (total_value / total_assets) * 100.0
+    # Exposure percentages: invested is the complement of the cash share of
+    # equity (cash 100,000 of 150,000 equity -> 33.33% invested).
+    expected_invested = 100.0 - (100000.0 / total_assets) * 100.0
     assert math.isclose(metrics["invested_capital_pct"], expected_invested, abs_tol=0.1)
 
-    # Sector exposure
+    # Sector exposure (position value over equity)
     assert "it" in metrics["sector_exposure"]
-    assert math.isclose(metrics["sector_exposure"]["it"], expected_invested, abs_tol=0.1)
+    assert math.isclose(metrics["sector_exposure"]["it"], (total_value / total_assets) * 100.0, abs_tol=0.1)
 
     # Portfolio Volatility
     assert metrics["portfolio_volatility"] >= 0.0

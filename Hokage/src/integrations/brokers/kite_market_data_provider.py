@@ -36,11 +36,20 @@ class KiteMarketDataProvider(MarketDataProvider):
         "NATURALGAS": ("MCX", "NATURALGAS"),
     }
 
-    #: Index quote symbols (benchmarks like the circuit-breaker feed) — quoted
-    #: directly, never traded.
+    #: Index quote symbols (benchmarks like the circuit-breaker feed, and BSE
+    #: index spots). Quoted directly — these have no futures chain to read a
+    #: spot from, unlike the NFO/MCX underlyings above.
     _INDEX_QUOTE_SYMBOLS: dict[str, tuple[str, str]] = {
         "NIFTY 50": ("NSE", "NIFTY 50"),
         "INDIA VIX": ("NSE", "INDIA VIX"),
+        "SENSEX": ("BSE", "SENSEX"),
+    }
+
+    #: Index underlyings whose spot is quoted on BSE and whose options list on
+    #: BFO. Kept separate from _FUTURES_UNDERLYINGS: there is no BSE index
+    #: futures contract to derive a spot from, so the index itself is the quote.
+    _BSE_INDEX_UNDERLYINGS: dict[str, str] = {
+        "SENSEX": "SENSEX",
     }
 
     def __init__(self, connection_manager: KiteConnectionManager) -> None:
@@ -90,9 +99,16 @@ class KiteMarketDataProvider(MarketDataProvider):
         return tradingsymbol
 
     #: Option tradingsymbol prefixes and the exchange their contracts live on.
+    #: Prefix -> exchange for quoting an option tradingsymbol. BSE index options
+    #: (SENSEX/BANKEX) live on BFO, a different segment from NFO; without these
+    #: a resolved SENSEX contract could not be quoted and every entry died at the
+    #: premium fetch. Longer prefixes MUST precede shorter ones they contain
+    #: ("BANKNIFTY" before "NIFTY"), or the wrong exchange wins the match.
     _OPTION_EXCHANGE_PREFIXES: tuple[tuple[str, str], ...] = (
-        ("NIFTY", "NFO"),
         ("BANKNIFTY", "NFO"),
+        ("NIFTY", "NFO"),
+        ("SENSEX", "BFO"),
+        ("BANKEX", "BFO"),
         ("CRUDEOIL", "MCX"),
         ("GOLD", "MCX"),
         ("SILVER", "MCX"),
@@ -122,6 +138,27 @@ class KiteMarketDataProvider(MarketDataProvider):
         exchange_str = inst.exchange.value if inst.exchange.value in ("NSE", "BSE", "MCX") else "NSE"
         return f"{exchange_str}:{inst.symbol}"
 
+    #: MCX publishes commodity option lot sizes as 1 (per-contract) in the
+    #: Kite instruments dump for both options AND their underlying futures —
+    #: there is no way to read the real economic lot size from the API. This
+    #: is MCX's own published contract specification (unit of trading per
+    #: exchange circulars), not a Hokage assumption: CRUDEOIL = 100 barrels.
+    #: Only commodities Hokage is authorised to trade need an entry here.
+    _MCX_CONTRACT_MULTIPLIER: dict[str, float] = {
+        "CRUDEOIL": 100.0,
+    }
+
+    #: Refuse to buy an option with less life than this. The resolver picks the
+    #: NEAREST expiry, and MCX/BFO list contracts expiring the SAME DAY: on
+    #: 2026-07-15 Hokage bought CRUDEOIL26JUL7750CE (expiry 2026-07-16) — an OTM
+    #: option with one day left, at ~Rs 63 premium against a 7660 spot. Cheap
+    #: because it was nearly dead, not because it was good. Buying options means
+    #: theta is already the enemy; a 0-1 DTE contract is a lottery ticket whose
+    #: premium decays to zero within hours, and it exits at breakeven or -100%.
+    #: 2 days is the floor that removes expiry-day roulette while still allowing
+    #: the weekly index cycles (NIFTY/SENSEX) the strategies actually trade.
+    _MIN_DAYS_TO_EXPIRY = 2
+
     def resolve_option_contract(
         self,
         underlying: str,
@@ -142,6 +179,8 @@ class KiteMarketDataProvider(MarketDataProvider):
         mapping = {
             "NIFTY": ("NFO", "NIFTY"),
             "BANKNIFTY": ("NFO", "BANKNIFTY"),
+            "SENSEX": ("BFO", "SENSEX"),
+            "BANKEX": ("BFO", "BANKEX"),
             "CRUDEOIL": ("MCX", "CRUDEOIL"),
             "GOLD": ("MCX", "GOLD"),
             "SILVER": ("MCX", "SILVER"),
@@ -162,7 +201,9 @@ class KiteMarketDataProvider(MarketDataProvider):
             expiry = inst.get("expiry")
             expiry_date = expiry.date() if hasattr(expiry, "date") and not isinstance(expiry, date) else expiry
             strike = float(inst.get("strike") or 0.0)
-            if not expiry_date or expiry_date < today or strike <= 0:
+            if not expiry_date or strike <= 0:
+                continue
+            if (expiry_date - today).days < self._MIN_DAYS_TO_EXPIRY:
                 continue
             candidates.append((expiry_date, abs(strike - spot_price), strike, inst))
         if not candidates:
@@ -171,12 +212,24 @@ class KiteMarketDataProvider(MarketDataProvider):
         nearest_expiry = min(c[0] for c in candidates)
         atm = min((c for c in candidates if c[0] == nearest_expiry), key=lambda c: c[1])
         contract = atm[3]
+        option_lot = float(contract.get("lot_size") or 0.0)
+
+        # Kite reports MCX commodity option lot_size as 1 (per-contract) —
+        # confirmed against the live instruments dump for both options AND
+        # their underlying futures, so there is no larger lot to borrow from
+        # within the dump itself. Apply MCX's own published contract-size
+        # multiplier instead (e.g. 100 barrels/lot for CRUDEOIL).
+        if option_lot <= 1.0 and kite_exchange == "MCX":
+            multiplier = self._MCX_CONTRACT_MULTIPLIER.get(chain_name)
+            if multiplier:
+                option_lot = multiplier
+
         return {
             "tradingsymbol": contract["tradingsymbol"],
             "exchange": kite_exchange,
             "strike": atm[2],
             "expiry": nearest_expiry,
-            "lot_size": float(contract.get("lot_size") or 0.0),
+            "lot_size": option_lot,
         }
 
     def resolve_instrument(self, market: str) -> Instrument:
@@ -208,6 +261,17 @@ class KiteMarketDataProvider(MarketDataProvider):
                 symbol=symbol,
                 asset_class=AssetClass.INDEX,
                 exchange=Exchange.NSE,
+                currency="INR",
+            )
+
+        # BSE indices are quoted on BSE and traded on BFO. Without this they fell
+        # through to the equity default below and were labelled NSE/INDIAN_EQUITY
+        # — the wrong exchange for every downstream venue and gate decision.
+        if symbol_upper in self._BSE_INDEX_UNDERLYINGS:
+            return Instrument(
+                symbol=symbol,
+                asset_class=AssetClass.INDEX,
+                exchange=Exchange.BSE,
                 currency="INR",
             )
 
@@ -357,10 +421,21 @@ class KiteMarketDataProvider(MarketDataProvider):
         }
         kite_interval = interval_map.get(request.interval, "day")
 
+        # Kite reads historical_data timestamps as EXCHANGE-LOCAL (IST) and
+        # drops any tzinfo. Callers pass UTC (datetime.now(timezone.utc)), so a
+        # 05:01 UTC "to_date" was read as 05:01 IST — before the 09:15 open —
+        # and silently truncated the ENTIRE current session. Every intraday
+        # consumer (bias engine, ATR) then ran on yesterday's tape. Convert to
+        # IST so "now" means now on the exchange's clock.
+        from integrations.brokers.session_manager import KolkataTime
+        _ist = KolkataTime()
+        from_date = request.start.astimezone(_ist) if request.start.tzinfo else request.start
+        to_date = request.end.astimezone(_ist) if request.end.tzinfo else request.end
+
         candles_data = client.historical_data(
             instrument_token=token,
-            from_date=request.start,
-            to_date=request.end,
+            from_date=from_date,
+            to_date=to_date,
             interval=kite_interval
         )
 

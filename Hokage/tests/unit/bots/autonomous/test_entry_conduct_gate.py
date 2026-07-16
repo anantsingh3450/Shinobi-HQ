@@ -23,16 +23,28 @@ def bot():
     return b
 
 
-def test_midday_blackout_blocks_nse_entries(bot):
+def test_midday_is_open_to_the_league(bot):
+    """Commander-approved 2026-07-16: the GLOBAL midday blackout is retired.
+    It was cloned from the Malfoy benchmark and blocked every strategy for two
+    hours a day, starving evolution of data. Malfoy keeps the blackout inside
+    its own entry module (its identity); the shared gate no longer enforces it."""
     bot._now_ist = lambda: datetime(2026, 7, 14, 12, 15, tzinfo=timezone.utc)
-    ok, reason = bot._entry_conduct_gate("NIFTY", "long")
-    assert not ok and "blackout" in reason.lower()
+    ok, _ = bot._entry_conduct_gate("NIFTY", "long")
+    assert ok
 
 
 def test_late_session_cutoff_blocks_nse_entries(bot):
-    bot._now_ist = lambda: datetime(2026, 7, 14, 14, 30, tzinfo=timezone.utc)
+    # Cutoff widened to 15:00 IST (commander-approved 2026-07-16); 15:10 is out.
+    bot._now_ist = lambda: datetime(2026, 7, 14, 15, 10, tzinfo=timezone.utc)
     ok, reason = bot._entry_conduct_gate("NIFTY", "long")
     assert not ok and "cutoff" in reason.lower()
+
+
+def test_afternoon_before_1500_is_open(bot):
+    # 14:30 used to be blocked by the old 14:00 cutoff — now inside the window.
+    bot._now_ist = lambda: datetime(2026, 7, 14, 14, 30, tzinfo=timezone.utc)
+    ok, _ = bot._entry_conduct_gate("NIFTY", "long")
+    assert ok
 
 
 def test_mcx_symbols_exempt_from_nse_windows(bot):

@@ -205,6 +205,15 @@ class OrderRequest:
     trigger_price: float | None = None
     venue_id: str = "paper_main"
 
+    #: An order that may only REDUCE existing exposure, never open new exposure.
+    #: Exits must set this. Without it an exit whose position is already gone is
+    #: executed as a fresh opposite-side entry, which then needs its own exit —
+    #: a self-feeding position factory. That is exactly what ran on 2026-07-15:
+    #: the EOD square-off re-fired on positions it had already closed, minting
+    #: 207 phantom CRUDEOIL longs and 377 exit notifications before it was
+    #: killed by hand.
+    reduce_only: bool = False
+
     # Audit trail fields
     strategy_id: str | None = None
     execution_reason: str | None = None

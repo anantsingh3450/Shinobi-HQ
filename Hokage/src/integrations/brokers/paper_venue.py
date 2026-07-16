@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+from dataclasses import replace
 from pathlib import Path
 
 from bots.execution.engine.paper_engine import PaperEngine
@@ -33,6 +35,8 @@ from integrations.data.interfaces import MarketDataProvider
 from integrations.data.models import AssetClass, Exchange, Instrument
 from integrations.tax.mock_provider import SimulatedTaxProvider
 from integrations.tax.store import JsonTaxLedger
+
+logger = logging.getLogger("Hokage.PaperVenue")
 
 
 class PaperVenue(BaseVenue):
@@ -97,11 +101,13 @@ class PaperVenue(BaseVenue):
         # Database and ledger stores (isolated by venue ID if not paper_main)
         if self._venue_id == "paper_main":
             self._trade_store = JsonTradeStore(trades_dir)
-            self._portfolio_store = JsonPortfolioStore(portfolio_dir)
+            self._portfolio_store = JsonPortfolioStore(portfolio_dir, brain_root=self._resolver.resolve_brain_root())
             self._tax_ledger = JsonTaxLedger(tax_dir)
         else:
             self._trade_store = JsonTradeStore(trades_dir / self._venue_id)
-            self._portfolio_store = JsonPortfolioStore(portfolio_dir / self._venue_id)
+            self._portfolio_store = JsonPortfolioStore(
+                portfolio_dir / self._venue_id, brain_root=self._resolver.resolve_brain_root()
+            )
             self._tax_ledger = JsonTaxLedger(tax_dir / self._venue_id)
         self._tax_provider = SimulatedTaxProvider()
 
@@ -147,12 +153,62 @@ class PaperVenue(BaseVenue):
             last_checked=utc_now()
         )
 
+    def _open_opposing_quantity(self, request: OrderRequest) -> float:
+        """Quantity of open exposure this order would close, in this market.
+
+        A BUY reduces open SHORTs; a SELL reduces open LONGs. Anything beyond
+        this quantity would be NEW exposure.
+        """
+        account = self._portfolio_store.load_account(self._account_id)
+        closes = TradeDirection.SHORT if request.side == OrderSide.BUY else TradeDirection.LONG
+        market = request.instrument.symbol
+        return sum(
+            pos.quantity
+            for pos in account.positions.values()
+            if pos.market == market
+            and pos.status == TradeStatus.OPEN
+            and pos.direction == closes
+        )
+
     def place_order(self, request: OrderRequest) -> OrderResponse:
         """Route order request to the paper execution pipeline."""
         if self._context.execution_mode not in (ExecutionMode.PAPER, ExecutionMode.HYBRID):
             raise RuntimeError("Paper trading is not active in the current execution mode.")
         if self._connection_state != ConnectionState.CONNECTED:
             raise RuntimeError("Venue is not connected.")
+
+        # 0. Reduce-only orders must never open exposure. Every order here is
+        # mapped to an *opening* proposal ("long"/"short") and executed as a new
+        # trade; netting only happens afterwards, inside Account.apply_trade. So
+        # an exit with nothing left to close does not become a no-op — it opens
+        # a fresh position on the opposite side, which the monitor then tries to
+        # exit, minting another. On 2026-07-15 that ran away: 207 phantom
+        # CRUDEOIL longs and 377 exit notifications from one real position.
+        # Reject instead, and report the rejection so the caller can stop.
+        if request.reduce_only:
+            closable = self._open_opposing_quantity(request)
+            if closable <= 0:
+                logger.info(
+                    "Reduce-only %s %s rejected: no open exposure left to close.",
+                    request.side.value, request.instrument.symbol,
+                )
+                return OrderResponse(
+                    venue_order_id="",
+                    venue_id=self._venue_id,
+                    instrument=request.instrument,
+                    side=request.side,
+                    status=OrderStatus.REJECTED,
+                    quantity=request.quantity,
+                    filled_quantity=0.0,
+                    average_price=0.0,
+                    error_message=(
+                        f"Reduce-only order for {request.instrument.symbol} has no open "
+                        f"opposing position to close; refusing to open new exposure."
+                    ),
+                )
+            if request.quantity > closable:
+                # Clamp rather than reject: close what genuinely remains open.
+                request = replace(request, quantity=closable)
 
         # 1. Map OrderRequest to StrategyProposal
         proposal = StrategyProposal(

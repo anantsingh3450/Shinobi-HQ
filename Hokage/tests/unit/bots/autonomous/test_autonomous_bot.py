@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
+import pandas as pd
 import pytest
 
 from bots.autonomous.autonomous_bot import AutonomousTradingBot
@@ -271,6 +272,10 @@ def test_autonomous_bot_monitor_exit_long_tsl(mock_orchestrator):
 
     # Real price so _get_atr_for_symbol returns a numeric ATR (fallback = price*1.5%).
     mock_orchestrator.price_source.get_price.return_value = 2800.0
+    # The monitor now marks positions to the LIVE quote (the stored book price
+    # froze at entry in production and blinded every premium/price exit rung),
+    # so the fixture's quote must tell the same story as the position.
+    mock_orchestrator.price_source.get_quote.return_value.price = 2800.0
     # Pin the exit clock to mid-session (11:00 IST) so the EOD square-off does not fire.
     bot._now_ist = lambda: datetime(2026, 7, 13, 11, 0, tzinfo=timezone.utc)
 
@@ -310,6 +315,8 @@ def test_autonomous_bot_monitor_take_profit(mock_orchestrator):
 
     # Real price so _get_atr_for_symbol returns a numeric ATR (fallback = price*1.5%).
     mock_orchestrator.price_source.get_price.return_value = 1150.0
+    # Live-quote mark-to-market: the quote must agree with the position price.
+    mock_orchestrator.price_source.get_quote.return_value.price = 1150.0
     # Pin the exit clock to mid-session (11:00 IST) so the EOD square-off does not fire.
     bot._now_ist = lambda: datetime(2026, 7, 13, 11, 0, tzinfo=timezone.utc)
 
@@ -334,24 +341,72 @@ def _run_entry_scan(mock_orchestrator, tmp_path, place_order_side_effect=None):
     the conftest OrderResponse factories) controls the venue's fill behavior.
     Returns (bot, mock_venue).
     """
+    from contextlib import ExitStack
+
     from hokage.memory.resolver import PathResolver
 
     def mock_init(self, brain_root=None):
         self._brain_root = tmp_path
 
-    with patch.object(PathResolver, "__init__", mock_init):
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(PathResolver, "__init__", mock_init))
         bot = AutonomousTradingBot(mock_orchestrator, watchlist=["TCS"], scan_interval_seconds=1)
 
         # Pin the session clock (10:00 IST): outside the opening-bell
         # observation window, the midday blackout, and the late-entry cutoff,
         # so the scan is deterministic regardless of when the suite runs.
         bot._now_ist = lambda: datetime(2026, 7, 14, 10, 0, tzinfo=timezone.utc)
+
+        # TCS selects the TrendPullback champion, which now judges the live tape
+        # through its own entry module instead of the stale daily-bar ML verdict.
+        # Supply a pullback-into-the-EMA-band context so the module genuinely
+        # returns "long" — the direction this harness is built to drive.
+        from bots.strategy.components.models import MarketContext
+
+        _closes = tuple(100.0 + i * 0.05 for i in range(30))
+        bot._build_market_context = lambda symbol, cache=None: MarketContext(
+            symbol=symbol,
+            price=101.0,
+            ema9=100.5,
+            ema21=99.0,
+            vwap=100.0,
+            closes=_closes,
+            highs=tuple(c * 1.001 for c in _closes),
+            lows=tuple(c * 0.999 for c in _closes),
+            minutes_into_session=45,
+        )
         # Conduct-gate data feeds are absent in the harness: bias/VIX checks
         # skip rather than fabricate.
         bot._compute_underlying_bias = lambda symbol: None
         bot._india_vix_percentile = lambda: None
 
         mock_orchestrator.research_bot.research.return_value = MagicMock()
+
+        # The ML leg must be driven by data, not by a fallback. This harness
+        # previously relied on TCS having no yfinance history so the scan hit
+        # `rec = "long"` — a hardcoded bullish default that has since been
+        # removed (missing data now means stand aside). Supplying candles keeps
+        # the test exercising a real "long" decision, and stops the suite making
+        # a live Yahoo call for a symbol Yahoo does not carry.
+        _ohlcv = pd.DataFrame({
+            "Open": [100.0] * 40,
+            "High": [101.0] * 40,
+            "Low": [99.0] * 40,
+            "Close": [100.0 + i * 0.1 for i in range(40)],
+            "Volume": [1000.0] * 40,
+        })
+        stack.enter_context(
+            patch("bots.strategy.features.fetch_and_cache_ohlcv", return_value=_ohlcv)
+        )
+        stack.enter_context(
+            patch("bots.strategy.features.calculate_features", side_effect=lambda df: df)
+        )
+        stack.enter_context(
+            patch(
+                "bots.strategy.ml_engine.MLEngine.get_zone_recommendation",
+                return_value=("long", 0.85),
+            )
+        )
 
         proposal = StrategyProposal(
             name="AutoTrend",
@@ -801,3 +856,116 @@ def test_quote_liquidity_inputs_real_depth_and_none_fallbacks():
     spread_pct, ratio = AutonomousTradingBot._quote_liquidity_inputs(None)
     assert spread_pct is None
     assert ratio is None
+
+
+def _frozen_book_option_position(mock_orchestrator, live_premium: float):
+    """The 2026-07-16 stuck-position shape: the paper book's current_price is
+    never marked to market, so it reports the ENTRY premium (124) forever while
+    the live premium is somewhere else entirely. Returns (bot, mock_venue)."""
+    bot = AutonomousTradingBot(mock_orchestrator, watchlist=["NIFTY"], scan_interval_seconds=1)
+
+    inst = Instrument(symbol="NIFTY2672124150CE", asset_class=AssetClass.FNO, exchange=Exchange.NSE)
+    from integrations.brokers.models import OrderSide
+    pos = VenuePosition(
+        instrument=inst,
+        side=OrderSide.BUY,
+        quantity=65.0,
+        average_price=124.0,
+        current_price=124.0,   # frozen book price = entry
+        unrealized_pnl=0.0,    # the book's lie
+        venue_id="paper_main",
+    )
+    mock_venue = mock_orchestrator.registry.get_venue.return_value
+    mock_venue.get_positions.return_value = [pos]
+
+    mock_orchestrator.price_source.get_quote.return_value.price = live_premium
+    mock_orchestrator.price_source.get_price.return_value = live_premium
+    bot._active_positions_tracking["NIFTY2672124150CE"] = {
+        "entry_price": 124.0, "peak_price": 124.0, "trough_price": 124.0,
+        "stop_price": 117.8, "target_price": 141.72, "side": "BUY",
+        "quantity": 65.0, "strategy_id": "strat-malfoy-momentum-v1",
+        "underlying": "NIFTY",
+    }
+    bot._now_ist = lambda: datetime(2026, 7, 16, 11, 0, tzinfo=timezone.utc)
+    return bot, mock_venue
+
+
+def test_monitor_exits_on_live_premium_collapse_despite_frozen_book(mock_orchestrator):
+    """Live premium down 40% (75 vs 124) breaches the -35% tiered backstop.
+    The old code priced the ladder from the frozen book (124 vs 124) and held
+    a collapsing position all session — no premium rung could ever fire."""
+    from integrations.brokers.models import OrderSide
+
+    bot, mock_venue = _frozen_book_option_position(mock_orchestrator, live_premium=75.0)
+
+    bot._monitor_and_exit_positions()
+
+    mock_venue.place_order.assert_called_once()
+    exit_req = mock_venue.place_order.call_args[0][0]
+    assert exit_req.side == OrderSide.SELL
+    assert exit_req.quantity == 65.0
+    assert exit_req.reduce_only is True
+    assert "Backstop" in exit_req.execution_reason
+
+
+def test_monitor_holds_when_live_premium_is_inside_the_ladder(mock_orchestrator):
+    """Live 112 vs entry 124 is -9.7%: above the -35% backstop, below target.
+    The displayed 117.8 'stop' is only the trail-lock ratchet, not an option
+    rung — the ladder must HOLD here, and the peak/trough envelope must record
+    the live price instead of staying frozen at entry."""
+    bot, mock_venue = _frozen_book_option_position(mock_orchestrator, live_premium=112.0)
+
+    bot._monitor_and_exit_positions()
+
+    mock_venue.place_order.assert_not_called()
+    tracked = bot._active_positions_tracking["NIFTY2672124150CE"]
+    assert tracked["trough_price"] == 112.0, "MAE envelope must see the live price"
+
+
+def test_monitor_exits_on_target_hit_seen_only_by_live_quote(mock_orchestrator):
+    """The exact miss the commander watched: premium crossed the target while
+    the book stayed at entry. With mark-to-market the TARGET_HIT rung fires."""
+    from integrations.brokers.models import OrderSide
+
+    bot, mock_venue = _frozen_book_option_position(mock_orchestrator, live_premium=160.0)
+    # TARGET_HIT computes from the underlying ATR recorded at entry.
+    bot._active_positions_tracking["NIFTY2672124150CE"].update({
+        "entry_underlying_price": 24150.0,
+        "entry_underlying_atr": 42.82,
+    })
+    # Symbol-aware quotes: premium 160 for the option, an unmoved underlying —
+    # otherwise the thesis stop reads "NIFTY at 160" and fires first.
+    def _quote_for(symbol):
+        q = MagicMock()
+        q.price = 160.0 if symbol.endswith(("CE", "PE")) else 24155.0
+        q.provider = "test-live-feed"
+        q.quoted_at = datetime.now(timezone.utc)
+        return q
+    mock_orchestrator.price_source.get_quote.side_effect = _quote_for
+
+    bot._monitor_and_exit_positions()
+
+    mock_venue.place_order.assert_called_once()
+    exit_req = mock_venue.place_order.call_args[0][0]
+    assert exit_req.side == OrderSide.SELL
+    assert "TARGET_HIT" in exit_req.execution_reason
+
+
+def test_one_league_winner_takes_the_asset_with_its_own_name(mock_orchestrator, tmp_path, filled_order_response):
+    """Commander directive 2026-07-16: no shadow/live split — every strategy
+    competes for real paper entries; the most confident firing module wins the
+    asset and the position carries ITS strategy id. The harness tape is a
+    pullback into a rising EMA band: TrendPullback fires long; breakout and
+    mean-reversion stand aside by construction."""
+    bot, mock_venue = _run_entry_scan(mock_orchestrator, tmp_path, place_order_side_effect=filled_order_response)
+
+    mock_venue.place_order.assert_called_once()
+    tracked = bot._active_positions_tracking.get("TCS")
+    assert tracked is not None
+    # The winner's name is on the position — not a preselected champion's.
+    assert tracked["strategy_id"] == "strat-trendpullback-v2"
+    assert tracked["entry_timestamp"]
+
+    # The retired shadow machinery must be gone, not dormant.
+    assert not hasattr(bot, "_shadow_positions_tracking")
+    assert not hasattr(bot, "_monitor_and_exit_shadow_positions")

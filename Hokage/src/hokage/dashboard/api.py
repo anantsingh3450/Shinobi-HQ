@@ -28,7 +28,7 @@ def _load_project_dotenv() -> None:
 
 _load_project_dotenv()
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 from pathlib import Path
@@ -173,7 +173,7 @@ def create_dashboard_api(
         trades_dir = trades_dir / active_venue_id
         portfolio_dir = portfolio_dir / active_venue_id
         
-    portfolio_store = JsonPortfolioStore(portfolio_dir)
+    portfolio_store = JsonPortfolioStore(portfolio_dir, brain_root=resolver.resolve_brain_root())
     trade_store = JsonTradeStore(trades_dir)
     dashboard_service = DashboardService(portfolio_store, trade_store)
 
@@ -929,7 +929,24 @@ def create_dashboard_api(
                 venue.connect()
             except Exception as conn_err:
                 return f"Session generated, but failed to connect live venue: {conn_err}", 500
-                
+
+            # Confirm over Telegram immediately — this browser redirect IS
+            # the login; commander pasting the same (now-spent) URL into
+            # /token afterwards used to trigger a scary "already used or
+            # expired" warning for something that already succeeded here.
+            try:
+                bot = getattr(orchestrator, "autonomous_bot", None)
+                telegram_bot = getattr(bot, "telegram_bot", None) if bot else None
+                if telegram_bot and telegram_bot.enabled:
+                    from integrations.brokers.session_manager import KolkataTime
+                    now_ist = datetime.now(timezone.utc).astimezone(KolkataTime())
+                    telegram_bot.send_message(
+                        f"✅ *Login complete* at {now_ist.strftime('%H:%M')} IST via browser. "
+                        "Session valid until Kite's next daily expiry (~6 AM). No /token needed."
+                    )
+            except Exception:
+                pass
+
             return "Authentication successful! Zerodha connection is online. You can close this window."
         except Exception as e:
             return f"Authentication failed: {e}", 500
@@ -1089,9 +1106,7 @@ def create_dashboard_api(
                 opportunities = get_opportunities_at(as_of)
             else:
                 # Dynamic Multi-asset Opportunity Radar details - asset-agnostic cross-asset listings
-                from shared.discovery.scanners import (
-                    EquityAssetScanner, CommodityAssetScanner, ForexAssetScanner
-                )
+                from shared.discovery.scanners import EquityAssetScanner
                 from shared.discovery.rankers import OpportunityRankingEngine
                 from shared.discovery.models import AssetCategory
 
@@ -1107,7 +1122,7 @@ def create_dashboard_api(
 
                 def get_horizon_for_asset(symbol: str) -> str:
                     sym_upper = symbol.upper().strip()
-                    focused_symbols = {"CRUDE_OIL", "CRUDE", "CRUDEOIL", "GOLD", "BANKNIFTY", "BANK NIFTY", "SENSEX", "SILVER"}
+                    focused_symbols = {"NIFTY", "BANKNIFTY", "BANK NIFTY", "SENSEX"}
                     tactical_symbols = {"USDINR", "USD/INR"}
                     if sym_upper in focused_symbols:
                         return "FOCUSED"
@@ -1127,10 +1142,13 @@ def create_dashboard_api(
                         return "MEDIUM"
 
                 provider = orchestrator.price_source
+                # Radar shows the TRADABLE universe. It used to headline GOLD /
+                # CRUDE_OIL / SILVER (parked: Kite reports lot_size=1 for every
+                # MCX chain) and USD/INR (never tradable here) with big
+                # conviction scores — decorative numbers on assets the bot is
+                # forbidden to touch mislead the commander.
                 scanners = [
-                    EquityAssetScanner(provider, ["BANKNIFTY", "RELIANCE", "SENSEX"]),
-                    CommodityAssetScanner(provider, ["GOLD", "CRUDE_OIL", "SILVER"]),
-                    ForexAssetScanner(provider, ["USD/INR"]),
+                    EquityAssetScanner(provider, ["NIFTY", "BANKNIFTY", "SENSEX"]),
                 ]
 
                 all_scanned_opps = []
@@ -1436,7 +1454,9 @@ def create_dashboard_api(
                 "CRUDE_OIL": "CRUDE OIL",
                 "GOLD": "GOLD",
                 "SILVER": "SILVER",
-                "BRENT": "BRENT OIL"
+                # BRENT deliberately omitted: Zerodha/Kite has no instrument
+                # for international Brent crude, so this asset could never
+                # resolve — it only produced an unfixable warning every scan.
             }
             base_prices = {
                 "NIFTY": 24300.0,
@@ -1445,7 +1465,6 @@ def create_dashboard_api(
                 "CRUDE_OIL": 6800.0,
                 "GOLD": 71000.0,
                 "SILVER": 85000.0,
-                "BRENT": 82.0
             }
             index_quotes = {}
             for key, display_name in observation_assets.items():
@@ -1639,6 +1658,137 @@ def create_dashboard_api(
             return jsonify({"error": str(e)}), 500
 
     # =====================================================================
+    # Journal tabs: No-Trade Journal (refusals only) and Trade Journal
+    # (executed trades only). Both previously read /dashboard/summary's
+    # latest_decisions, which only ever contained decision_journal rows
+    # (ACCEPTED + committee-vetoed REJECTED) — so executed trades showed up
+    # under "No-Trade Journal" while the far more common soft refusals
+    # (VolumeEngine fake-breakout, conduct-gate blocks, war-chest exhaustion)
+    # written to the separate no_trade_decisions table never appeared there
+    # at all, and the Trade Journal tab had no data source pointed at it.
+    # =====================================================================
+    @dashboard_bp.route("/journal/no-trade", methods=["GET"])
+    def journal_no_trade() -> dict:
+        """All refusals: committee-vetoed REJECTED decisions + soft no-trades."""
+        try:
+            from bots.autonomous.decision_journal import DecisionJournalSystem
+            bot = getattr(orchestrator, "autonomous_bot", None)
+            journal = bot.journal if bot is not None else DecisionJournalSystem(resolver.resolve_brain_root())
+
+            entries = []
+            for e in journal.load_rejected_entries():
+                entries.append({
+                    "symbol": e.get("symbol"),
+                    "decision": "REJECTED",
+                    "reason": e.get("reason") or e.get("decision_reason") or "",
+                    "conviction": e.get("conviction"),
+                    "timestamp": e.get("timestamp"),
+                })
+            for d in journal.load_no_trade_decisions():
+                reasons = d.get("reasons")
+                if isinstance(reasons, str):
+                    try:
+                        reasons = json.loads(reasons)
+                    except Exception:
+                        reasons = [reasons]
+                entries.append({
+                    "symbol": d.get("asset"),
+                    "decision": "NO_TRADE",
+                    "reason": "; ".join(reasons or []),
+                    "conviction": d.get("confidence"),
+                    "timestamp": d.get("timestamp"),
+                })
+
+            entries.sort(key=lambda e: e.get("timestamp") or "", reverse=True)
+            return jsonify({"entries": entries[:200]})
+        except Exception as e:
+            return jsonify({"error": str(e), "entries": []}), 500
+
+    @dashboard_bp.route("/journal/gate-tally", methods=["GET"])
+    def journal_gate_tally() -> dict:
+        """Which gate is refusing the most entries, ranked.
+
+        Reading refusals one by one hides systematic starvation — an 0.80x
+        volume bar can block an entire evening session and look like eight
+        unremarkable rows. This ranks the gates so the bottleneck is measured.
+
+        Query args:
+            days: lookback window (default 7, 0 = all history).
+
+        Gates carry a ``tunable`` flag: SAFETY gates (liquidity, IV premium,
+        cash, war chest) are never tunable — blocking is their purpose, and a
+        high tally there describes the market, not a defect.
+        """
+        try:
+            from bots.autonomous.decision_journal import DecisionJournalSystem
+            from bots.autonomous.gate_analytics import tally_gate_rejections
+
+            bot = getattr(orchestrator, "autonomous_bot", None)
+            journal = bot.journal if bot is not None else DecisionJournalSystem(resolver.resolve_brain_root())
+
+            try:
+                days = int(request.args.get("days", 7))
+            except (TypeError, ValueError):
+                days = 7
+            since = None
+            if days > 0:
+                since = datetime.now(timezone.utc) - timedelta(days=days)
+
+            decisions = []
+            for d in journal.load_no_trade_decisions():
+                reasons = d.get("reasons")
+                # SQLite hands back the reasons tuple as a JSON string; a raw
+                # decode would count the whole blob as one unclassified reason.
+                if isinstance(reasons, str):
+                    try:
+                        reasons = json.loads(reasons)
+                    except Exception:
+                        reasons = [reasons]
+                decisions.append({
+                    "asset": d.get("asset"),
+                    "timestamp": d.get("timestamp"),
+                    "reasons": reasons or [],
+                })
+
+            result = tally_gate_rejections(decisions, since=since)
+            result["window_days"] = days
+            return jsonify(result)
+        except Exception as e:
+            return jsonify({"error": str(e), "gates": [], "total_rejections": 0}), 500
+
+    @dashboard_bp.route("/journal/trades", methods=["GET"])
+    def journal_trades() -> dict:
+        """Executed trades: ACCEPTED decisions joined with their outcome."""
+        try:
+            from bots.autonomous.decision_journal import DecisionJournalSystem
+            bot = getattr(orchestrator, "autonomous_bot", None)
+            journal = bot.journal if bot is not None else DecisionJournalSystem(resolver.resolve_brain_root())
+
+            outcomes_by_decision = {}
+            for o in journal.load_outcomes():
+                outcomes_by_decision[o.get("decision_id")] = o
+
+            entries = []
+            for e in journal.load_accepted_entries():
+                outcome = outcomes_by_decision.get(e.get("decision_id"), {})
+                entries.append({
+                    "symbol": e.get("symbol"),
+                    "reason": e.get("reason") or e.get("decision_reason") or "",
+                    "conviction": e.get("conviction"),
+                    "entry_timestamp": e.get("timestamp"),
+                    "outcome": outcome.get("outcome", "OPEN"),
+                    "pnl": outcome.get("pnl"),
+                    "return_pct": outcome.get("return_pct"),
+                    "exit_reason": outcome.get("exit_reason"),
+                    "exit_timestamp": outcome.get("timestamp"),
+                })
+
+            entries.sort(key=lambda e: e.get("entry_timestamp") or "", reverse=True)
+            return jsonify({"entries": entries[:200]})
+        except Exception as e:
+            return jsonify({"error": str(e), "entries": []}), 500
+
+    # =====================================================================
     # Strategy Arena (Dojo): portfolio ladder, conduct gates, exit ladder
     # =====================================================================
     @dashboard_bp.route("/arena", methods=["GET"])
@@ -1719,7 +1869,7 @@ def create_dashboard_api(
                 except Exception:
                     gates["india_vix_percentile"] = None
                 bias_map = {}
-                for sym in ("NIFTY", "CRUDE_OIL"):
+                for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
                     try:
                         bias_map[sym] = bot._compute_underlying_bias(sym)
                     except Exception:
@@ -1728,6 +1878,104 @@ def create_dashboard_api(
                 payload["conduct_gates"] = gates
         except Exception as exc:
             payload["conduct_gates_error"] = str(exc)
+
+        # 5. Open trades: the champion's real paper positions and every
+        # challenger's shadow book, side by side. Shadow rows are labelled —
+        # they are simulated fills on live prices, not venue orders.
+        strat_names = {
+            s.get("strategy_id"): s.get("name")
+            for s in payload["strategies"]
+            if s.get("strategy_id")
+        }
+        payload["open_trades"] = []
+        try:
+            bot = getattr(orchestrator, "autonomous_bot", None)
+            if bot is not None:
+                def _ltp(sym: str) -> float | None:
+                    try:
+                        px = orchestrator.price_source.get_price(sym)
+                        return float(px) if px and px > 0 else None
+                    except Exception:
+                        return None
+
+                for sym, t in bot._active_positions_tracking.items():
+                    entry = float(t.get("entry_price", 0.0))
+                    qty = float(t.get("quantity", 0.0))
+                    ltp = _ltp(sym)
+                    sign = 1.0 if t.get("side", "BUY") == "BUY" else -1.0
+                    payload["open_trades"].append({
+                        "book": "REAL",
+                        "strategy": strat_names.get(t.get("strategy_id"), t.get("strategy_id") or "—"),
+                        "symbol": sym,
+                        "side": t.get("side", "BUY"),
+                        "quantity": qty,
+                        "entry_price": entry,
+                        "ltp": ltp,
+                        "unrealized_pnl": None if ltp is None else round((ltp - entry) * qty * sign, 2),
+                        "stop_price": t.get("stop_price"),
+                        "target_price": t.get("target_price"),
+                        "opened_at": t.get("entry_timestamp"),
+                    })
+                # One league (2026-07-16): the shadow book is gone — every
+                # strategy's positions are real paper-venue positions above.
+        except Exception as exc:
+            payload["open_trades_error"] = str(exc)
+
+        # 6. Closed trades: real venue closes from the account book, shadow
+        # closes from the shadow-decision journal. Phantom rows from the
+        # 2026-07-15 exit runaway are excluded (they carry a PHANTOM
+        # failure_reason and zero PnL — bookkeeping, not trading history).
+        payload["closed_trades"] = []
+        try:
+            account = orchestrator.portfolio_store.load_account("paper")
+            for pos in account.positions.values():
+                if getattr(pos.status, "value", str(pos.status)) != "CLOSED":
+                    continue
+                if str(getattr(pos, "failure_reason", "") or "").startswith("PHANTOM"):
+                    continue
+                payload["closed_trades"].append({
+                    "book": "REAL",
+                    "strategy": "—",
+                    "symbol": pos.market,
+                    "side": "BUY" if getattr(pos.direction, "value", str(pos.direction)) == "LONG" else "SELL",
+                    "quantity": pos.quantity,
+                    "entry_price": pos.entry_price,
+                    "exit_price": pos.current_price,
+                    "pnl": pos.realized_pnl,
+                    "closed_at": pos.closed_at.isoformat() if pos.closed_at else None,
+                    "reason": None,
+                })
+        except Exception as exc:
+            payload["closed_trades_error"] = str(exc)
+        try:
+            from shared.persistence.sqlite_engine import SqliteStorageEngine
+            if SqliteStorageEngine.is_active(resolver):
+                conn = SqliteStorageEngine(resolver).get_connection()
+                rows = conn.execute(
+                    "SELECT timestamp, strategy_id, symbol, details FROM shadow_decisions "
+                    "WHERE decision_type='EXIT' ORDER BY timestamp DESC LIMIT 50;"
+                ).fetchall()
+                for r in rows:
+                    try:
+                        det = _json.loads(r["details"]) if r["details"] else {}
+                    except Exception:
+                        det = {}
+                    payload["closed_trades"].append({
+                        "book": "SHADOW",
+                        "strategy": strat_names.get(r["strategy_id"], r["strategy_id"]),
+                        "symbol": r["symbol"],
+                        "side": None,
+                        "quantity": None,
+                        "entry_price": None,
+                        "exit_price": det.get("exit_price"),
+                        "pnl": det.get("simulated_pnl"),
+                        "closed_at": r["timestamp"],
+                        "reason": det.get("exit_reason"),
+                    })
+        except Exception as exc:
+            payload["closed_trades_shadow_error"] = str(exc)
+        payload["closed_trades"].sort(key=lambda t: t.get("closed_at") or "", reverse=True)
+        payload["closed_trades"] = payload["closed_trades"][:60]
 
         # 4. Options exit-ladder configuration (what protects every position)
         try:

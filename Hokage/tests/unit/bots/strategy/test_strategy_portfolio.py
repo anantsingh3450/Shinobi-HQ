@@ -5,11 +5,12 @@ def test_strategy_portfolio_initialization(tmp_path):
     resolver = PathResolver(tmp_path)
     manager = StrategyPortfolioManager(resolver)
 
-    # Verify Dojo v2 seeds registered
-    assert len(manager.portfolio["strategies"]) == 3
+    # Verify Dojo seeds registered (4 competitors: the 3 originals + Malfoy).
+    assert len(manager.portfolio["strategies"]) == 4
     assert "strat-trendpullback-v2" in manager.portfolio["strategies"]
     assert "strat-macrobreakout-commodities-v1" in manager.portfolio["strategies"]
     assert "strat-meanreversion-sideways-v1" in manager.portfolio["strategies"]
+    assert "strat-malfoy-momentum-v1" in manager.portfolio["strategies"]
 
 def test_seed_statistics_are_earned_only(tmp_path):
     """Regression: earlier seeds shipped fabricated win rates/expectancies for

@@ -191,7 +191,16 @@ class PortfolioAwarenessEngine:
             }
 
         total_value = sum(p.quantity * (p.current_price or p.average_price) for p in positions)
-        total_assets = total_value + bal.cash
+        # Equity, NOT cash + position value. The paper account's cash model
+        # never debits premium on entry (cash = initial + realized PnL), so
+        # adding open-position value to cash DOUBLE-COUNTS every entry: two
+        # option buys pushed "total_assets" to 66,760 on a 50,000 account,
+        # that spike ratcheted into peak_equity, and the honest equity later
+        # read as a 15% "drawdown" that fired the kill-switch (2026-07-16,
+        # second false kill in one day). account.equity = cash + unrealized
+        # is the truthful figure under this model; the venue reports it as
+        # total_equity.
+        total_assets = float(bal.total_equity) if bal.total_equity and bal.total_equity > 0 else (total_value + bal.cash)
         cash_allocation_pct = round((bal.cash / total_assets) * 100.0, 2) if total_assets > 0 else 100.0
         invested_capital_pct = round(100.0 - cash_allocation_pct, 2)
 

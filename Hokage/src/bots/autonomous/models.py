@@ -41,9 +41,12 @@ class TradeAutopsy:
     vix_at_entry: float
     market_regime_at_entry: str
     
-    # Trade Journey Metrics
-    max_adverse_excursion_pct: float
-    max_favorable_excursion_pct: float
+    # Trade Journey Metrics — measured live during the hold. None means the
+    # extreme was never recorded (e.g. a position closed before any tick was
+    # evaluated); consumers must skip an unknown excursion rather than read it
+    # as a flat 0.0, which would score the entry/exit on a value nobody saw.
+    max_adverse_excursion_pct: float | None
+    max_favorable_excursion_pct: float | None
     
     timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 

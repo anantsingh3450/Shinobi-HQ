@@ -44,6 +44,7 @@ class StrategyPortfolioManager:
             with self.file_path.open("r", encoding="utf-8-sig") as fh:
                 portfolio = json.load(fh)
             self._ensure_capital_fields(portfolio)
+            self._ensure_seed_strategies(portfolio)
             return portfolio
         except Exception as exc:
             logger.error(f"Failed to read strategy portfolio: {exc}")
@@ -58,6 +59,25 @@ class StrategyPortfolioManager:
                 "capital",
                 {"starting": STRATEGY_STARTING_CAPITAL, "realized_pnl": 0.0},
             )
+
+    def _ensure_seed_strategies(self, portfolio: dict[str, Any]) -> None:
+        """Inject any default-lineup strategy missing from a persisted portfolio.
+
+        Lets a new competitor (e.g. Malfoy) join an existing portfolio without
+        wiping the earned stats of strategies already on disk. Only adds what
+        is absent by strategy_id; never overwrites an existing entry.
+        """
+        existing = portfolio.setdefault("strategies", {})
+        seeds = self._generate_default_portfolio().get("strategies", {})
+        added = False
+        for sid, seed in seeds.items():
+            if sid not in existing:
+                existing[sid] = seed
+                added = True
+                logger.info(f"Injected missing seed strategy into portfolio: {seed.get('name')} ({sid}).")
+        if added:
+            portfolio["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._save_portfolio_atomic(portfolio)
 
     def _save_portfolio_atomic(self, data: dict[str, Any]) -> None:
         """Atomically persist portfolio to disk via write-then-rename."""
@@ -129,11 +149,25 @@ class StrategyPortfolioManager:
         """
         now_str = datetime.now(timezone.utc).isoformat()
 
+        # Every competitor faces the SAME assets. When strategies trade different
+        # markets the arena measures the market, not the strategy — MacroBreakout
+        # was scoped to CRUDE_OIL/GOLD/SILVER and so could never be compared to
+        # MeanReversion on NIFTY.
+        #
+        # The universe is NSE/BSE index options only, and that is a data
+        # constraint rather than a preference: Kite's instruments dump reports
+        # lot_size=1 for EVERY MCX chain (CRUDEOIL, GOLD, SILVER, NATURALGAS,
+        # COPPER, ZINC), so a real MCX position size can only come from a
+        # hand-entered contract-spec table. NFO and BFO report true lot sizes
+        # (NIFTY=65, BANKNIFTY=30, SENSEX=20). Commodities return here once
+        # their published specs are verified — see _MCX_CONTRACT_MULTIPLIER.
+        _UNIVERSE = ["NIFTY", "BANKNIFTY", "SENSEX"]
+
         s1 = self._seed_strategy(
             "strat-trendpullback-v2",
             "TrendPullback",
             "ACTIVE",
-            ["NIFTY", "CRUDE_OIL"],
+            list(_UNIVERSE),
             ["RISK-ON", "BULL", "BEAR"],
             "EMA(9)/EMA(21) alignment with session-VWAP bias; the entry conduct gate enforces tape agreement.",
             "Registered ACTIVE with zeroed stats: trend/pullback entry family.",
@@ -143,7 +177,7 @@ class StrategyPortfolioManager:
             "strat-macrobreakout-commodities-v1",
             "MacroBreakout",
             "SHADOW_MODE",
-            ["CRUDE_OIL", "GOLD", "SILVER"],
+            list(_UNIVERSE),
             ["RISK-OFF", "HIGH-VOLATILITY"],
             "Breakout entries demoted to shadow: measured elsewhere as a live net leak.",
             "Demoted to SHADOW_MODE with zeroed stats: breakouts must earn promotion.",
@@ -153,10 +187,25 @@ class StrategyPortfolioManager:
             "strat-meanreversion-sideways-v1",
             "MeanReversion",
             "SHADOW_MODE",
-            ["NIFTY"],
+            list(_UNIVERSE),
             ["SIDEWAYS", "LOW-VOLATILITY"],
             "Range rotation family; candidate habitat is balance days.",
             "Registered SHADOW_MODE with zeroed stats: range family gathers evidence.",
+            now_str,
+        )
+        # 4th competitor: derived from the Malfoy benchmark bot's measured
+        # edges (EMA9/21 + session-VWAP momentum, midday blackout + 14:00
+        # cutoff conduct gates, tiered premium exit ladder), extended with
+        # Hokage's own evolution edges — India-VIX-adaptive sizing and a
+        # triple-barrier meta-label filter — so it can surpass its source.
+        s4 = self._seed_strategy(
+            "strat-malfoy-momentum-v1",
+            "Malfoy",
+            "SHADOW_MODE",
+            list(_UNIVERSE),
+            ["RISK-ON", "BULL", "HIGH-VOLATILITY"],
+            "Disciplined intraday momentum (EMA9/21 + VWAP bias, conduct-gated); Hokage edge: VIX-adaptive sizing + meta-label filter.",
+            "Registered SHADOW_MODE with zeroed stats: Malfoy-derived momentum challenger gathers evidence.",
             now_str,
         )
 
@@ -165,6 +214,7 @@ class StrategyPortfolioManager:
                 s1["strategy_id"]: s1,
                 s2["strategy_id"]: s2,
                 s3["strategy_id"]: s3,
+                s4["strategy_id"]: s4,
             },
             "updated_at": now_str
         }

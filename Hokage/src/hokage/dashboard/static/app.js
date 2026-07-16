@@ -587,35 +587,96 @@ document?.addEventListener("DOMContentLoaded", () => {
             } else {
                 tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No open positions found.</td></tr>`;
             }
+
+            loadPortfolioStats();
+            loadTradeHistory();
             await loadTaxData();
         } catch (error) {
             console.error(error);
         }
     }
 
-    async function loadDecisionsFull() {
+    async function loadPortfolioStats() {
         try {
-            const response = await fetch("/api/v1/dashboard/summary");
+            const res = await fetch("/api/v1/portfolio/paper/metrics");
+            if (!res.ok) return;
+            const m = await res.json();
+            const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+            const unrealized = m.equity - m.cash - m.margin_used;
+            const realized = m.total_return - unrealized;
+            el("port-unrealized-pnl", formatINR(unrealized));
+            el("port-realized-pnl", formatINR(realized));
+            el("port-buying-power", formatINR(m.margin_available));
+            if (m.win_rate !== null && m.win_rate !== undefined) {
+                el("port-win-rate", m.win_rate.toFixed(1) + "%");
+            }
+            if (m.max_drawdown !== null && m.max_drawdown !== undefined) {
+                el("port-beta", m.max_drawdown.toFixed(2) + "%");
+            }
+            const pnlEl = document.getElementById("port-realized-pnl");
+            if (pnlEl) pnlEl.style.color = realized >= 0 ? "var(--color-green)" : "var(--color-red)";
+            const upnlEl = document.getElementById("port-unrealized-pnl");
+            if (upnlEl) upnlEl.style.color = unrealized >= 0 ? "var(--color-green)" : "var(--color-red)";
+        } catch (e) { console.error("Portfolio stats:", e); }
+    }
+
+    async function loadTradeHistory() {
+        try {
+            const res = await fetch("/api/v1/portfolio/paper/positions/all");
+            if (!res.ok) return;
+            const all = await res.json();
+            const closed = all.filter(p => p.status === "CLOSED");
+            const tbody = document.getElementById("body-trade-history");
+            if (!tbody) return;
+            if (closed.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No closed trades yet.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = "";
+            closed.forEach(pos => {
+                const pnl = pos.realized_pnl || 0;
+                const tr = document.createElement("tr");
+                tr.innerHTML = `
+                    <td><strong>${pos.market}</strong></td>
+                    <td style="color: ${pos.direction === 'LONG' ? 'var(--color-green)' : 'var(--color-red)'}"><strong>${pos.direction}</strong></td>
+                    <td>${pos.quantity.toFixed(2)}</td>
+                    <td>${formatINR(pos.entry_price)}</td>
+                    <td>${formatINR(pos.current_price || pos.entry_price)}</td>
+                    <td style="color: ${pnl >= 0 ? 'var(--color-green)' : 'var(--color-red)'}"><strong>${formatINR(pnl)}</strong></td>
+                    <td style="color: var(--text-muted); font-size: 0.8rem;">${pos.closed_at ? new Date(pos.closed_at).toLocaleString("en-IN", {timeZone:"Asia/Kolkata"}) : ""}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        } catch (e) { console.error("Trade history:", e); }
+    }
+
+    async function loadDecisionsFull() {
+        // No-Trade Journal tab: refusals only (committee-vetoed REJECTED +
+        // soft no-trades like VolumeEngine fake-breakout blocks). Executed
+        // trades belong in the Trade Journal tab (loadLessonsFull), not here.
+        try {
+            const response = await fetch("/api/v1/journal/no-trade");
             const container = document.getElementById("list-decisions-full");
             if (!container) return;
             if (!response.ok) throw new Error("Failed");
             const data = await response.json();
+            const entries = data.entries || [];
 
-            if (data.latest_decisions && data.latest_decisions.length > 0) {
+            if (entries.length > 0) {
                 container.innerHTML = "";
-                data.latest_decisions.forEach(dec => {
+                entries.forEach(dec => {
                     const div = document.createElement("div");
                     div.className = "decision-card";
-                    
+
                     const header = document.createElement("div");
                     header.className = "decision-header";
                     header.innerHTML = `
                         <span class="decision-ticker">${dec.symbol}</span>
-                        <span class="decision-verdict ${dec.decision.toLowerCase()}">${dec.decision}</span>
+                        <span class="decision-verdict ${(dec.decision || "").toLowerCase()}">${dec.decision}</span>
                     `;
                     const reason = document.createElement("p");
                     reason.className = "decision-reason";
-                    reason.textContent = dec.reason || "Veto check or normal route execution.";
+                    reason.textContent = dec.reason || "No reason recorded.";
 
                     const meta = document.createElement("span");
                     meta.className = "decision-meta";
@@ -627,7 +688,7 @@ document?.addEventListener("DOMContentLoaded", () => {
                     container.appendChild(div);
                 });
             } else {
-                container.innerHTML = `<p class="empty-state">No decisions logged today.</p>`;
+                container.innerHTML = `<p class="empty-state">No refusals logged today.</p>`;
             }
         } catch (error) {
             console.error(error);
@@ -635,26 +696,33 @@ document?.addEventListener("DOMContentLoaded", () => {
     }
 
     async function loadLessonsFull() {
+        // Trade Journal tab: executed trades with entry/exit/PnL, not
+        // abstract "lessons" — matches what the commander expects here.
         try {
-            const response = await fetch("/api/v1/dashboard/summary");
+            const response = await fetch("/api/v1/journal/trades");
             const container = document.getElementById("list-lessons-full");
             if (!container) return;
             if (!response.ok) throw new Error("Failed");
             const data = await response.json();
+            const entries = data.entries || [];
 
-            if (data.latest_lessons && data.latest_lessons.length > 0) {
+            if (entries.length > 0) {
                 container.innerHTML = "";
-                data.latest_lessons.forEach(rev => {
+                entries.forEach(t => {
                     const div = document.createElement("div");
                     div.className = "lesson-card";
+                    const pnlStr = (t.pnl === null || t.pnl === undefined) ? "--" : `₹${Number(t.pnl).toFixed(2)}`;
+                    const pnlColor = (t.pnl || 0) > 0 ? "var(--color-green)" : ((t.pnl || 0) < 0 ? "var(--color-red)" : "inherit");
                     div.innerHTML = `
-                        <div class="lesson-title">${rev.symbol} Takeaway</div>
-                        <p class="lesson-text">${rev.lesson}</p>
+                        <div class="lesson-title">${t.symbol} — ${t.outcome || "OPEN"}</div>
+                        <p class="lesson-text">${t.reason || "Investment Committee authorized entry."}</p>
+                        <p class="lesson-text">Exit: ${t.exit_reason || "position still open"} | P&amp;L: <span style="color:${pnlColor}">${pnlStr}</span></p>
+                        <span class="decision-meta">Entered: ${t.entry_timestamp || "Today"}</span>
                     `;
                     container.appendChild(div);
                 });
             } else {
-                container.innerHTML = `<p class="empty-state">No lessons reviewed.</p>`;
+                container.innerHTML = `<p class="empty-state">No trades executed today.</p>`;
             }
         } catch (error) {
             console.error(error);
@@ -1311,6 +1379,14 @@ document?.addEventListener("DOMContentLoaded", () => {
                     calendarEl.innerHTML = `<div class="empty-state">No economic events scheduled today.</div>`;
                 }
             }
+
+            // Sector strength cards + index sparklines: a second widget on
+            // this same tab that used to be defined as a same-named function
+            // further down the file — the later declaration silently
+            // replaced this one (JS keeps only the last function with a
+            // given name), so calling loadMarketIntelligenceData() never
+            // reached the macro/rotation/calendar code above at all.
+            loadSectorIntelligenceGrid();
 
         } catch (error) {
             console.error("Error loading market intelligence data:", error);
@@ -2535,7 +2611,7 @@ document?.addEventListener("DOMContentLoaded", () => {
     }
 
     // --- Market Intelligence & Sector Rotation (Module 1 & 2) ---
-    async function loadMarketIntelligenceData() {
+    async function loadSectorIntelligenceGrid() {
         const grid = document.getElementById("sector-intelligence-grid");
         if (!grid) return;
 

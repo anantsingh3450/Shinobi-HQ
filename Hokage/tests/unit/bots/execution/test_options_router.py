@@ -135,3 +135,70 @@ def test_routes_registry():
     assert OptionsRouter.routes("CRUDE_OIL")
     assert OptionsRouter.routes("crudeoil")
     assert not OptionsRouter.routes("TCS")
+
+
+class TestRiskBudgetSizesLots:
+    """The router must honour the risk budget, not hardcode one lot.
+
+    Before 2026-07-16 this method discarded the risk-approved quantity and
+    returned quantity=lot_size unconditionally, so Kelly/VaR/leverage/drawdown
+    had ZERO influence on any order Hokage placed. Lots are now
+    floor(budget / (premium x lot_size)), capped at MAX_LOTS_PER_ORDER; a
+    budget that affords no lot means NO trade, never an unapproved one.
+    """
+
+    def test_exhausted_war_chest_skips_the_trade(self):
+        """Premium 180 x lot 75 = 13,500/lot; a bled chest of 9,000 affords 0
+        lots — the old code would have bought the lot anyway."""
+        router = OptionsRouter(price_source=_provider(_NIFTY_CE, premium=180.0))
+        with pytest.raises(OptionsRoutingError, match="affords 0 lots"):
+            router.route_to_options(
+                _underlying_request("NIFTY", OrderSide.BUY),
+                current_price=24310.0,
+                available_cash=500000.0,
+                risk_budget=9000.0,
+            )
+
+    def test_budget_covering_one_lot_buys_exactly_one_lot(self):
+        router = OptionsRouter(price_source=_provider(_NIFTY_CE, premium=180.0))
+        req = router.route_to_options(
+            _underlying_request("NIFTY", OrderSide.BUY),
+            current_price=24310.0,
+            available_cash=500000.0,
+            risk_budget=14000.0,
+        )
+        assert req.quantity == 75.0
+        assert req.instrument.metadata["lots"] == 1
+
+    def test_rich_budget_is_still_capped_at_max_lots_per_order(self):
+        """A 50k chest affords 3 lots at 13.5k, but sizing UP beyond the hard
+        cap is a commander decision — the formula only sizes DOWN."""
+        from bots.execution.options_router import MAX_LOTS_PER_ORDER
+
+        router = OptionsRouter(price_source=_provider(_NIFTY_CE, premium=180.0))
+        req = router.route_to_options(
+            _underlying_request("NIFTY", OrderSide.BUY),
+            current_price=24310.0,
+            available_cash=500000.0,
+            risk_budget=50000.0,
+        )
+        assert req.quantity == MAX_LOTS_PER_ORDER * 75.0
+        assert req.instrument.metadata["lots"] == MAX_LOTS_PER_ORDER
+
+    def test_binding_ceiling_is_the_minimum_of_cash_and_budget(self):
+        """Cash fraction (0.5 x 20,000 = 10,000) binds below the 50k chest."""
+        router = OptionsRouter(price_source=_provider(_NIFTY_CE, premium=180.0))
+        with pytest.raises(OptionsRoutingError, match="affords 0 lots"):
+            router.route_to_options(
+                _underlying_request("NIFTY", OrderSide.BUY),
+                current_price=24310.0,
+                available_cash=20000.0,
+                risk_budget=50000.0,
+            )
+
+    def test_no_budget_information_keeps_the_single_lot_legacy_behaviour(self):
+        router = OptionsRouter(price_source=_provider(_NIFTY_CE, premium=180.0))
+        req = router.route_to_options(
+            _underlying_request("NIFTY", OrderSide.BUY), current_price=24310.0
+        )
+        assert req.quantity == 75.0

@@ -91,6 +91,18 @@ class HokageBootManager:
             resolver = PathResolver(self.brain_root)
             BrainBootstrapper(resolver).bootstrap()
 
+            # Rotating file log: the audit_trail DB captures every log line
+            # too, but a plain tail-able file on disk survives console
+            # buffer loss and doesn't require a SQL query to read.
+            from logging.handlers import RotatingFileHandler
+            logs_dir = resolver.resolve_brain_root() / "logs"
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            file_handler = RotatingFileHandler(
+                logs_dir / "hokage.log", maxBytes=10_000_000, backupCount=5, encoding="utf-8"
+            )
+            file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+            logging.getLogger().addHandler(file_handler)
+
             # 2. SQLite + Migrations
             self.publish_state(LifecycleState.LOADING_DATABASE)
             sqlite_engine = SqliteStorageEngine(resolver)

@@ -24,8 +24,14 @@ from integrations.data.models import Instrument, Exchange, AssetClass
 logger = logging.getLogger("Hokage.OptionsRouter")
 
 #: Underlyings that route to options, keyed by INTERNAL symbol.
+#: Underlyings whose directional signal is executed as an ATM option BUY.
+#: BSE indices (SENSEX/BANKEX) route to BFO; their lot sizes come straight from
+#: Kite's dump (SENSEX=20, BANKEX=30), unlike MCX where every chain reports 1.
 _OPTION_ROUTED_UNDERLYINGS = {
     "NIFTY": Exchange.NSE,
+    "BANKNIFTY": Exchange.NSE,
+    "SENSEX": Exchange.BSE,
+    "BANKEX": Exchange.BSE,
     "CRUDE_OIL": Exchange.MCX,
     "CRUDEOIL": Exchange.MCX,
 }
@@ -33,6 +39,15 @@ _OPTION_ROUTED_UNDERLYINGS = {
 #: An option position's premium notional (premium x lot size) may consume at
 #: most this fraction of account cash. Conservative single-position cap.
 MAX_PREMIUM_CASH_FRACTION = 0.5
+
+#: Hard ceiling on lots per order. The lots formula below can only size DOWN
+#: to zero (skip), never above this. Kelly/VaR upstream speak in underlying
+#: units, and one option lot controls far more underlying notional than the
+#: approved unit budget (one NIFTY lot = ~Rs 15L underlying vs a ~Rs 10k unit
+#: budget), so "how many lots" cannot be derived from those numbers — the
+#: sizing currency for BOUGHT options is premium-at-risk. Raising this cap is
+#: a risk decision reserved for the commander.
+MAX_LOTS_PER_ORDER = 1
 
 
 class OptionsRoutingError(RuntimeError):
@@ -55,6 +70,7 @@ class OptionsRouter:
         req: OrderRequest,
         current_price: float,
         available_cash: float | None = None,
+        risk_budget: float | None = None,
     ) -> OrderRequest:
         """Convert a directional underlying OrderRequest into an option BUY.
 
@@ -63,10 +79,14 @@ class OptionsRouter:
             current_price: Live underlying price (strike anchor).
             available_cash: Account cash for the premium affordability check;
                 None skips the check (paper venue enforces its own balance).
+            risk_budget: Rupee premium budget approved by the risk chain (the
+                strategy's remaining war chest at the entry path). The lot
+                count is sized from this — an exhausted budget SKIPS the trade
+                instead of buying a lot the risk framework never approved.
 
         Raises:
             OptionsRoutingError: when no live contract resolves, the premium
-                quote is unavailable, or the premium is unaffordable.
+                quote is unavailable, or the budget affords fewer than 1 lot.
         """
         symbol_upper = req.instrument.symbol.upper().strip()
         if symbol_upper not in _OPTION_ROUTED_UNDERLYINGS:
@@ -107,16 +127,39 @@ class OptionsRouter:
         if premium <= 0:
             raise OptionsRoutingError(f"Invalid premium {premium} for {option_symbol}.")
 
-        premium_notional = premium * lot_size
-        if available_cash is not None and premium_notional > available_cash * MAX_PREMIUM_CASH_FRACTION:
-            raise OptionsRoutingError(
-                f"Premium notional ₹{premium_notional:,.0f} for {option_symbol} exceeds "
-                f"{MAX_PREMIUM_CASH_FRACTION:.0%} of available cash ₹{available_cash:,.0f}."
-            )
+        # Lot sizing from premium-at-risk. This is the seam that previously
+        # discarded the risk-approved quantity and hardcoded one lot: the entry
+        # path computed Kelly size, clamped it to the risk ceiling, called
+        # itself "the sole enforcement point" — and this method then ignored
+        # all of it, so Kelly/VaR/leverage/drawdown had ZERO influence on any
+        # order Hokage placed. Lots are now floor(budget / premium-per-lot),
+        # capped at MAX_LOTS_PER_ORDER; a budget that affords no lot means NO
+        # trade rather than an unapproved one.
+        premium_per_lot = premium * lot_size
+        ceilings = []
+        if available_cash is not None:
+            ceilings.append(available_cash * MAX_PREMIUM_CASH_FRACTION)
+        if risk_budget is not None:
+            ceilings.append(risk_budget)
+        if ceilings:
+            budget = min(ceilings)
+            lots = int(budget // premium_per_lot)
+            if lots < 1:
+                raise OptionsRoutingError(
+                    f"Risk budget ₹{budget:,.0f} affords 0 lots of {option_symbol} "
+                    f"(premium ₹{premium:.2f} x lot {lot_size:g} = ₹{premium_per_lot:,.0f}/lot); "
+                    f"skipping rather than oversizing."
+                )
+        else:
+            # No budget information supplied (legacy caller): single lot, the
+            # historical behaviour, still bounded by MAX_LOTS_PER_ORDER.
+            lots = 1
+        lots = min(lots, MAX_LOTS_PER_ORDER)
+        premium_notional = premium_per_lot * lots
 
         logger.info(
             f"OptionsRouter: {direction_label} signal on {symbol_upper} @ {current_price:.2f} "
-            f"-> BUY {option_symbol} (strike {contract['strike']}, expiry {contract['expiry']}, "
+            f"-> BUY {lots} lot(s) {option_symbol} (strike {contract['strike']}, expiry {contract['expiry']}, "
             f"1 lot = {lot_size:g}, premium ~₹{premium:.2f}, notional ~₹{premium_notional:,.0f})"
         )
 
@@ -132,6 +175,7 @@ class OptionsRouter:
                 "expiry": str(contract["expiry"]),
                 "option_type": option_type,
                 "lot_size": lot_size,
+                "lots": lots,
                 "premium_at_entry": premium,
                 "kite_symbol": f"{contract['exchange']}:{option_symbol}",
             }
@@ -143,11 +187,11 @@ class OptionsRouter:
             currency="INR",
             metadata=metadata,
         )
-        # Always BUY the option (loss capped at premium); one lot = lot_size units.
+        # Always BUY the option (loss capped at premium).
         return OrderRequest(
             instrument=new_instrument,
             side=OrderSide.BUY,
-            quantity=lot_size,
+            quantity=lots * lot_size,
             order_type=req.order_type,
             venue_id=req.venue_id,
             strategy_id=req.strategy_id,

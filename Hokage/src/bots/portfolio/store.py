@@ -31,21 +31,31 @@ def profile_starting_capital(brain_root: Path) -> float | None:
 class JsonPortfolioStore:
     """Persists Account state as a JSON file under a configured directory."""
 
-    def __init__(self, output_directory: Path) -> None:
+    def __init__(self, output_directory: Path, brain_root: Path | None = None) -> None:
         """Initialize the store.
 
         Args:
-            output_directory: Directory folder (e.g. data/portfolio/).
-                              Created automatically on first save.
+            output_directory: Directory folder (e.g. data/portfolio/, or a
+                              per-venue subdirectory of it). Created
+                              automatically on first save.
+            brain_root: The brain root directory, for resolving SQLite
+                        activation and the commander profile's starting
+                        capital. Defaults to output_directory.parent, which
+                        is only correct when output_directory has no venue
+                        subdirectory appended — callers that pass a
+                        per-venue directory (e.g. portfolio/paper_zerodha)
+                        MUST pass brain_root explicitly, or profile lookups
+                        silently resolve one directory level too shallow.
         """
         self._output_directory = output_directory
-        
+        self._brain_root = brain_root if brain_root is not None else output_directory.parent
+
         # Determine if SQLite is active
         from hokage.memory.resolver import PathResolver
         from shared.persistence.sqlite_engine import SqliteStorageEngine
         from shared.persistence.sqlite_stores import SqlitePortfolioStore
-        
-        resolver = PathResolver(output_directory.parent)
+
+        resolver = PathResolver(self._brain_root)
         if SqliteStorageEngine.is_active(resolver):
             engine = SqliteStorageEngine(resolver)
             self._delegate = SqlitePortfolioStore(engine)
@@ -103,7 +113,7 @@ class JsonPortfolioStore:
             # Initialize new account. The commander profile's starting capital
             # wins over the hardcoded default — a 500k profile silently booting
             # a 10k paper account once starved every entry of cash.
-            capital = profile_starting_capital(self._output_directory.parent)
+            capital = profile_starting_capital(self._brain_root)
             balance = capital if capital is not None else default_balance
             return Account(
                 account_id=account_id,

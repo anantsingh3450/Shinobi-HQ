@@ -901,9 +901,15 @@ class HardLotCapRule(RiskManager):
                 logging.getLogger(__name__).warning(f"Failed to read asset_lot_caps: {e}")
         
         if cap == float("inf"):
-            if "NIFTY" in proposal.market:
+            # Normalise the underscore: the universe symbol is CRUDE_OIL, so a
+            # literal "CRUDEOIL" substring check never matched and the default
+            # lot cap silently never applied to crude.
+            market_normalised = proposal.market.upper().replace("_", "")
+            if "NIFTY" in market_normalised:
                 cap = 1.0
-            elif "CRUDEOIL" in proposal.market:
+            elif "CRUDEOIL" in market_normalised:
+                cap = 1.0
+            elif market_normalised in ("SENSEX", "BANKEX"):
                 cap = 1.0
         
         return RiskVerdict(

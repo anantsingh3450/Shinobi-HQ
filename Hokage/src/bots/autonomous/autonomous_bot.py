@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 from integrations.brokers.models import (
     OrderRequest,
     OrderSide,
+    OrderStatus,
     OrderType,
     ExecutionMode,
 )
@@ -115,13 +116,17 @@ class AutonomousTradingBot:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._active_positions_tracking: dict[str, dict[str, float]] = self._load_positions_tracking()
-        self._shadow_positions_file = self._autonomous_dir / "shadow_positions.json"
-        self._shadow_positions_tracking: dict[str, dict[str, dict[str, Any]]] = self._load_shadow_positions_tracking()
 
         self._trades_taken_today = []
         self._exits_executed_today = []
         self._last_crypto_report_date = None
         self._last_bar_key = None
+        # Post-exit re-entry cooldown per UNDERLYING (UTC exit timestamps).
+        # Same-day re-entries are allowed (evolution needs repetition), but an
+        # immediate re-entry after an exit is usually the same thesis being
+        # revenge-traded into the same tape. In-memory only: a restart clears
+        # it, which at worst permits one earlier re-entry.
+        self._underlying_exit_cooldowns: dict[str, datetime] = {}
 
         # Gatekeeper, overrides and reset tracking
         self.intraday_override = {}
@@ -171,7 +176,17 @@ class AutonomousTradingBot:
         self.telegram_bot.command_handler = self
         self.allocation_engine = PositionAllocationEngine(self.portfolio_intel)
         self.trust_engine = ElderTrustEngine(self.cache)
-        self.journal = DecisionJournalSystem()
+        # Honour the orchestrator's brain root. Constructing the journal with no
+        # root silently fell back to HOKAGE_BRAIN_ROOT/CWD, so a bot running
+        # under an explicitly-rooted orchestrator (portable deployment, test
+        # sandbox) wrote its decisions into a DIFFERENT brain than the one that
+        # reads them — the split that lets pytest reach the production journal.
+        _brain_root = None
+        try:
+            _brain_root = self.orchestrator.resolver.resolve_brain_root()
+        except AttributeError:
+            pass  # No resolver (test double): fall back to the env/CWD default.
+        self.journal = DecisionJournalSystem(_brain_root)
         self.personality_engine = PortfolioManagerPersonalityLayer("ADAPTIVE")
         self.analytics_engine = PerformanceAnalyticsEngine()
         self.position_review_engine = PositionReviewEngine(memory_manager=self.memory_manager)
@@ -314,24 +329,6 @@ class AutonomousTradingBot:
         except Exception as exc:
             logger.error(f"Failed to save active positions: {exc}")
 
-    def _load_shadow_positions_tracking(self) -> dict[str, dict[str, dict[str, Any]]]:
-        """Load persistent shadow positions from brain root."""
-        if hasattr(self, "_shadow_positions_file") and self._shadow_positions_file.exists():
-            try:
-                with self._shadow_positions_file.open("r", encoding="utf-8") as fh:
-                    return json.load(fh)
-            except Exception as exc:
-                logger.error(f"Failed to load shadow positions: {exc}")
-        return {}
-
-    def _save_shadow_positions_tracking(self) -> None:
-        """Save shadow positions to brain root."""
-        try:
-            with self._shadow_positions_file.open("w", encoding="utf-8") as fh:
-                json.dump(self._shadow_positions_tracking, fh, indent=2, sort_keys=True)
-        except Exception as exc:
-            logger.error(f"Failed to save shadow positions: {exc}")
-
     def _entry_family_for(self, symbol: str) -> str:
         """Volume-gate entry family for the strategy that would execute symbol.
 
@@ -350,10 +347,10 @@ class AutonomousTradingBot:
     def strategy_deployed_capital(self) -> dict[str, float]:
         """Capital locked in open positions per strategy_id.
 
-        Real tracked positions count against the executing strategy's war
-        chest; shadow positions count against their shadow strategy. Cost
-        basis = entry price * quantity (for options, entry price is the
-        premium paid so the lock equals real premium outlay).
+        One league: every position is a real paper-venue position tagged with
+        the strategy that entered it. Cost basis = entry price * quantity (for
+        options the entry price is the premium paid, so the lock equals the
+        real premium outlay).
         """
         deployed: dict[str, float] = {}
         for tracking in self._active_positions_tracking.values():
@@ -362,10 +359,6 @@ class AutonomousTradingBot:
                 continue
             cost = float(tracking.get("entry_price", 0.0)) * float(tracking.get("quantity", 0.0))
             deployed[strat_id] = deployed.get(strat_id, 0.0) + cost
-        for strat_id, positions in self._shadow_positions_tracking.items():
-            for tracking in positions.values():
-                cost = float(tracking.get("entry_price", 0.0)) * float(tracking.get("quantity", 0.0))
-                deployed[strat_id] = deployed.get(strat_id, 0.0) + cost
         return deployed
 
     def _strategy_available_capital(self, strategy_id: str) -> float:
@@ -377,130 +370,6 @@ class AutonomousTradingBot:
         from bots.strategy.portfolio import STRATEGY_STARTING_CAPITAL
         return STRATEGY_STARTING_CAPITAL
 
-    def _monitor_and_exit_shadow_positions(self, is_tick: bool = True) -> None:
-        """Check shadow positions for candidate strategies and enforce trailing exits/early exits."""
-        try:
-            risk_state = self.cache.read_intelligence("risk_state.json") or {}
-            vix_impact_delta = risk_state.get("vix_impact_delta", 0.0)
-            regime_data = self.cache.read_intelligence("market_regime.json") or {}
-            trend_score = regime_data.get("trend_score", 0.0)
-            classified_regime = self.adv_regime_engine.classify_regime(trend_score, vix_impact_delta)
-
-            portfolio_metrics = self.portfolio_intel.compute_portfolio_metrics()
-            total_equity = portfolio_metrics.get("total_assets", 500000.0)
-
-            updated_shadow_tracking = {}
-            for strat_id, strat_positions in self._shadow_positions_tracking.items():
-                strat = self.strategy_portfolio.portfolio.get("strategies", {}).get(strat_id)
-                if not strat or strat.get("status") not in ("SHADOW_MODE", "PROBATION"):
-                    continue
-
-                updated_shadow_tracking[strat_id] = {}
-                for symbol, tracking in list(strat_positions.items()):
-                    symbol_upper = symbol.upper()
-                    current_price = self.orchestrator.price_source.get_price(symbol_upper)
-                    if current_price is None or current_price <= 0.0:
-                        current_price = tracking.get("current_price", tracking["entry_price"])
-
-                    # Evaluate open position via Cascading Exits Stack
-                    from integrations.brokers.models import OrderSide
-                    side = OrderSide.BUY if tracking.get("side", "BUY") == "BUY" else OrderSide.SELL
-                    trigger_exit, exit_reason, tracking = self._evaluate_cascading_exits(
-                        symbol=symbol_upper,
-                        side=side,
-                        quantity=tracking.get("quantity", 1.0),
-                        average_price=tracking["entry_price"],
-                        current_price=current_price,
-                        tracking=tracking,
-                        is_tick=is_tick,
-                        venue=None
-                    )
-                    tracking["current_price"] = current_price
-
-
-                    if trigger_exit:
-                        direction_sign = 1.0 if tracking.get("side", "BUY") == "BUY" else -1.0
-                        pnl_per_unit = (current_price - tracking["entry_price"]) * direction_sign
-                        simulated_pnl = pnl_per_unit * tracking["quantity"]
-                        is_win = simulated_pnl > 0
-
-                        self.strategy_portfolio.record_trade_outcome(
-                            strategy_id=strat_id,
-                            asset=symbol_upper,
-                            is_win=is_win,
-                            pnl=simulated_pnl,
-                            market_regime=classified_regime
-                        )
-
-                        active_prod = None
-                        for s_id, s in self.strategy_portfolio.portfolio.get("strategies", {}).items():
-                            if s.get("status") in ("ACTIVE", "PRODUCTION") and s_id != strat_id:
-                                if symbol_upper in s.get("supported_assets", []):
-                                    active_prod = s
-                                    break
-
-                        active_prod_status = "NO_POSITION"
-                        if symbol_upper in self._active_positions_tracking:
-                            active_prod_status = "HOLDING"
-
-                        comp_notes = (
-                            f"Shadow strategy {strat_id} exited {symbol_upper} at {current_price} due to {exit_reason}. "
-                            f"Simulated PnL: {simulated_pnl:.2f}. "
-                            f"Active production strategy position status: {active_prod_status}."
-                        )
-
-                        self.strategy_evolution.log_shadow_decision(
-                            strategy_id=strat_id,
-                            symbol=symbol_upper,
-                            decision_type="EXIT",
-                            decision_details={
-                                "exit_price": current_price,
-                                "exit_reason": exit_reason,
-                                "simulated_pnl": round(simulated_pnl, 2),
-                                "is_win": is_win,
-                                "active_production_strategy_id": active_prod["strategy_id"] if active_prod else "NONE",
-                                "active_production_strategy_status": active_prod_status,
-                                "comparison_notes": comp_notes
-                            }
-                        )
-                    else:
-                        updated_shadow_tracking[strat_id][symbol_upper] = tracking
-
-                        active_prod = None
-                        for s_id, s in self.strategy_portfolio.portfolio.get("strategies", {}).items():
-                            if s.get("status") in ("ACTIVE", "PRODUCTION") and s_id != strat_id:
-                                if symbol_upper in s.get("supported_assets", []):
-                                    active_prod = s
-                                    break
-
-                        active_prod_status = "NO_POSITION"
-                        if symbol_upper in self._active_positions_tracking:
-                            active_prod_status = "HOLDING"
-
-                        comp_notes = (
-                            f"Shadow strategy {strat_id} is HOLDING {symbol_upper} at {current_price}. "
-                            f"Current peak: {tracking.get('peak_price', 0.0)}, stop: {tracking.get('stop_price', 0.0):.2f}. "
-                            f"Active production strategy position status: {active_prod_status}."
-                        )
-
-                        self.strategy_evolution.log_shadow_decision(
-                            strategy_id=strat_id,
-                            symbol=symbol_upper,
-                            decision_type="HOLD",
-                            decision_details={
-                                "current_price": current_price,
-                                "peak_price": tracking.get("peak_price", 0.0),
-                                "stop_price": round(tracking.get("stop_price", 0.0), 2),
-                                "active_production_strategy_id": active_prod["strategy_id"] if active_prod else "NONE",
-                                "active_production_strategy_status": active_prod_status,
-                                "comparison_notes": comp_notes
-                            }
-                        )
-
-            self._shadow_positions_tracking = updated_shadow_tracking
-            self._save_shadow_positions_tracking()
-        except Exception as e:
-            logger.error(f"Error in shadow exit monitoring: {e}", exc_info=True)
 
     def start(self) -> None:
         """Start the background autonomous thread."""
@@ -534,7 +403,7 @@ class AutonomousTradingBot:
         try:
             account_id = self.orchestrator.paper_venue._account_id
             account = self.orchestrator.portfolio_store.load_account(account_id)
-            from shared.persistence.models import TradeStatus
+            from bots.execution.models import TradeStatus
             from datetime import date
             today = date.today()
             cleaned = 0
@@ -968,7 +837,14 @@ class AutonomousTradingBot:
     #: Measured on a comparable live system: midday entries and late-session
     #: entries are net leaks. MCX commodities keep their own session gates.
     _NSE_MIDDAY_BLACKOUT = ((11, 30), (13, 30))
-    _NSE_LAST_ENTRY = (14, 0)
+    #: Commander-approved 2026-07-16: widened from 14:00. EOD square-off is
+    #: 15:20 IST, so a 15:00 entry still has a 20-minute runway; Malfoy keeps
+    #: its own 14:00 cutoff as a module trait.
+    _NSE_LAST_ENTRY = (15, 0)
+    #: Minutes an underlying stands down after an exit before it may be
+    #: re-entered the same day (blocks revenge re-entry into the same tape).
+    #: Commander-approved 2026-07-16: 30 -> 15.
+    _REENTRY_COOLDOWN_MINUTES = 15
     #: India VIX percentile above which BUYING options is blocked — premium is
     #: statistically rich and the move must beat an inflated price (Natenberg).
     _VIX_PERCENTILE_BLOCK = 0.80
@@ -984,13 +860,17 @@ class AutonomousTradingBot:
         is_mcx = symbol_upper.replace("_", "").startswith(("CRUDEOIL", "GOLD", "SILVER", "NATURALGAS"))
 
         # 1. NSE time-of-day protections (MCX runs its own sessions).
+        # Commander-approved 2026-07-16: the GLOBAL midday blackout is gone.
+        # It was cloned from the Malfoy benchmark's conduct rules and blocked
+        # EVERY strategy 11:30-13:30 — two hours of tape nobody could trade,
+        # starving the league of the very data evolution needs. The blackout
+        # survives as Malfoy's personal trait inside its own entry module
+        # (that is its identity); other strategies judge midday on merit.
         if not is_mcx:
             now = self._now_ist()
             hm = (now.hour, now.minute)
-            if self._NSE_MIDDAY_BLACKOUT[0] <= hm < self._NSE_MIDDAY_BLACKOUT[1]:
-                return False, "Midday chop blackout (11:30-13:30 IST): new entries suspended."
             if hm >= self._NSE_LAST_ENTRY:
-                return False, "Late-session cutoff (14:00 IST): no new entries into the close."
+                return False, "Late-session cutoff (15:00 IST): no new entries into the close."
 
         # 2. Bias alignment on the underlying: longs only with a bullish tape,
         # shorts only with a bearish tape, stand aside when mixed.
@@ -1067,6 +947,87 @@ class AutonomousTradingBot:
             return "BEARISH"
         return "MIXED"
 
+    def _build_market_context(self, symbol: str, cache: dict[str, Any] | None = None) -> Any:
+        """Build the live tape snapshot every entry module reads.
+
+        Built ONCE per symbol per scan (via `cache`) and shared by all
+        competitors, so the tournament judges every strategy on byte-identical
+        data — a strategy must not win because it got a fresher quote.
+
+        Returns None when the venue cannot supply enough real candles; callers
+        must then stand aside rather than evaluate on a fabricated tape.
+        """
+        from bots.strategy.components.models import MarketContext
+
+        if cache is not None and symbol in cache:
+            return cache[symbol]
+
+        ctx = None
+        try:
+            from integrations.data.models import HistoricalDataRequest, CandleInterval
+            instrument = self.orchestrator.price_source.resolve_instrument(symbol)
+            req = HistoricalDataRequest(
+                instrument=instrument,
+                start=datetime.now(timezone.utc) - timedelta(days=3),
+                end=datetime.now(timezone.utc),
+                interval=CandleInterval.FIFTEEN_MINUTES,
+            )
+            res = self.orchestrator.price_source.get_historical_candles(req)
+            candles = list(res.candles) if res and res.candles else []
+        except Exception as exc:
+            logger.debug(f"MarketContext: intraday candles unavailable for {symbol}: {exc}")
+            candles = []
+
+        if len(candles) >= 21:
+            closes = [c.close for c in candles]
+            highs = [c.high for c in candles]
+            lows = [c.low for c in candles]
+
+            def _ema(values: list[float], period: int) -> float:
+                k = 2.0 / (period + 1.0)
+                ema = values[0]
+                for v in values[1:]:
+                    ema = v * k + ema * (1.0 - k)
+                return ema
+
+            last_day = candles[-1].timestamp.date()
+            session = [c for c in candles if c.timestamp.date() == last_day]
+            vol_sum = sum((c.volume or 0.0) for c in session)
+            if vol_sum > 0:
+                vwap = sum(((c.high + c.low + c.close) / 3.0) * (c.volume or 0.0) for c in session) / vol_sum
+            else:
+                vwap = sum(c.close for c in session) / len(session) if session else closes[-1]
+
+            minutes_in = None
+            if session:
+                open_ts = session[0].timestamp
+                minutes_in = int((candles[-1].timestamp - open_ts).total_seconds() // 60)
+
+            try:
+                atr = self._get_atr_for_symbol(symbol)
+            except Exception:
+                atr = None
+
+            regime_data = self.cache.read_intelligence("market_regime.json") or {}
+            ctx = MarketContext(
+                symbol=symbol,
+                price=closes[-1],
+                ema9=_ema(closes[-30:], 9),
+                ema21=_ema(closes[-42:], 21),
+                vwap=vwap,
+                closes=tuple(closes),
+                highs=tuple(highs),
+                lows=tuple(lows),
+                atr=atr,
+                regime=regime_data.get("prediction", "UNKNOWN"),
+                vix_percentile=self._india_vix_percentile(),
+                minutes_into_session=minutes_in,
+            )
+
+        if cache is not None:
+            cache[symbol] = ctx
+        return ctx
+
     def _india_vix_percentile(self) -> float | None:
         """Current India VIX close as a percentile of its trailing range.
         None when the feed is unavailable (guard is then skipped, not faked)."""
@@ -1109,38 +1070,96 @@ class AutonomousTradingBot:
             pass
         return spread_pct, bid_ask_ratio
 
-    def _get_volume_context(self, symbol: str, quote: Any) -> tuple[float, float] | None:
-        """Return (current_day_volume, avg_daily_volume) from REAL data only.
+    #: Prior sessions required before a time-of-day volume baseline is trusted.
+    #: Fewer than this and the "typical" curve is one or two days of noise, so
+    #: the gate is skipped rather than run against a baseline we cannot stand
+    #: behind.
+    _VOLUME_MIN_PRIOR_SESSIONS = 3
+    _VOLUME_PROFILE_LOOKBACK_DAYS = 14
 
-        Doctrine: no fabricated market data. current volume comes from the live
-        quote; the average is computed from actual daily candles (14 days).
-        Returns None when either side is unavailable — callers must then SKIP
-        the volume gate rather than run it on invented numbers. Note: the
-        current day's cumulative volume is naturally lower early in the session,
-        which biases the breakout ratio conservative (fewer entries) — the safe
-        direction.
+    def _get_volume_context(self, symbol: str, quote: Any) -> tuple[float, float] | None:
+        """Return (today_cumulative_volume, typical_cumulative_volume_at_this_time).
+
+        Both sides are REAL and measured at the SAME point in the session.
+
+        The previous version divided today's *partial* cumulative volume by the
+        average *complete* 14-day session. That ratio rises from ~0 to ~1 purely
+        as the day ages, so it measured the clock, not the tape: on 2026-07-15
+        NIFTY it ran 0.20x at 09:15 to 0.87x at 15:15 and never once reached the
+        1.20x breakout bar — the breakout family could not fire at any hour of
+        any day, and CRUDE_OIL's evening "THIN_TAPE 0.35x" was simply 18:15.
+
+        Comparing today's cumulative volume at time T against the average
+        cumulative volume at the same T on prior sessions removes the intraday
+        volume curve from the measurement. 1.0x then means "normal for this time
+        of day" and the family thresholds recover the meaning they were written
+        with. Same-day NIFTY re-measured this way: 1.31x at 09:15 — a real surge
+        the old denominator scored as 0.20x.
+
+        The live quote is deliberately not the source for today's side: its
+        cumulative volume may span different session boundaries than the candle
+        series the baseline is built from, and comparing two differently-bounded
+        numbers is the bug this method exists to fix. ``quote`` is retained only
+        as the caller's liveness check.
+
+        Returns None when the data cannot support an honest comparison (no
+        candles, too few prior sessions, no matching time-of-day bucket) — the
+        caller must then SKIP the gate rather than run it on invented numbers.
         """
         try:
-            current_vol = float(quote.volume) if quote.volume is not None else None
-        except Exception:
-            current_vol = None
-        if not current_vol or current_vol <= 0:
-            return None
-        try:
-            from integrations.data.models import HistoricalDataRequest, CandleInterval
             from datetime import timedelta
+
+            from integrations.data.models import CandleInterval, HistoricalDataRequest
+
             instrument = self.orchestrator.price_source.resolve_instrument(symbol)
-            req = HistoricalDataRequest(
-                instrument=instrument,
-                start=datetime.now(timezone.utc) - timedelta(days=14),
-                end=datetime.now(timezone.utc),
-                interval=CandleInterval.ONE_DAY,
-            )
-            res = self.orchestrator.price_source.get_historical_candles(req)
-            vols = [float(c.volume) for c in (res.candles if res and res.candles else []) if c.volume and c.volume > 0]
-            if not vols:
+            if instrument is None:
                 return None
-            return current_vol, sum(vols) / len(vols)
+            res = self.orchestrator.price_source.get_historical_candles(
+                HistoricalDataRequest(
+                    instrument=instrument,
+                    start=datetime.now(timezone.utc) - timedelta(days=self._VOLUME_PROFILE_LOOKBACK_DAYS),
+                    end=datetime.now(timezone.utc),
+                    interval=CandleInterval.FIFTEEN_MINUTES,
+                )
+            )
+            candles = list(res.candles) if res and res.candles else []
+            if not candles:
+                return None
+
+            by_day: dict[Any, list[Any]] = {}
+            for c in candles:
+                by_day.setdefault(c.timestamp.date(), []).append(c)
+
+            days = sorted(by_day)
+            today, prior_days = days[-1], days[:-1]
+            if len(prior_days) < self._VOLUME_MIN_PRIOR_SESSIONS:
+                return None
+
+            # Today's cumulative volume, and the session clock we compare at.
+            today_bars = sorted(by_day[today], key=lambda c: c.timestamp)
+            current_vol = sum(float(c.volume or 0) for c in today_bars)
+            if current_vol <= 0:
+                return None
+            marker = today_bars[-1].timestamp.strftime("%H:%M")
+
+            # Average cumulative volume reached by this same clock time on prior
+            # sessions. A day that had not yet traded to this point contributes
+            # nothing — a half-session must not be averaged in as if complete.
+            peers: list[float] = []
+            for day in prior_days:
+                run = 0.0
+                reached = False
+                for c in sorted(by_day[day], key=lambda c: c.timestamp):
+                    run += float(c.volume or 0)
+                    if c.timestamp.strftime("%H:%M") == marker:
+                        reached = True
+                        break
+                if reached and run > 0:
+                    peers.append(run)
+
+            if len(peers) < self._VOLUME_MIN_PRIOR_SESSIONS:
+                return None
+            return current_vol, sum(peers) / len(peers)
         except Exception:
             return None
 
@@ -1243,12 +1262,43 @@ class AutonomousTradingBot:
             logger.warning("CLOSE ALL via Telegram: %d liquidation order(s) sent.", closed)
             return f"🛑 *CLOSE ALL*: liquidation orders sent for {closed} position(s). Entries NOT halted (use /pause or /kill)."
         if cmd == "status":
-            return (
+            # Telegram sends with parse_mode=Markdown: a raw underscore in a
+            # dynamic value (e.g. gatekeeper_state="Await_Elder_Command")
+            # opens an italics span and eats the rest of the line.
+            gatekeeper_str = str(self.gatekeeper_state).replace("_", "\\_")
+            header = (
                 f"📡 *STATUS*: halted={self.intraday_override.get('halted', False)}, "
-                f"gatekeeper={self.gatekeeper_state}, "
+                f"gatekeeper={gatekeeper_str}, "
                 f"tracked_positions={len(self._active_positions_tracking)}, "
                 f"loop_active={self.is_active()}"
             )
+            if not self._active_positions_tracking:
+                return header
+            lines = [header, "", "*Open Positions:*"]
+            for sym, pos in self._active_positions_tracking.items():
+                entry = float(pos.get("entry_price", 0.0))
+                qty = float(pos.get("quantity", 0.0))
+                stop = pos.get("stop_price")
+                target = pos.get("target_price")
+                try:
+                    ltp = self.orchestrator.price_source.get_price(sym)
+                except Exception:
+                    ltp = None
+                side = pos.get("side", "BUY")
+                direction_sign = 1.0 if side == "BUY" else -1.0
+                pnl_str = "N/A"
+                ltp_str = "N/A"
+                if isinstance(ltp, (int, float)):
+                    ltp_str = f"{ltp:.2f}"
+                    pnl = (ltp - entry) * qty * direction_sign
+                    pnl_str = f"₹{pnl:+.2f}"
+                stop_str = f"{stop:.2f}" if isinstance(stop, (int, float)) else "N/A"
+                target_str = f"{target:.2f}" if isinstance(target, (int, float)) else "N/A"
+                lines.append(
+                    f"• *{sym}* {side} qty={qty:g} | entry={entry:.2f} LTP={ltp_str} "
+                    f"| PnL={pnl_str} | stop={stop_str} target={target_str}"
+                )
+            return "\n".join(lines)
         return f"Unknown control command: /{cmd}"
 
     def _close_all_positions(self, reason: str) -> int:
@@ -1449,11 +1499,16 @@ class AutonomousTradingBot:
             else:
                 tracking["stop_price"] = average_price + atr_stop_distance
 
-        # Track peak price
+        # Track peak price. "Peak" is directional (best price FOR the position),
+        # "trough" is the worst — together they form the excursion envelope that
+        # post-trade attribution needs to separate entry quality (how far price
+        # ran our way) from exit quality (how much of that we captured).
         if side == OrderSide.BUY or side.value == "BUY":
             tracking["peak_price"] = max(tracking.get("peak_price", average_price), current_price)
+            tracking["trough_price"] = min(tracking.get("trough_price", average_price), current_price)
         else:
             tracking["peak_price"] = min(tracking.get("peak_price", average_price), current_price)
+            tracking["trough_price"] = max(tracking.get("trough_price", average_price), current_price)
 
         scaled_out_stage = tracking.get("scaled_out_stage", 0)
         initial_qty = tracking["initial_qty"]
@@ -1521,12 +1576,48 @@ class AutonomousTradingBot:
     #: TRAIL_LOCK arms once open profit reaches this many rupees per position,
     #: then never gives back more than the same amount from peak.
     _OPTION_TRAIL_LOCK_RUPEES = 1000.0
+    #: PROFIT_LOCK stages: (peak gain that arms the stage, fraction of the
+    #: peak gain locked in). Once the premium's PEAK is up `arm` over entry,
+    #: the exit floor ratchets to entry + lock*peak_gain and only rises.
+    #: Staged deliberately WIDE for option noise (premiums oscillate 10-15%
+    #: routinely): a +20% winner may retrace to +2% — but never to a loss;
+    #: bigger winners keep progressively more of their peak.
+    _OPTION_PROFIT_LOCK_STAGES = (
+        (0.20, 0.10),  # peak +20%: floor = entry +2% -> a winner cannot become a loser
+        (0.40, 0.50),  # peak +40%: keep at least half the peak gain
+        (0.80, 0.65),  # peak +80%: keep close to two-thirds of a runner
+    )
     #: Adaptive target: fraction of the expected remaining underlying move,
     #: through an assumed ATM delta, clamped to a % band of entry premium.
     _OPTION_TARGET_MOVE_FRACTION = 0.30
     _OPTION_TARGET_ATM_DELTA = 0.45
     _OPTION_TARGET_MIN_PCT = 0.06
     _OPTION_TARGET_MAX_PCT = 0.25
+
+    @staticmethod
+    def _excursion_pcts(
+        entry_price: float,
+        peak_price: float | None,
+        trough_price: float | None,
+        side: str = "BUY",
+    ) -> tuple[float | None, float | None]:
+        """Return (MFE%, MAE%) for a closed trade, signed relative to the position.
+
+        MFE is the best unrealized move in the position's favour, MAE the worst
+        against it — both as a percentage of entry. Returns None for a leg whose
+        live extreme was never recorded: a missing excursion must read as
+        "unknown" so attribution skips it, never as a fabricated 0.0 that would
+        silently score the entry or exit as flat.
+        """
+        if not entry_price or entry_price <= 0:
+            return None, None
+        direction = 1.0 if str(side).upper() == "BUY" else -1.0
+        mfe = None if peak_price is None else ((peak_price - entry_price) / entry_price) * 100.0 * direction
+        mae = None if trough_price is None else ((trough_price - entry_price) / entry_price) * 100.0 * direction
+        return (
+            None if mfe is None else round(mfe, 4),
+            None if mae is None else round(mae, 4),
+        )
 
     def _evaluate_option_exit_ladder(
         self,
@@ -1550,6 +1641,11 @@ class AutonomousTradingBot:
 
         tracking["peak_price"] = max(tracking.get("peak_price", entry_premium), current_premium)
         peak_premium = tracking["peak_price"]
+        # Excursion envelope for post-trade component attribution: the peak is
+        # the profit that was ON THE TABLE (entry quality), the trough is the
+        # worst heat taken (risk quality). Recorded live because neither can be
+        # reconstructed after the fact from entry/exit prices alone.
+        tracking["trough_price"] = min(tracking.get("trough_price", entry_premium), current_premium)
 
         # Rung 1 — tiered premium HARD BACKSTOP (catastrophe cap).
         for tier_floor, max_loss_pct in self._OPTION_BACKSTOP_TIERS:
@@ -1600,18 +1696,44 @@ class AutonomousTradingBot:
                     f"target {target:.2f} (entry {entry_premium:.2f})"
                 ), tracking
 
-        # Rung 4 — TRAIL_LOCK: once peak open profit >= the lock amount, a
-        # rising floor gives back at most that amount from peak.
+        # Rung 4 — PROFIT PROTECTION: ratcheting floors that keep a winner
+        # from round-tripping into a loser. Two floor sources, tightest wins:
+        #   a) TRAIL_LOCK — once peak open profit >= the lock amount, never
+        #      give back more than that amount from peak (rupee-based).
+        #   b) PROFIT_LOCK stages — %-based breakeven ratchet + partial locks
+        #      (commander directive 2026-07-16: "in profit must not become a
+        #      loss, but leave room for option volatility").
+        # The floor only ever rises; it is stored in tracking["stop_price"]
+        # so the dashboard shows the live protective level.
+        floor_candidates: list[tuple[float, str]] = []
         if quantity > 0:
             peak_profit_rupees = (peak_premium - entry_premium) * quantity
             if peak_profit_rupees >= self._OPTION_TRAIL_LOCK_RUPEES:
-                floor_premium = peak_premium - (self._OPTION_TRAIL_LOCK_RUPEES / quantity)
-                tracking["stop_price"] = max(tracking.get("stop_price", 0.0), floor_premium)
-                if current_premium <= floor_premium:
-                    return True, (
-                        f"TRAIL_LOCK: premium {current_premium:.2f} gave back "
-                        f"₹{self._OPTION_TRAIL_LOCK_RUPEES:,.0f} from peak {peak_premium:.2f}"
-                    ), tracking
+                floor_candidates.append((
+                    peak_premium - (self._OPTION_TRAIL_LOCK_RUPEES / quantity),
+                    f"TRAIL_LOCK: gave back ₹{self._OPTION_TRAIL_LOCK_RUPEES:,.0f} from peak {peak_premium:.2f}",
+                ))
+        if entry_premium > 0:
+            peak_gain = (peak_premium - entry_premium) / entry_premium
+            for arm_gain, lock_fraction in self._OPTION_PROFIT_LOCK_STAGES:
+                if peak_gain >= arm_gain:
+                    floor_candidates.append((
+                        entry_premium + lock_fraction * (peak_premium - entry_premium),
+                        f"PROFIT_LOCK(+{arm_gain:.0%} armed): keeping {lock_fraction:.0%} of peak gain "
+                        f"(peak {peak_premium:.2f}, entry {entry_premium:.2f})",
+                    ))
+        if floor_candidates:
+            floor_premium, floor_label = max(floor_candidates, key=lambda fc: fc[0])
+            prev_floor = float(tracking.get("stop_price") or 0.0)
+            if floor_premium > prev_floor:
+                tracking["stop_price"] = round(floor_premium, 2)
+                tracking["stop_label"] = floor_label
+            active_floor = float(tracking["stop_price"])
+            if current_premium <= active_floor:
+                return True, (
+                    f"{tracking.get('stop_label', floor_label)} — premium {current_premium:.2f} "
+                    f"hit protective floor {active_floor:.2f}"
+                ), tracking
 
         return False, "", tracking
 
@@ -1649,17 +1771,33 @@ class AutonomousTradingBot:
         classified_regime = self.adv_regime_engine.classify_regime(trend_score, vix_impact_delta)
 
         updated_tracking = {}
+        marked_to_market: dict[str, float] = {}
         for pos, venue in positions_with_venue:
             symbol = pos.instrument.symbol
             tracking = self._active_positions_tracking.get(symbol)
-            
+
+            # LIVE price for the exit ladder. pos.current_price comes from the
+            # paper account book, which nothing marks to market — it stays at
+            # the ENTRY price forever. On 2026-07-16 the ladder spent a whole
+            # session comparing a NIFTY option against its own entry (124 vs
+            # 124): the premium crossed the target AND broke the stop and no
+            # premium rung ever saw either — only the underlying thesis stop
+            # and the EOD clock (which fetch their own data) have ever fired.
+            # A failed live fetch falls back to the stored price: exits are
+            # never refused outright on data quality, but a rung that needs
+            # the live premium simply cannot trigger that cycle (never guess).
+            live_price, _live_reason = self._get_validated_live_price(symbol)
+            if live_price is not None:
+                marked_to_market[symbol] = float(live_price)
+            current_price = live_price if live_price is not None else (pos.current_price or pos.average_price)
+
             # Evaluate open position via Cascading Exits Stack
             trigger_exit, exit_reason, tracking = self._evaluate_cascading_exits(
                 symbol=symbol,
                 side=pos.side,
                 quantity=pos.quantity,
                 average_price=pos.average_price,
-                current_price=pos.current_price or pos.average_price,
+                current_price=current_price,
                 tracking=tracking,
                 is_tick=is_tick,
                 venue=venue
@@ -1675,20 +1813,59 @@ class AutonomousTradingBot:
                     order_type=OrderType.MARKET,
                     venue_id=venue.venue_id,
                     strategy_id="AutonomousExit",
-                    execution_reason=exit_reason
+                    execution_reason=exit_reason,
+                    # An exit may only ever reduce exposure. Without this the
+                    # venue executes it as a fresh opposite-side entry when the
+                    # position is already gone, and the monitor then exits THAT.
+                    reduce_only=True,
                 )
                 try:
                     logger.info(f"Triggering Exit for {symbol} ({exit_reason})")
                     resp = venue.place_order(exit_req)
+
+                    # The response used to be discarded. A rejected or unfilled
+                    # exit then looked identical to a successful one: the
+                    # commander got a "position closed" alert, the position
+                    # stayed open, and the next tick exited it again — 377 times
+                    # on 2026-07-15. Treat a non-fill as "still open": no
+                    # notification, no analytics, no tracking teardown. The
+                    # position stays under management and is retried on merit.
+                    if resp is None or resp.status not in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
+                        reason_txt = getattr(resp, "error_message", None) or "venue returned no fill"
+                        logger.warning(
+                            f"Exit for {symbol} did NOT fill ({reason_txt}); "
+                            f"position remains open, skipping exit bookkeeping."
+                        )
+                        continue
+
+                    # PnL from the LIVE exit price. pos.unrealized_pnl is the
+                    # stale book value (never marked to market = always 0.0),
+                    # which scored every exit as BREAKEVEN and fed the strategy
+                    # scoreboard zeros for real wins and losses.
+                    _pnl_sign = 1.0 if pos.side == OrderSide.BUY else -1.0
+                    live_pnl = round((current_price - pos.average_price) * pos.quantity * _pnl_sign, 2)
+
                     exit_record = {
                         "symbol":     symbol,
                         "side":       exit_side.value,
                         "quantity":   pos.quantity,
                         "reason":     exit_reason,
-                        "pnl":        pos.unrealized_pnl,
+                        "pnl":        live_pnl,
                         "timestamp":  datetime.now(timezone.utc).isoformat(),
                     }
                     self._exits_executed_today.append(exit_record)
+
+                    # Notify immediately, isolated from every downstream
+                    # analytics/journal step below: those can throw (and did
+                    # — an exception anywhere past this point used to skip
+                    # the Telegram notification entirely, since notify_exit
+                    # previously only fired at the tail end of the async
+                    # post-exit analysis block).
+                    if self.telegram_bot and self.telegram_bot.enabled:
+                        try:
+                            self.telegram_bot.notify_exit(symbol, price=current_price, reason=exit_reason)
+                        except Exception as exc:
+                            logger.error(f"Failed to send exit notification for {symbol}: {exc}")
 
                     # Resolve metadata stored at entry time
                     entry_meta = tracking or {}
@@ -1706,13 +1883,15 @@ class AutonomousTradingBot:
                     regime_data = self.cache.read_intelligence("market_regime.json")
                     regime_str = regime_data.get("prediction", "NORMAL")
 
-                    exit_price_actual = pos.current_price or stored_entry_price
+                    # The live-marked price, not the stale book price (which
+                    # sat at entry and scored every exit as breakeven PnL=0).
+                    exit_price_actual = current_price or stored_entry_price
                     return_pct = (
                         ((exit_price_actual - stored_entry_price) / stored_entry_price)
                         if stored_entry_price > 0 else 0.0
                     )
-                    is_win = (pos.unrealized_pnl > 0.0)
-                    outcome_str = "WIN" if is_win else ("LOSS" if pos.unrealized_pnl < 0 else "BREAKEVEN")
+                    is_win = (live_pnl > 0.0)
+                    outcome_str = "WIN" if is_win else ("LOSS" if live_pnl < 0 else "BREAKEVEN")
 
                     if not is_win:
                         self._log_post_mortem_failure(
@@ -1722,7 +1901,7 @@ class AutonomousTradingBot:
                             exit_reason=exit_reason,
                             entry_price=stored_entry_price,
                             stop_price=stored_stop_price,
-                            pnl=pos.unrealized_pnl
+                            pnl=live_pnl
                         )
 
                     # --- Layer 1: Synchronous outcome recording ---
@@ -1732,7 +1911,7 @@ class AutonomousTradingBot:
                         market_regime=regime_str,
                         conviction_score=stored_conviction,
                         holding_period_days=3,
-                        pnl=pos.unrealized_pnl,
+                        pnl=live_pnl,
                         is_win=is_win,
                         decision_id=stored_decision_id,
                         entry_price=stored_entry_price,
@@ -1740,22 +1919,44 @@ class AutonomousTradingBot:
                         return_pct=return_pct,
                     )
 
-                    # Record strategy portfolio trade outcome based on registered strategy ID
+                    # Excursion envelope, measured live during the hold (see the
+                    # exit ladders). MFE = how far price ran in our favour =
+                    # entry quality; MAE = worst heat taken. Capture efficiency
+                    # (realized / MFE) is what separates a bad exit from a bad
+                    # entry — neither is recoverable from entry/exit prices
+                    # alone, which is why these were previously mocked.
+                    _mfe_pct, _mae_pct = self._excursion_pcts(
+                        entry_price=stored_entry_price,
+                        peak_price=entry_meta.get("peak_price"),
+                        trough_price=entry_meta.get("trough_price"),
+                        side=entry_meta.get("side", "BUY"),
+                    )
+
+                    # Record strategy portfolio trade outcome based on registered strategy ID.
+                    # Keyed by the UNDERLYING, never the option contract: keying by
+                    # contract (CRUDEOIL26JUL7750CE) minted a fresh stats domain for
+                    # every strike/expiry, so confidence could never accumulate and
+                    # strategies were never comparable on the same axis.
                     stored_strategy_id = entry_meta.get("strategy_id", "strat-autotrend-equities-v1")
+                    outcome_asset = entry_meta.get("underlying") or symbol
                     self.strategy_portfolio.record_trade_outcome(
                         strategy_id=stored_strategy_id,
-                        asset=symbol,
+                        asset=outcome_asset,
                         is_win=is_win,
-                        pnl=pos.unrealized_pnl,
+                        pnl=live_pnl,
                         market_regime=regime_str
                     )
+
+                    # Arm the same-day re-entry cooldown for this underlying:
+                    # re-entries are allowed, immediate revenge re-entry is not.
+                    self._underlying_exit_cooldowns[str(outcome_asset).upper()] = datetime.now(timezone.utc)
 
                     # --- Layer 1: Journal outcome update ---
                     if stored_decision_id:
                         self.journal.update_decision_outcome(
                             decision_id=stored_decision_id,
                             outcome=outcome_str,
-                            pnl=pos.unrealized_pnl,
+                            pnl=live_pnl,
                             exit_reason=exit_reason,
                             holding_days=3,
                             return_pct=return_pct,
@@ -1772,9 +1973,11 @@ class AutonomousTradingBot:
                         _conviction=stored_conviction,
                         _alloc_pct=stored_alloc_pct,
                         _exit_reason=exit_reason,
-                        _pnl=pos.unrealized_pnl,
+                        _pnl=live_pnl,
                         _return_pct=return_pct,
                         _regime=regime_str,
+                        _mfe_pct=_mfe_pct,
+                        _mae_pct=_mae_pct,
                         _sector=symbol_sec,
                         _personality=stored_personality,
                         _sector_flow=stored_sector_flow,
@@ -1834,15 +2037,17 @@ class AutonomousTradingBot:
                                 ml_edge_score_at_entry=_conviction,
                                 vix_at_entry=15.0, # Defaulting for now
                                 market_regime_at_entry=_regime,
-                                max_adverse_excursion_pct=-2.0, # Mocking max adverse
-                                max_favorable_excursion_pct=return_pct + 1.0, # Mocking max favorable
+                                # Real excursions measured during the hold. None
+                                # (extreme never recorded) stays None so the
+                                # Pattern Reader skips the trade instead of
+                                # scoring a fabricated flat excursion.
+                                max_adverse_excursion_pct=_mae_pct,
+                                max_favorable_excursion_pct=_mfe_pct,
                             )
                             if self.orchestrator.improvement_bot:
                                 self.orchestrator.improvement_bot.process_autopsy(autopsy)
-                            
-                            if self.telegram_bot and self.telegram_bot.enabled:
-                                self.telegram_bot.notify_exit(_symbol, price=_exit_price, reason=_exit_reason)
-                                
+                            # Telegram exit notification already sent synchronously
+                            # right after the fill (see above) — not repeated here.
                         except Exception as exc:
                             logger.error(f"Failed to process trade autopsy for {_symbol}: {exc}")
 
@@ -1857,7 +2062,50 @@ class AutonomousTradingBot:
 
         self._active_positions_tracking = updated_tracking
         self._save_positions_tracking()
-        self._monitor_and_exit_shadow_positions(is_tick=is_tick)
+
+        # BLIND-MONITOR ALARM: positions are open but not one live quote came
+        # back this tick. The ladder silently degrades to frozen book prices —
+        # exactly the blind-exit disease of 2026-07-16 morning, except caused
+        # by a dead feed (expired Kite token, network) instead of a code bug.
+        # Escalate ONCE after 3 consecutive blind ticks; never a message storm.
+        if positions_with_venue and not marked_to_market:
+            self._blind_monitor_ticks = getattr(self, "_blind_monitor_ticks", 0) + 1
+            if self._blind_monitor_ticks == 3:
+                blind_msg = (
+                    f"Exit monitor is BLIND: {len(positions_with_venue)} open position(s) "
+                    f"and no live quotes for {self._blind_monitor_ticks} consecutive checks. "
+                    f"Premium exits are frozen at book prices — check the Kite session/login."
+                )
+                logger.critical(blind_msg)
+                if self.telegram_bot and self.telegram_bot.enabled:
+                    try:
+                        self.telegram_bot.send_message(blind_msg)
+                    except Exception as exc:
+                        logger.error(f"Failed to send blind-monitor alert: {exc}")
+        elif marked_to_market:
+            self._blind_monitor_ticks = 0
+
+        # Mark the paper book to market with the live prices fetched above, so
+        # the dashboard's Net Worth / Today's P&L / positions table stop showing
+        # entry-price freezes (Current 124.00 / PnL 0.00 on a -754 position).
+        if marked_to_market:
+            try:
+                from bots.execution.models import TradeStatus
+
+                account = self.orchestrator.portfolio_store.load_account(
+                    self.orchestrator.paper_venue._account_id
+                )
+                changed = False
+                for position in account.positions.values():
+                    live = marked_to_market.get(position.market)
+                    if live is not None and position.status == TradeStatus.OPEN:
+                        position.update_price(live)
+                        changed = True
+                if changed:
+                    self.orchestrator.portfolio_store.save_account(account)
+            except Exception as exc:
+                logger.error(f"Mark-to-market write-back failed (non-fatal): {exc}")
+
 
     def _log_post_mortem_failure(
         self,
@@ -1912,10 +2160,28 @@ class AutonomousTradingBot:
             logger.error(f"Failed to write post-mortem failure reason to database: {e}")
 
     def _run_direct_broker_sync_and_flatten_ghost_positions(self) -> None:
-        """Trigger direct broker reconciliation and forcefully flatten unindexed ghost positions."""
-        logger.info("Direct Broker Sync: Running 180s reconciliation audit for ghost positions...")
+        """Trigger direct broker reconciliation and forcefully flatten unindexed ghost positions.
+
+        LIVE mode only: ghost detection compares the real broker's positions
+        against Hokage's own local ledger to catch drift from manual trades
+        or crashed order acks — that divergence is only possible against a
+        real external broker. In PAPER/HYBRID the "broker" IS the paper
+        venue, so it can never disagree with itself; the local ledger this
+        function queries (self.orchestrator.portfolio_store, account_id
+        "paper") is also a different store than the one the paper venue
+        actually persists to, which made every paper position look like an
+        unindexed ghost and get force-flattened ~3 minutes after entry,
+        before the exit ladder or stop-loss ever got a chance to run.
+        """
         try:
             context = self.orchestrator.get_execution_context()
+        except Exception:
+            return
+        if context.execution_mode != ExecutionMode.LIVE:
+            return
+
+        logger.info("Direct Broker Sync: Running 180s reconciliation audit for ghost positions...")
+        try:
             venue = self.orchestrator.registry.get_venue(context.active_venue_id)
             if not venue:
                 venue = self.orchestrator.paper_venue
@@ -1925,15 +2191,15 @@ class AutonomousTradingBot:
         try:
             from integrations.brokers.models import OrderRequest, OrderSide, OrderType
             from bots.execution.models import TradeStatus
-            
+
             # 1. Fetch broker positions
             broker_positions = {p.instrument.symbol.upper(): p for p in venue.get_positions()}
-            
+
             # 2. Fetch local positions
             account_id = "paper"
             portfolio = self.orchestrator.portfolio_store.load_account(account_id)
             local_positions = {pos.market.upper() for pos in portfolio.positions.values() if pos.status == TradeStatus.OPEN}
-            
+
             # 3. Detect and flatten ghost positions
             for symbol, b_pos in broker_positions.items():
                 if symbol not in local_positions and b_pos.quantity > 0:
@@ -1954,7 +2220,15 @@ class AutonomousTradingBot:
                         execution_reason="Direct broker sync: Force flattening unindexed ghost position."
                     )
                     venue.place_order(req)
-                    
+                    if self.telegram_bot and self.telegram_bot.enabled:
+                        try:
+                            self.telegram_bot.notify_exit(
+                                symbol, price=0.0,
+                                reason=f"Ghost position force-flattened ({b_pos.quantity:g} units, broker/ledger drift)",
+                            )
+                        except Exception as exc:
+                            logger.error(f"Failed to send ghost-flatten notification for {symbol}: {exc}")
+
             # 4. Check Margin Utilization Ceiling (65%)
             try:
                 bal = venue.get_account_balance()
@@ -1974,29 +2248,46 @@ class AutonomousTradingBot:
             logger.error(f"Failed to run direct broker sync/flatten: {e}")
 
     def _evaluate_single_symbol(self, symbol: str) -> dict[str, Any] | None:
-        """Run Research -> Strategy -> Backtest validations for a single asset, augmented by ML Engine."""
+        """Run Research -> Strategy -> Backtest for a single asset.
+
+        The daily-bar ML verdict and the daily-bar heuristic backtest are
+        ADVISORY, never a veto (2026-07-16): both run on yfinance 1d candles —
+        wrong granularity for an intraday options league — and their silent
+        hard vetoes starved whole sessions (SENSEX: 24 invisible ML skips in
+        one day on a static 55.5%; the league modules never saw the asset).
+        The league's live-tape entry modules decide entries; these daily views
+        travel along as context. Every stand-aside returns a journaled
+        ``blocked_reason`` — an asset must never vanish without a reason.
+        """
         try:
             # 1. Fetch historical data and engineer features
             from bots.strategy.features import fetch_and_cache_ohlcv, calculate_features
             from bots.strategy.ml_engine import MLEngine
-            
+
+            advisories: list[str] = []
+            rec, prob = "neutral", 0.5
             df = fetch_and_cache_ohlcv(symbol, timeframe="1d")
             if df is not None and not df.empty and len(df) >= 20:
                 df = calculate_features(df)
                 ml_engine = MLEngine()
                 rec, prob = ml_engine.get_zone_recommendation(symbol, df)
                 if rec == "neutral":
-                    logger.info(f"ML Engine: No edge detected for {symbol} (probability {prob:.2f}). Skipping.")
-                    return None
+                    advisories.append(
+                        f"MLAdvisory: daily-bar model neutral ({prob:.0%} up) — league decides on live tape."
+                    )
             else:
-                logger.warning(f"Insufficient historical data to run ML Engine for {symbol}.")
-                rec = "long" # default fallback
-                prob = 0.5
-                
+                # Doctrine: never fabricate a verdict from missing data. The
+                # daily series only feeds the ADVISORY ML view, so its absence
+                # is noted, not a stand-aside — the league judges live candles.
+                advisories.append(
+                    f"MLAdvisory: insufficient daily history for {symbol}; ML view unavailable."
+                )
+                logger.warning(advisories[-1])
+
             # 2. Run Research
             query = ResearchQuery(text=f"Autoscan trends for {symbol}")
             report = self.orchestrator.research_bot.research(query, persist=False)
-            
+
             # 3. Run Strategy Generator
             proposal = self.orchestrator.strategy_bot.generate(report)
             
@@ -2019,28 +2310,35 @@ class AutonomousTradingBot:
                 volatility_regime=proposal.volatility_regime
             )
             
-            # 4. Validate via Backtest
+            # 4. Validate via Backtest — advisory, not a veto. Its real numbers
+            # (win rate, profit factor) still feed conviction and ranking.
             backtest_result = self.orchestrator.backtest_bot.validate_strategy(proposal)
+            if not backtest_result.passed:
+                advisories.append(
+                    f"BacktestAdvisory: daily heuristic backtest failed "
+                    f"(win_rate={backtest_result.win_rate}, trades={backtest_result.total_trades}) — league decides on live tape."
+                )
+                logger.info(f"{symbol}: {advisories[-1]}")
 
-            if backtest_result.passed:
-                return {
-                    "proposal": proposal,
-                    "backtest_result": backtest_result,
-                    "score": proposal.confidence_score * (backtest_result.win_rate / 100.0)
-                }
-            # Surface WHY the gate failed — this rejection was previously
-            # silent, which made a hard-broken backtest window look like the
-            # market simply offering nothing all day.
-            logger.warning(
-                f"Backtest gate rejected {symbol}: {backtest_result.summary} "
-                f"(win_rate={backtest_result.win_rate}, trades={backtest_result.total_trades})"
-            )
+            return {
+                "proposal": proposal,
+                "backtest_result": backtest_result,
+                "score": proposal.confidence_score * (backtest_result.win_rate / 100.0),
+                "advisories": advisories,
+            }
         except Exception as exc:
             logger.error(f"Failed to scan opportunity for {symbol}: {exc}")
-        return None
+            return {"blocked_reason": f"Scan pipeline error for {symbol}: {exc}"}
 
     def _scan_and_enter_opportunities(self) -> None:
         """Scan watchlist/market universe for opportunities, rank, size and place entry orders."""
+        from bots.strategy.components.entries import ENTRY_MODULES
+
+        # Live market context, built once per symbol per scan and shared by the
+        # champion's entry module below — the same cache discipline the shadow
+        # loop uses, so champion and challengers judge identical candles.
+        _ctx_cache: dict[str, Any] = {}
+
         # Enforce hardcoded maximum margin utilization ceiling of 65%
         try:
             context = self.orchestrator.get_execution_context()
@@ -2194,6 +2492,17 @@ class AutonomousTradingBot:
         for sym in self._active_positions_tracking:
             existing_symbols.add(sym.upper())
 
+        # Option positions live under the CONTRACT symbol (NIFTY2672124150CE)
+        # while the scan iterates UNDERLYINGs (NIFTY) — a bare symbol match
+        # never blocked a duplicate entry on an underlying with an open option.
+        # The old once-per-day playbook rule masked that hole; with same-day
+        # re-entries now allowed, map every open tracked position back to its
+        # underlying and exclude those from the scan.
+        for trk in self._active_positions_tracking.values():
+            und = str(trk.get("underlying") or "").upper()
+            if und:
+                existing_symbols.add(und)
+
         # Check available cash on default/primary venue as a fast check
         cash_available = True
         try:
@@ -2281,6 +2590,34 @@ class AutonomousTradingBot:
                 "reasons": [obs_reason]
             }
 
+        # Post-exit re-entry cooldown: an underlying that just exited stands
+        # down before it may be re-entered — journaled, never silent.
+        _cooldown_ok: list[str] = []
+        for s in symbols_to_scan:
+            _exited_at = self._underlying_exit_cooldowns.get(s)
+            _remaining_min = None
+            if _exited_at is not None:
+                _elapsed = (datetime.now(timezone.utc) - _exited_at).total_seconds() / 60.0
+                if _elapsed < self._REENTRY_COOLDOWN_MINUTES:
+                    _remaining_min = self._REENTRY_COOLDOWN_MINUTES - _elapsed
+            if _remaining_min is None:
+                _cooldown_ok.append(s)
+                continue
+            cd_reason = (
+                f"Re-entry cooldown: {s} exited {int(round(_elapsed))}m ago; "
+                f"standing down another {int(round(_remaining_min))}m before re-entry."
+            )
+            logger.info(cd_reason)
+            eval_results[s] = {
+                "state": "NO_TRADE",
+                "blockers": [cd_reason],
+                "confirmations": [],
+                "conviction": 0,
+                "risk": 0.0,
+                "reasons": [cd_reason],
+            }
+        symbols_to_scan = _cooldown_ok
+
         # If general NO TRADE/RISK-OFF triggers are active
         global_blocker = None
         if risk_off:
@@ -2331,7 +2668,26 @@ class AutonomousTradingBot:
                 for fut in futures:
                     symbol = futures[fut]
                     res = fut.result()
-                    if res is not None:
+                    if res is not None and "blocked_reason" in res:
+                        # A stand-aside with its reason — journal it so the
+                        # gate tally sees it (ML skips used to vanish here).
+                        blocked_reason = res["blocked_reason"]
+                        eval_results[symbol] = {
+                            "state": "NO_TRADE",
+                            "blockers": [blocked_reason],
+                            "confirmations": [],
+                            "conviction": 0,
+                            "risk": 0.0,
+                            "reasons": [blocked_reason],
+                        }
+                        bus.publish("OPPORTUNITY_REJECTED", {
+                            "symbol": symbol,
+                            "reason": blocked_reason,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        })
+                    elif res is not None:
+                        for _adv in res.get("advisories", []):
+                            logger.info(f"{symbol}: {_adv}")
                         proposal = res["proposal"]
                         bus.publish("OPPORTUNITY_FOUND", {
                             "symbol": symbol,
@@ -2859,6 +3215,64 @@ class AutonomousTradingBot:
                 # Swap entry rule on proposal dynamically
                 from bots.strategy.models import StrategyProposal
                 original_entry = proposal.entry_rule
+
+                # ONE LEAGUE — winner-take-asset (commander directive
+                # 2026-07-16: "stop this nonsense of shadow and live; it's all
+                # paper"). EVERY registered strategy judges this asset's live
+                # tape through its own entry module; among those that fire, the
+                # most confident signal takes the REAL paper trade with ITS
+                # war chest and ITS name on the position. Status (ACTIVE /
+                # SHADOW_MODE) no longer decides who may trade paper — it only
+                # marks the promotion track toward real cash. The stale
+                # daily-bar ML verdict (yfinance 1d, frozen intraday) never
+                # decides direction; the winning module's live-tape signal does.
+                _mkt_ctx = self._build_market_context(symbol, cache=_ctx_cache)
+                if _mkt_ctx is None:
+                    logger.info(
+                        f"Entry skipped for {symbol}: no live market context "
+                        f"(insufficient candles). Standing aside, never a stale signal."
+                    )
+                    continue
+                _module_verdicts: list[str] = []
+                _winner = None  # (confidence, strategy_dict, signal)
+                for _sid, _strat in self.strategy_portfolio.portfolio.get("strategies", {}).items():
+                    if _strat.get("status") == "ARCHIVED":
+                        continue
+                    _module = ENTRY_MODULES.get(_sid)
+                    if _module is None:
+                        continue
+                    _sig = _module.evaluate(_mkt_ctx)
+                    if not _sig.should_enter:
+                        _module_verdicts.append(f"EntrySignal: {_strat.get('name', _sid)}: {_sig.reason}")
+                        continue
+                    _conf = float(_sig.confidence or 0.0)
+                    _module_verdicts.append(
+                        f"EntrySignal: {_strat.get('name', _sid)}: {_sig.direction.upper()} (conf {_conf:.0f})"
+                    )
+                    if _winner is None or _conf > _winner[0]:
+                        _winner = (_conf, _strat, _sig)
+
+                if _winner is None:
+                    reason_txt = "League stand-aside on " + symbol + ": " + " | ".join(_module_verdicts)
+                    logger.info(reason_txt)
+                    eval_results[symbol] = {
+                        "state": "NO_TRADE",
+                        "blockers": _module_verdicts,
+                        "confirmations": [],
+                        "conviction": int(committee_decision.decision_confidence),
+                        "risk": 0.0,
+                        "reasons": _module_verdicts,
+                        "proposal_name": proposal.name,
+                    }
+                    continue
+
+                _win_conf, selected_strat, _signal = _winner
+                logger.info(
+                    f"League entry for {symbol}: {selected_strat.get('name')} wins with "
+                    f"{_signal.direction.upper()} (conf {_win_conf:.0f}) — {_signal.reason}. "
+                    f"Field: {' | '.join(_module_verdicts)}"
+                )
+                original_entry = _signal.direction
                 proposal = StrategyProposal(
                     name=proposal.name,
                     description=proposal.description,
@@ -2967,9 +3381,17 @@ class AutonomousTradingBot:
                             cash_for_premium = float(venue.get_account_balance().cash)
                         except Exception:
                             pass
+                        # The strategy's remaining war chest is the rupee risk
+                        # budget the router sizes lots from — an exhausted chest
+                        # skips the trade at the sizing seam instead of the
+                        # router buying a lot the risk framework never funded.
+                        _chest_budget = self._strategy_available_capital(selected_strat["strategy_id"])
                         opt_router = OptionsRouter(price_source=self.orchestrator.price_source)
                         req = opt_router.route_to_options(
-                            req, current_price=entry_price, available_cash=cash_for_premium
+                            req,
+                            current_price=entry_price,
+                            available_cash=cash_for_premium,
+                            risk_budget=_chest_budget,
                         )
                         logger.info(
                             f"Options Router transformed request: {req.side.value} "
@@ -3130,6 +3552,7 @@ class AutonomousTradingBot:
                     "venue_id": getattr(venue, "venue_id", "paper_main"),
                     "underlying": symbol,
                     "unconfirmed": (status_str == "UNCONFIRMED"),
+                    "entry_timestamp": datetime.now(timezone.utc).isoformat(),
                     **option_tracking_extras,
                 }
                 self._save_positions_tracking()
@@ -3191,199 +3614,11 @@ class AutonomousTradingBot:
                 "capital_preservation_score": 100.0 if profile.risk.capital_preservation else 50.0
             })
 
-        # Loop over candidate strategies in SHADOW_MODE or PROBATION to simulate decisions
-        session = self.session_behavior_engine.get_current_session()
-        for strat_id, strat in list(self.strategy_portfolio.portfolio.get("strategies", {}).items()):
-            if strat.get("status") in ("SHADOW_MODE", "PROBATION"):
-                for cand in candidates:
-                    proposal = cand["proposal"]
-                    backtest_result = cand["backtest_result"]
-                    symbol = proposal.market.upper()
-                    
-                    # Verify strategy supports this asset
-                    if symbol not in strat.get("supported_assets", []):
-                        continue
-                    
-                    # Verify we don't already have a shadow position in this asset for this strategy
-                    if symbol in self._shadow_positions_tracking.get(strat_id, {}):
-                        continue
+        # ONE LEAGUE (2026-07-16): the shadow-simulation loop that used to sit
+        # here is gone. Every strategy now competes for REAL paper entries in
+        # the winner-take-asset block above — same venue, same exit ladder,
+        # same accounting — so there is no separate simulated book to feed.
 
-                    # Find active production strategy for comparison
-                    active_prod = None
-                    for s_id, s in self.strategy_portfolio.portfolio.get("strategies", {}).items():
-                        if s.get("status") in ("ACTIVE", "PRODUCTION") and s_id != strat_id:
-                            if symbol in s.get("supported_assets", []):
-                                active_prod = s
-                                break
-
-                    # Determine active production strategy action/sizing for comparison
-                    total_equity = portfolio_metrics.get("total_assets", 500000.0)
-                    active_action = "NO_TRADE"
-                    active_sizing_pct = 0.0
-                    active_qty = 0
-                    if active_prod:
-                        for t in self._trades_taken_today:
-                            if t["symbol"] == symbol:
-                                active_action = "ENTERED"
-                                active_sizing_pct = round((t["quantity"] * t["entry_price"]) / total_equity * 100.0, 2)
-                                active_qty = t["quantity"]
-                                break
-                                
-                    active_prod_id = active_prod["strategy_id"] if active_prod else "NONE"
-
-                    # 1. Session check using SessionBehaviorEngine
-                    is_session_allowed, session_reason = self.session_behavior_engine.filter_opportunity(session, proposal.entry_rule)
-                    if not is_session_allowed:
-                        self.strategy_evolution.log_shadow_decision(
-                            strategy_id=strat_id,
-                            symbol=symbol,
-                            decision_type="ENTRY",
-                            decision_details={
-                                "verdict": "REJECTED",
-                                "reason": f"SessionBehaviorEngine: {session_reason}",
-                                "active_production_strategy_id": active_prod_id,
-                                "active_production_strategy_action": active_action
-                            }
-                        )
-                        continue
-
-                    # 2. Volume breakout check using VolumeEngine — REAL volumes only
-                    # (mirrors the production entry path; no fabricated denominators).
-                    try:
-                        quote = self.orchestrator.price_source.get_quote(symbol)
-                    except Exception:
-                        quote = None
-                    vol_ctx = self._get_volume_context(symbol, quote) if quote is not None else None
-                    if vol_ctx is None:
-                        is_vol_valid, vol_reason = True, "volume data unavailable; gate skipped"
-                    else:
-                        current_vol, avg_vol = vol_ctx
-                        # Shadow entries validate against the SHADOW strategy's
-                        # own entry family: MacroBreakout keeps the surge bar,
-                        # trend/mean-reversion challengers use the thin-tape bar.
-                        shadow_family = "breakout" if "breakout" in strat.get("name", "").lower() else "trend"
-                        is_vol_valid, vol_reason = self.volume_engine.validate_breakout(
-                            current_vol, avg_vol, entry_family=shadow_family
-                        )
-                    if not is_vol_valid:
-                        self.strategy_evolution.log_shadow_decision(
-                            strategy_id=strat_id,
-                            symbol=symbol,
-                            decision_type="ENTRY",
-                            decision_details={
-                                "verdict": "REJECTED",
-                                "reason": f"VolumeEngine: {vol_reason}",
-                                "active_production_strategy_id": active_prod_id,
-                                "active_production_strategy_action": active_action
-                            }
-                        )
-                        continue
-
-                    # 3. Liquidity check using LiquidityEngine — real spread and
-                    # real depth ratio; mirrors the production entry path.
-                    spread_pct, bid_ask_ratio = self._quote_liquidity_inputs(quote)
-
-                    if spread_pct is None:
-                        is_liq_valid, liq_reason = True, "spread data unavailable; gate skipped"
-                    else:
-                        is_option = symbol.upper().endswith(("CE", "PE"))
-                        is_liq_valid, liq_reason = self.liquidity_engine.check_liquidity(spread_pct, bid_ask_ratio, is_option=is_option)
-                    if not is_liq_valid:
-                        self.strategy_evolution.log_shadow_decision(
-                            strategy_id=strat_id,
-                            symbol=symbol,
-                            decision_type="ENTRY",
-                            decision_details={
-                                "verdict": "REJECTED",
-                                "reason": f"LiquidityEngine: {liq_reason}",
-                                "active_production_strategy_id": active_prod_id,
-                                "active_production_strategy_action": active_action
-                            }
-                        )
-                        continue
-
-                    # Determine prices
-                    entry_price = self.orchestrator.price_source.get_price(symbol) or 100.0
-                    
-                    # Determine market regime and adaptive sizing
-                    vix_impact_delta = risk_state.get("vix_impact_delta", 0.0)
-                    regime_data = self.cache.read_intelligence("market_regime.json") or {}
-                    trend_score = regime_data.get("trend_score", 0.0)
-                    classified_regime = self.adv_regime_engine.classify_regime(trend_score, vix_impact_delta)
-
-                    alloc_res = self.allocation_engine.evaluate_allocation(symbol, 85)
-                    alloc_pct = alloc_res.get("suggested_allocation_pct", 0.0)
-                    alloc_pct = self.adaptive_sizing_engine.get_adapted_allocation(
-                        base_alloc_pct=alloc_pct,
-                        regime=classified_regime,
-                        drawdown_pct=portfolio_metrics.get("drawdown_pct", 0.0),
-                        vix_impact_delta=vix_impact_delta
-                    )
-                    scale = min(
-                        preservation_data.get("max_allocation_pct", 2.0) / 2.0,
-                        personality_profile.get("sizing_scale", 1.0)
-                    )
-                    alloc_pct = round(alloc_pct * scale, 2)
-                    total_equity = portfolio_metrics.get("total_assets", 500000.0)
-                    qty = self._calculate_dynamic_lot_size(symbol, total_equity, entry_price=entry_price, alloc_pct=alloc_pct, confidence_score=committee_decision.decision_confidence if 'committee_decision' in locals() else 50.0, direction=proposal.entry_rule)
-                    if qty <= 0:
-                        # Negative-Kelly block: shadow strategies mirror production
-                        # sizing discipline — no positive edge, no simulated entry.
-                        continue
-
-                    # Trailing Stops and Take Profit management
-                    adapted_tsl, adapted_tp = self.position_mgmt_engine.get_adapted_exit_percentages(
-                        self.tsl_percent, self.tp_percent, vix_impact_delta
-                    )
-                    side_str = "BUY" if proposal.entry_rule == "long" else "SELL"
-                    stop_price = entry_price * (1.0 - adapted_tsl) if side_str == "BUY" else entry_price * (1.0 + adapted_tsl)
-                    target_price = entry_price * (1.0 + adapted_tp) if side_str == "BUY" else entry_price * (1.0 - adapted_tp)
-
-                    comp_notes = (
-                        f"Shadow strategy {strat_id} entered {symbol} with allocation {alloc_pct:.2f}% ({qty} units). "
-                        f"Active production strategy {active_prod_id} action: {active_action}."
-                    )
-
-                    decision_details = {
-                        "verdict": "ENTERED",
-                        "trigger": "Simulated scan match",
-                        "market_regime": risk_state.get("risk_on_off_status", "RISK-ON"),
-                        "vix_impact_delta": vix_impact_delta,
-                        "suggested_price": entry_price,
-                        "sizing_pct": alloc_pct,
-                        "sizing_qty": qty,
-                        "stop_loss_pct": adapted_tsl,
-                        "take_profit_pct": adapted_tp,
-                        "stop_price": round(stop_price, 2),
-                        "target_price": round(target_price, 2),
-                        "active_production_strategy_id": active_prod_id,
-                        "active_production_strategy_action": active_action,
-                        "active_production_strategy_sizing_pct": active_sizing_pct,
-                        "active_production_strategy_sizing_qty": active_qty,
-                        "comparison_notes": comp_notes
-                    }
-
-                    # Record simulated position
-                    self._shadow_positions_tracking.setdefault(strat_id, {})[symbol] = {
-                        "entry_price": entry_price,
-                        "peak_price": entry_price,
-                        "stop_price": stop_price,
-                        "target_price": target_price,
-                        "quantity": qty,
-                        "allocation_pct": alloc_pct,
-                        "side": side_str,
-                        "entry_timestamp": datetime.now(timezone.utc).isoformat(),
-                        "current_price": entry_price
-                    }
-
-                    self.strategy_evolution.log_shadow_decision(
-                        strategy_id=strat_id,
-                        symbol=symbol,
-                        decision_type="ENTRY",
-                        decision_details=decision_details
-                    )
-
-        self._save_shadow_positions_tracking()
 
         # Evaluate pipeline transitions for all candidate strategies
         bus.publish("LEARNING_STARTED", {

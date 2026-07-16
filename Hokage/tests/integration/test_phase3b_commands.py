@@ -40,8 +40,11 @@ class TestPortfolioCommand:
 
         assert isinstance(result, dict)
         assert result["account_id"] == "paper"
-        assert result["initial_balance"] == 10000.0
-        assert result["cash"] == 10000.0
+        # 500000 is BrainBootstrapper's seeded starting_capital default for a
+        # brand-new brain profile (not a hardcoded 10000 fallback) — the
+        # portfolio store now correctly resolves the real brain root to read it.
+        assert result["initial_balance"] == 500000.0
+        assert result["cash"] == 500000.0
         assert result["realized_pnl"] == 0.0
         assert result["open_positions"] == 0
         assert result["unrealized_pnl"] == "N/A (live price feed inactive)"

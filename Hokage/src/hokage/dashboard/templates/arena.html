@@ -34,17 +34,23 @@
 </head>
 <body>
   <h1>Strategy Arena <span class="dim">— the Dojo</span></h1>
-  <div class="sub">Every number is earned on live paper data. Each strategy fights with its own ₹50,000 war chest — shadow fills are simulated, ACTIVE fills are real paper orders; promotion needs evidence (30+ trades, positive expectancy). <a href="/" style="color:var(--blue)">← main dashboard</a></div>
+  <div class="sub">One league, four competitors. Every strategy judges the <b>same live market data</b> each scan; the most confident signal wins the asset and places a <b>real paper order</b> under its own name, funded by its own <b>₹50,000 PAPER war chest</b> (fake money, real prices). No shadow books — every trade below went through the paper venue. Status badges mark the promotion track toward real cash (30+ trades, positive expectancy), not who is allowed to trade. <a href="/" style="color:var(--blue)">← main dashboard</a></div>
 
   <div class="grid">
     <div class="card" style="grid-column:1/-1">
       <h2>War Chests — Tournament of Power</h2>
+      <div id="chest-total" style="font-size:13px; margin-bottom:8px;"></div>
       <div id="chests"></div>
     </div>
 
     <div class="card" style="grid-column:1/-1">
       <h2>Strategy Ladder</h2>
       <div id="strategies" class="grid"></div>
+    </div>
+
+    <div class="card" style="grid-column:1/-1">
+      <h2>What each strategy does (plain language)</h2>
+      <div id="explanations"></div>
     </div>
 
     <div class="card">
@@ -55,6 +61,16 @@
     <div class="card">
       <h2>Options Exit Ladder</h2>
       <div id="ladder"></div>
+    </div>
+
+    <div class="card" style="grid-column:1/-1">
+      <h2>Open Trades (live)</h2>
+      <div id="open-trades" class="dim">loading…</div>
+    </div>
+
+    <div class="card" style="grid-column:1/-1">
+      <h2>Closed Trades</h2>
+      <div id="closed-trades" class="dim">loading…</div>
     </div>
 
     <div class="card" style="grid-column:1/-1">
@@ -90,6 +106,13 @@ async function load() {
 
   const inr = v => "₹" + Number(v || 0).toLocaleString("en-IN", {maximumFractionDigits: 0});
   const chests = d.war_chests || [];
+  const totalStart = chests.reduce((a, c) => a + Number(c.starting_capital || 0), 0);
+  const totalPnl = chests.reduce((a, c) => a + Number(c.realized_pnl || 0), 0);
+  const totalAvail = chests.reduce((a, c) => a + Number(c.available || 0), 0);
+  const pnlCls = totalPnl > 0 ? "ok" : totalPnl < 0 ? "bad" : "dim";
+  document.getElementById("chest-total").innerHTML = chests.length
+    ? `Total war chest: <b>${inr(totalStart)}</b> <span class="dim">(PAPER money — ${chests.length} strategies × ${inr(chests[0].starting_capital)})</span> · Combined realized P&L: <span class="${pnlCls}">${inr(totalPnl)}</span> · Available: <b>${inr(totalAvail)}</b>`
+    : "";
   document.getElementById("chests").innerHTML = chests.length
     ? `<table><tr><th>Strategy</th><th>Status</th><th>Starting</th><th>Deployed</th><th>Realized P&L</th><th>Available</th></tr>` +
       chests.map(c => {
@@ -113,6 +136,19 @@ async function load() {
       <div class="notes">${s.notes || ""}</div>
       <div class="notes">${s.last_event || ""}</div>
     </div>`).join("") || '<div class="dim">no strategies registered</div>';
+
+  // Plain-language explanation of each competitor, keyed by strategy name.
+  const EXPLAIN = {
+    TrendPullback: "Rides an established trend. Waits for price to pull back to its short moving averages (EMA 9 / EMA 21) while still aligned with the session VWAP, then buys in the trend's direction. Idea: join strength on a small dip, not chase the top.",
+    MacroBreakout: "Buys when price breaks decisively out of its recent range (a 20-bar high or low, with margin). Idea: catch the start of a big directional move on NIFTY / BANKNIFTY / SENSEX. By construction it takes the OPPOSITE side of MeanReversion on the same tape. Breakouts have historically leaked money, so its promotion track starts at the bottom.",
+    MeanReversion: "The opposite of breakout. On quiet, sideways days it bets price will snap back to the middle of its range after stretching too far. Idea: fade the extremes when there's no real trend.",
+    Malfoy: "Disciplined intraday momentum, derived from a rival benchmark bot then upgraded. Enters with EMA 9/21 + VWAP agreement, but only inside strict conduct windows (skips the choppy 11:30–13:30 midday, no new trades after 14:00) and sizes down when India VIX is high. Hokage's added edge: a meta-label filter that vetoes low-quality signals — built to out-trade its source.",
+  };
+  document.getElementById("explanations").innerHTML = (d.strategies || []).map(s => {
+    const text = EXPLAIN[s.name] || s.notes || "No description available.";
+    return `<div class="strat"><div class="name">${s.name} ${badge(s.status)}</div>
+      <div class="notes" style="font-style:normal; color:var(--text); margin-top:6px;">${text}</div></div>`;
+  }).join("") || '<div class="dim">no strategies registered</div>';
 
   const g = d.conduct_gates || {};
   const vixPct = g.india_vix_percentile;
@@ -139,6 +175,28 @@ async function load() {
     <div class="kv" style="margin-top:8px"><span class="k">Thesis stop</span><span>${fmt(l.thesis_stop_atr_mult)}× underlying ATR</span></div>
     <div class="kv"><span class="k">Trail lock</span><span>₹${fmt(l.trail_lock_rupees)} from peak</span></div>
     <div class="kv"><span class="k">Adaptive target clamp</span><span>+${((l.target_clamp_pct||[0,0])[0]*100).toFixed(0)}% … +${((l.target_clamp_pct||[0,0])[1]*100).toFixed(0)}%</span></div>`;
+
+  // Open + closed trades. REAL = the champion's live paper orders; SHADOW =
+  // challengers' simulated fills on live prices (no venue order behind them).
+  const bookBadge = b => `<span class="badge ${b === "REAL" ? "b-active" : "b-shadow"}">${b}</span>`;
+  const pnlCell = v => {
+    if (v === null || v === undefined) return '<td class="dim">—</td>';
+    const cls = v > 0 ? "ok" : v < 0 ? "bad" : "dim";
+    return `<td class="${cls}">${inr(v)}</td>`;
+  };
+  const num = v => (v === null || v === undefined) ? "—" : Number(v).toLocaleString("en-IN", {maximumFractionDigits: 2});
+
+  const open = d.open_trades || [];
+  document.getElementById("open-trades").innerHTML = open.length
+    ? `<table><tr><th>Book</th><th>Strategy</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>LTP</th><th>Unrealized P&L</th><th>Stop</th><th>Target</th><th>Opened</th></tr>` +
+      open.map(t => `<tr><td>${bookBadge(t.book)}</td><td>${fmt(t.strategy)}</td><td>${fmt(t.symbol)}</td><td>${fmt(t.side)}</td><td>${num(t.quantity)}</td><td>${num(t.entry_price)}</td><td>${num(t.ltp)}</td>${pnlCell(t.unrealized_pnl)}<td>${num(t.stop_price)}</td><td>${num(t.target_price)}</td><td>${istTime(t.opened_at)}</td></tr>`).join("") + "</table>"
+    : '<span class="dim">no open positions — real and shadow books are both flat</span>';
+
+  const closed = d.closed_trades || [];
+  document.getElementById("closed-trades").innerHTML = closed.length
+    ? `<table><tr><th>Book</th><th>Strategy</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Closed</th><th>Reason</th></tr>` +
+      closed.map(t => `<tr><td>${bookBadge(t.book)}</td><td>${fmt(t.strategy)}</td><td>${fmt(t.symbol)}</td><td>${fmt(t.side)}</td><td>${num(t.quantity)}</td><td>${num(t.entry_price)}</td><td>${num(t.exit_price)}</td>${pnlCell(t.pnl)}<td>${istTime(t.closed_at)}</td><td>${fmt(t.reason)}</td></tr>`).join("") + "</table>"
+    : '<span class="dim">no closed trades yet</span>';
 
   const refusals = d.no_trade_today || [];
   document.getElementById("refusals").innerHTML = refusals.length

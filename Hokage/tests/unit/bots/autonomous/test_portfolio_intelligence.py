@@ -187,3 +187,42 @@ def test_capital_preservation_interaction(mock_venue, mock_cache):
     res = engine.evaluate_allocation("SBIN", conviction_score=80, preservation_data=pres_data)
     assert res["suggested_allocation_pct"] == 0.5
     assert "Capital Preservation" in res["portfolio_impact"]
+
+
+def test_total_assets_is_equity_not_cash_plus_position_value(mock_cache):
+    """The double-count that fired the kill-switch twice on 2026-07-16.
+
+    The paper account's cash model never debits premium on entry (cash =
+    initial + realized PnL), so cash + open-position VALUE counts every entry
+    twice: two option buys read as 66,760 on a 50,000 account, that spike
+    ratcheted into peak_equity, and honest equity later measured as a fake
+    15% drawdown. total_assets must be the venue's total_equity (cash +
+    unrealized PnL), never cash + position value.
+    """
+    venue = MagicMock()
+    # 50,000 account holding two freshly bought option lots (premium 16,760):
+    # cash still reads 50,000 under this model; equity is also 50,000
+    # (unrealized = 0 at entry).
+    venue.get_account_balance.return_value = AccountBalance(
+        venue_id="paper_zerodha", total_equity=50000.0, cash=50000.0,
+        margin_available=50000.0, margin_used=0.0,
+    )
+    ce = MagicMock()
+    ce.instrument.symbol = "NIFTY2672124150CE"
+    ce.quantity = 65.0
+    ce.average_price = 124.0
+    ce.current_price = 124.0
+    ce.unrealized_pnl = 0.0
+    pe = MagicMock()
+    pe.instrument.symbol = "NIFTY2672124100PE"
+    pe.quantity = 65.0
+    pe.average_price = 133.85
+    pe.current_price = 133.85
+    pe.unrealized_pnl = 0.0
+    venue.get_positions.return_value = [ce, pe]
+
+    metrics = PortfolioAwarenessEngine(venue, mock_cache).compute_portfolio_metrics()
+
+    assert metrics["total_assets"] == 50000.0, (
+        "cash + position value double-counts entries (the 66,760 spike)"
+    )

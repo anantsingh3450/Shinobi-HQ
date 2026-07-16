@@ -236,31 +236,31 @@
                                 
                                 <div class="timeline-step active" data-step="START" style="display: flex; flex-direction: column; align-items: center; z-index: 3; position: relative; min-width: 60px;">
                                     <div class="step-dot" style="width: 20px; height: 20px; border-radius: 50%; background: var(--color-orange); border: 2px solid var(--color-orange); display: flex; align-items: center; justify-content: center; color: #000; font-size: 0.6rem; font-weight: bold;">1</div>
-                                    <span style="font-size: 0.65rem; margin-top: 0.4rem; color: #fff;">Start</span>
+                                    <span class="step-label" style="font-size: 0.65rem; margin-top: 0.4rem; color: #fff;">Start</span>
                                 </div>
                                 <div class="timeline-step" data-step="MACRO_REGIME" style="display: flex; flex-direction: column; align-items: center; z-index: 3; position: relative; min-width: 60px;">
                                     <div class="step-dot" style="width: 20px; height: 20px; border-radius: 50%; background: #1a1f29; border: 2px solid #2d3748; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 0.6rem; font-weight: bold;">2</div>
-                                    <span style="font-size: 0.65rem; margin-top: 0.4rem; color: var(--text-muted);">Regime</span>
+                                    <span class="step-label" style="font-size: 0.65rem; margin-top: 0.4rem; color: var(--text-muted);">Regime</span>
                                 </div>
                                 <div class="timeline-step" data-step="UNIVERSE_SCAN" style="display: flex; flex-direction: column; align-items: center; z-index: 3; position: relative; min-width: 60px;">
                                     <div class="step-dot" style="width: 20px; height: 20px; border-radius: 50%; background: #1a1f29; border: 2px solid #2d3748; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 0.6rem; font-weight: bold;">3</div>
-                                    <span style="font-size: 0.65rem; margin-top: 0.4rem; color: var(--text-muted);">Scan</span>
+                                    <span class="step-label" style="font-size: 0.65rem; margin-top: 0.4rem; color: var(--text-muted);">Scan</span>
                                 </div>
                                 <div class="timeline-step" data-step="STRATEGY_COMMITTEE" style="display: flex; flex-direction: column; align-items: center; z-index: 3; position: relative; min-width: 60px;">
                                     <div class="step-dot" style="width: 20px; height: 20px; border-radius: 50%; background: #1a1f29; border: 2px solid #2d3748; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 0.6rem; font-weight: bold;">4</div>
-                                    <span style="font-size: 0.65rem; margin-top: 0.4rem; color: var(--text-muted);">Strategy</span>
+                                    <span class="step-label" style="font-size: 0.65rem; margin-top: 0.4rem; color: var(--text-muted);">Strategy</span>
                                 </div>
                                 <div class="timeline-step" data-step="INVESTMENT_COMMITTEE" style="display: flex; flex-direction: column; align-items: center; z-index: 3; position: relative; min-width: 60px;">
                                     <div class="step-dot" style="width: 20px; height: 20px; border-radius: 50%; background: #1a1f29; border: 2px solid #2d3748; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 0.6rem; font-weight: bold;">5</div>
-                                    <span style="font-size: 0.65rem; margin-top: 0.4rem; color: var(--text-muted);">Invest</span>
+                                    <span class="step-label" style="font-size: 0.65rem; margin-top: 0.4rem; color: var(--text-muted);">Invest</span>
                                 </div>
                                 <div class="timeline-step" data-step="RISK_COMMITTEE" style="display: flex; flex-direction: column; align-items: center; z-index: 3; position: relative; min-width: 60px;">
                                     <div class="step-dot" style="width: 20px; height: 20px; border-radius: 50%; background: #1a1f29; border: 2px solid #2d3748; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 0.6rem; font-weight: bold;">6</div>
-                                    <span style="font-size: 0.65rem; margin-top: 0.4rem; color: var(--text-muted);">Risk</span>
+                                    <span class="step-label" style="font-size: 0.65rem; margin-top: 0.4rem; color: var(--text-muted);">Risk</span>
                                 </div>
                                 <div class="timeline-step" data-step="EXECUTION" style="display: flex; flex-direction: column; align-items: center; z-index: 3; position: relative; min-width: 60px;">
                                     <div class="step-dot" style="width: 20px; height: 20px; border-radius: 50%; background: #1a1f29; border: 2px solid #2d3748; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 0.6rem; font-weight: bold;">7</div>
-                                    <span style="font-size: 0.65rem; margin-top: 0.4rem; color: var(--text-muted);">Exec</span>
+                                    <span class="step-label" style="font-size: 0.65rem; margin-top: 0.4rem; color: var(--text-muted);">Exec</span>
                                 </div>
                             </div>
                         </div>
@@ -445,8 +445,8 @@
                         <span class="hk-metric-value" id="port-buying-power">₹0.00</span>
                     </div>
                     <div class="hk-metric-card">
-                        <span class="hk-metric-title">Portfolio Beta</span>
-                        <span class="hk-metric-value" id="port-beta" style="color: var(--color-cyan);">1.00</span>
+                        <span class="hk-metric-title">Max Drawdown</span>
+                        <span class="hk-metric-value" id="port-beta" style="color: var(--color-cyan);">--%</span>
                     </div>
                     <div class="hk-metric-card">
                         <span class="hk-metric-title">Win Rate</span>
@@ -494,6 +494,27 @@
                             <tr>
                                 <td colspan="7" class="empty-state">Loading positions...</td>
                             </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Trade History -->
+                <div class="table-container" style="margin-top: 1.5rem;">
+                    <h3 style="color: var(--color-gold); margin-bottom: 0.5rem; font-size: 0.95rem;">Closed Trades</h3>
+                    <table class="data-table" id="table-trade-history">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Direction</th>
+                                <th>Quantity</th>
+                                <th>Entry Price</th>
+                                <th>Exit Price</th>
+                                <th>Realized P&L</th>
+                                <th>Closed At</th>
+                            </tr>
+                        </thead>
+                        <tbody id="body-trade-history">
+                            <tr><td colspan="7" class="empty-state">Loading trade history...</td></tr>
                         </tbody>
                     </table>
                 </div>

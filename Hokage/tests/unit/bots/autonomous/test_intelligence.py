@@ -83,7 +83,11 @@ def test_volume_engine():
 
 def test_volume_engine_entry_families():
     """Commander-approved: breakout entries keep the 1.2x surge bar; trend/
-    pullback entries only reject a dead tape (< 0.8x average)."""
+    pullback entries only reject a genuinely dead tape (< 0.5x).
+
+    Ratios here are time-of-day-normalised (see _get_volume_context): 1.0x is
+    "normal volume for this clock time", NOT a fraction of a whole session.
+    """
     engine = VolumeEngine()
 
     # 0.84x: rejected for breakout, accepted for trend (the exact ratio that
@@ -93,8 +97,19 @@ def test_volume_engine_entry_families():
     allowed, msg = engine.validate_breakout(84.0, 100.0, entry_family="trend")
     assert allowed
 
-    # 0.5x: dead tape rejected for every family
-    allowed, msg = engine.validate_breakout(50.0, 100.0, entry_family="trend")
+    # 1.31x: NIFTY's real 09:15 surge on 2026-07-15. The old whole-session
+    # denominator scored this same bar 0.20x and refused it; normalised, it
+    # clears the breakout bar — the case that proves the gate now reads volume.
+    allowed, msg = engine.validate_breakout(131.0, 100.0, entry_family="breakout")
+    assert allowed
+
+    # 0.60x: CRUDE_OIL's real evening tape on 2026-07-15 — quiet but not dead.
+    # This is the case the 0.8x bar wrongly refused; a trend entry may take it.
+    allowed, msg = engine.validate_breakout(60.0, 100.0, entry_family="trend")
+    assert allowed
+
+    # 0.3x: genuinely dead tape still rejected for every family.
+    allowed, msg = engine.validate_breakout(30.0, 100.0, entry_family="trend")
     assert not allowed and "THIN_TAPE" in msg
 
 def test_position_management_engine():

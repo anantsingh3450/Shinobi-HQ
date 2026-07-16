@@ -168,7 +168,7 @@ class HokageOrchestrator:
         )
 
         # Portfolio persistence
-        self.portfolio_store = JsonPortfolioStore(portfolio_dir)
+        self.portfolio_store = JsonPortfolioStore(portfolio_dir, brain_root=self.resolver.resolve_brain_root())
         self.prediction_ledger = JsonPredictionLedger(predictions_dir)
         self.tax_provider = SimulatedTaxProvider()
         self.tax_ledger = JsonTaxLedger(tax_dir)

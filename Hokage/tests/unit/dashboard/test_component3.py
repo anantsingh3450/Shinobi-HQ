@@ -64,13 +64,15 @@ def test_component3_endpoints(tmp_path: Path) -> None:
             assert resp.status_code == 200
             assert resp.json == []
 
-            # E. Test Portfolio History
+            # E. Test Portfolio History (500000 is BrainBootstrapper's seeded
+            # starting_capital default for a brand-new brain profile, not a
+            # hardcoded fallback)
             resp = client.get("/api/v1/portfolio/history?account_id=paper")
             assert resp.status_code == 200
             history_data = resp.json
             assert len(history_data) >= 1
-            assert history_data[0]["equity"] == 10000.0
-            assert history_data[0]["cash"] == 10000.0
+            assert history_data[0]["equity"] == 500000.0
+            assert history_data[0]["cash"] == 500000.0
     finally:
         # Restore original is_active
         SqliteStorageEngine.is_active = original_is_active

@@ -4,6 +4,7 @@ import time
 import logging
 import threading
 from datetime import datetime, timezone
+from typing import Any
 import requests
 from urllib.parse import urlparse, parse_qs
 import pyotp
@@ -29,7 +30,10 @@ class TelegramBotUplink:
             self.enabled = False
         self._thread = None
         self._stop_event = threading.Event()
-        self._last_totp_request_date = None
+        # Loaded from disk so a mid-morning restart doesn't re-send the same
+        # day's login prompt a second time (in-memory only meant every
+        # restart between 06:30-09:00 IST fired a fresh duplicate prompt).
+        self._last_totp_request_date = self._load_prompt_state()
         self._last_confirmation_date = None
         self._last_update_id = 0
         self.latest_totp = None
@@ -37,6 +41,32 @@ class TelegramBotUplink:
         # Control-command handler (set by AutonomousTradingBot). Must expose
         # handle_remote_command(command: str) -> str.
         self.command_handler = None
+
+    def _prompt_state_path(self):
+        from pathlib import Path
+        from hokage.memory.resolver import PathResolver
+        state_dir = PathResolver().resolve_brain_root() / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        return state_dir / "telegram_login_prompt.json"
+
+    def _load_prompt_state(self) -> str | None:
+        import json
+        try:
+            path = self._prompt_state_path()
+            if path.exists():
+                return json.loads(path.read_text(encoding="utf-8")).get("last_totp_request_date")
+        except Exception as e:
+            logger.warning(f"Failed to load Telegram login-prompt state: {e}")
+        return None
+
+    def _save_prompt_state(self, date_str: str) -> None:
+        import json
+        try:
+            self._prompt_state_path().write_text(
+                json.dumps({"last_totp_request_date": date_str}), encoding="utf-8"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to save Telegram login-prompt state: {e}")
     def start(self) -> None:
         """Start the background polling thread."""
         if not self.enabled:
@@ -57,6 +87,26 @@ class TelegramBotUplink:
         self._thread.join(timeout=5.0)
         self._thread = None
         logger.info("Telegram background thread stopped.")
+
+    @staticmethod
+    def escape_markdown(value: Any) -> str:
+        """Neutralise legacy-Markdown control characters in interpolated text.
+
+        Messages are sent with parse_mode "Markdown", so any of _ * ` [ inside a
+        VALUE — not the template — opens a formatting entity. Symbol and reason
+        strings routinely carry them: "CRUDE_OIL moved 40.00 against position"
+        left an unclosed italic run, and Telegram answered 400 "can't parse
+        entities". The exit alert was dropped in full, so on 2026-07-15 every
+        CRUDE_OIL thesis-stop exit went unannounced while the commander was
+        told nothing at all.
+
+        Apply to interpolated values only; the surrounding template keeps its
+        intentional markup.
+        """
+        text = str(value)
+        for ch in ("_", "*", "`", "["):
+            text = text.replace(ch, "\\" + ch)
+        return text
 
     def send_message(self, text: str) -> bool:
         """Send a message to the configured Telegram chat."""
@@ -139,9 +189,9 @@ class TelegramBotUplink:
     def notify_exit(self, symbol: str, price: float, reason: str) -> None:
         """Send a real-time exit notification."""
         msg = (
-            f"🛑 *EXITING POSITION: {symbol}*\n"
+            f"🛑 *EXITING POSITION: {self.escape_markdown(symbol)}*\n"
             f"• *Exit Price*: {price:.2f}\n"
-            f"• *Reason*: {reason}\n\n"
+            f"• *Reason*: {self.escape_markdown(reason)}\n\n"
             "Position closed. Logging autopsy for pattern analysis."
         )
         self.send_message(msg)
@@ -176,22 +226,34 @@ class TelegramBotUplink:
                 if ist_now.hour > 6 or (ist_now.hour == 6 and ist_now.minute >= 30):
                     if self._last_totp_request_date != current_date_str:
                         self._last_totp_request_date = current_date_str
+                        self._save_prompt_state(current_date_str)
                         try:
-                            mgr = SecretManager()
-                            api_key = mgr.get_secret("api_key", broker="zerodha")
-                            totp_secret = os.getenv("ZERODHA_TOTP_SECRET")
-                            
-                            login_url = f"https://kite.trade/connect/login?v=3&api_key={api_key}"
-                            totp_msg = ""
-                            if totp_secret:
-                                totp_pin = pyotp.TOTP(totp_secret).now()
-                                totp_msg = f"\n• *Live TOTP*: `{totp_pin}` (Tap to copy)"
-                            
-                            self.send_message(
-                                "⚠️ *ZERODHA LIVE AUTONOMOUS LOGIN REQUIRED* ⚠️\n"
-                                f"1. Click here to login: [Kite Login]({login_url}){totp_msg}\n"
-                                "2. After you log in, copy the entire broken URL and reply with: `/token URL`"
-                            )
+                            # Skip the prompt entirely when today's session is
+                            # already live (e.g. a restart re-ran this loop,
+                            # or the commander logged in before 06:30) — a
+                            # real kite.profile() round-trip, not just a
+                            # token-string-exists check.
+                            if self._validate_broker_session():
+                                logger.info(
+                                    "Morning login prompt skipped: existing Zerodha session is already valid."
+                                )
+                            else:
+                                mgr = SecretManager()
+                                api_key = mgr.get_secret("api_key", broker="zerodha")
+                                totp_secret = os.getenv("ZERODHA_TOTP_SECRET")
+
+                                login_url = f"https://kite.trade/connect/login?v=3&api_key={api_key}"
+                                totp_msg = ""
+                                if totp_secret:
+                                    totp_pin = pyotp.TOTP(totp_secret).now()
+                                    totp_msg = f"\n• *Live TOTP*: `{totp_pin}` (Tap to copy)"
+
+                                self.send_message(
+                                    "⚠️ *ZERODHA LIVE AUTONOMOUS LOGIN REQUIRED* ⚠️\n"
+                                    f"1. Click here to login: [Kite Login]({login_url}){totp_msg}\n"
+                                    "2. The browser will show \"Authentication successful\" when done — that's it, you're logged in.\n"
+                                    "3. Only reply with `/token URL` if the browser shows an error page instead."
+                                )
                         except Exception as e:
                             logger.error(f"Failed to generate morning login brief: {e}")
 

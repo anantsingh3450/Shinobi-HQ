@@ -8,10 +8,18 @@ logger = logging.getLogger("Hokage.StrategyEngine")
 class StrategyEngine:
     """Manages playbook execution limits, daily quotas, and unique asset rotation rules."""
 
-    def __init__(self, max_unique_assets: int = 5) -> None:
+    def __init__(self, max_unique_assets: int = 5, max_entries_per_symbol: int = 3) -> None:
         self.max_unique_assets = max_unique_assets
-        # Keep track of daily utilized symbols per playbook: {date_str: {playbook_id: set(symbols)}}
-        self._daily_utilized_symbols: dict[str, dict[str, set[str]]] = {}
+        # Same-day re-entry cap per symbol. The old rule was ONE entry per
+        # symbol per playbook per day — with a 3-index universe that ended the
+        # trading day by mid-morning (each asset spent after its first trade),
+        # which starved the league of the very repetition evolution needs.
+        # Re-entries are allowed up to this cap; concurrent duplicates and
+        # revenge re-entries are prevented elsewhere (open-underlying dedup
+        # and the post-exit cooldown in the scan loop).
+        self.max_entries_per_symbol = max_entries_per_symbol
+        # Daily entry counts per playbook: {date_str: {playbook_id: {symbol: count}}}
+        self._daily_utilized_symbols: dict[str, dict[str, dict[str, int]]] = {}
 
     def get_playbook_id(self, strategy_name: str) -> str:
         """Resolve playbook ID from strategy name."""
@@ -29,34 +37,37 @@ class StrategyEngine:
             self._daily_utilized_symbols[date_str] = {}
 
     def is_entry_allowed(self, playbook_id: str, symbol: str, date_str: str) -> tuple[bool, str]:
-        """Check if entry is allowed under batch limits and asset uniqueness rules."""
+        """Check if entry is allowed under batch limits and re-entry caps."""
         self.reset_daily_stats_if_needed(date_str)
-        
-        utilized_symbols = self._daily_utilized_symbols[date_str].setdefault(playbook_id, set())
+
+        entry_counts = self._daily_utilized_symbols[date_str].setdefault(playbook_id, {})
         symbol_upper = symbol.upper()
 
-        # 1. Unique Asset Diversification guard: check if symbol has already been utilized
-        if symbol_upper in utilized_symbols:
-            return False, f"Playbook {playbook_id} has already utilized {symbol_upper} in today's daily batch."
+        # 1. Same-day re-entry cap: an asset may be traded again after an exit
+        # (evolution needs repetition), but never more than the cap — churn on
+        # one symbol is revenge trading, not data collection.
+        if entry_counts.get(symbol_upper, 0) >= self.max_entries_per_symbol:
+            return False, (
+                f"Playbook {playbook_id} reached the daily re-entry cap of "
+                f"{self.max_entries_per_symbol} entries on {symbol_upper}."
+            )
 
         # 2. Check total unique symbols in the daily batch (max 5)
-        if len(utilized_symbols) >= self.max_unique_assets:
+        if symbol_upper not in entry_counts and len(entry_counts) >= self.max_unique_assets:
             return False, f"Playbook {playbook_id} has exhausted its daily rotation quota of {self.max_unique_assets} unique assets."
 
         return True, "Allowed"
 
     def record_trade(self, playbook_id: str, symbol: str, date_str: str) -> None:
-        """Record trade and add utilized symbol for the playbook's daily batch."""
+        """Record trade and count the entry against the playbook's daily caps."""
         self.reset_daily_stats_if_needed(date_str)
-        
-        if playbook_id not in self._daily_utilized_symbols[date_str]:
-            self._daily_utilized_symbols[date_str][playbook_id] = set()
-        
+
+        entry_counts = self._daily_utilized_symbols[date_str].setdefault(playbook_id, {})
         symbol_upper = symbol.upper()
-        self._daily_utilized_symbols[date_str][playbook_id].add(symbol_upper)
+        entry_counts[symbol_upper] = entry_counts.get(symbol_upper, 0) + 1
         logger.info(
-            f"Strategy Battle Arena: Recorded playbook {playbook_id} entry for {symbol_upper}. "
-            f"Daily unique symbols count: {len(self._daily_utilized_symbols[date_str][playbook_id])}/{self.max_unique_assets}"
+            f"Strategy Battle Arena: Recorded playbook {playbook_id} entry #{entry_counts[symbol_upper]} "
+            f"for {symbol_upper}. Daily unique symbols count: {len(entry_counts)}/{self.max_unique_assets}"
         )
 
     def load_daily_trades_from_db(self, db_engine: Any, date_str: str) -> None:

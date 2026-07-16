@@ -170,3 +170,48 @@ def test_session_validation_accepts_live_token(monkeypatch):
         "integrations.notifications.telegram_bot.KiteConnect", _AcceptingKite
     )
     assert uplink._validate_broker_session() is True
+
+
+class TestMarkdownEscaping:
+    """Values carrying _ * ` [ must not open a Markdown entity.
+
+    Messages go out with parse_mode "Markdown". On 2026-07-15 the reason string
+    "Underlying Thesis Stop: CRUDE_OIL moved 40.00 against position" left an
+    unclosed italic run; Telegram replied 400 "can't parse entities" and the
+    whole exit alert was dropped, so real CRUDE_OIL exits went unannounced.
+    """
+
+    def test_underscores_in_a_value_are_escaped(self):
+        from integrations.notifications.telegram_bot import TelegramBotUplink
+
+        assert TelegramBotUplink.escape_markdown("CRUDE_OIL") == r"CRUDE\_OIL"
+
+    def test_every_markdown_control_character_is_escaped(self):
+        from integrations.notifications.telegram_bot import TelegramBotUplink
+
+        assert TelegramBotUplink.escape_markdown("a_b*c`d[e") == r"a\_b\*c\`d\[e"
+
+    def test_plain_text_is_left_alone(self):
+        from integrations.notifications.telegram_bot import TelegramBotUplink
+
+        assert TelegramBotUplink.escape_markdown("Time-Based Square-Off (EOD)") == "Time-Based Square-Off (EOD)"
+
+    def test_exit_alert_escapes_the_reason_that_broke_telegram(self, monkeypatch):
+        """The verbatim 2026-07-15 thesis-stop reason must survive intact."""
+        from integrations.notifications.telegram_bot import TelegramBotUplink
+
+        bot = TelegramBotUplink()
+        sent = []
+        monkeypatch.setattr(bot, "send_message", lambda text: sent.append(text) or True)
+
+        bot.notify_exit(
+            "CRUDEOIL26JUL7750CE",
+            price=62.8,
+            reason="Underlying Thesis Stop: CRUDE_OIL moved 40.00 against position (>= 1.25 x ATR 31.64)",
+        )
+
+        assert len(sent) == 1
+        body = sent[0]
+        assert r"CRUDE\_OIL moved 40.00" in body
+        # The template's own emphasis must survive escaping of the values.
+        assert "*Exit Price*" in body

@@ -37,6 +37,8 @@ class PositionSnapshot:
     unrealized_pnl: float | None
     realized_pnl: float
     status: str
+    closed_at: str | None = None
+    opened_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -45,6 +47,12 @@ class PositionSnapshot:
     @staticmethod
     def from_position(position: Position) -> PositionSnapshot:
         """Create snapshot from a Position domain model."""
+        closed_at = None
+        if hasattr(position, "closed_at") and position.closed_at:
+            closed_at = position.closed_at.isoformat() if hasattr(position.closed_at, "isoformat") else str(position.closed_at)
+        opened_at = None
+        if hasattr(position, "opened_at") and position.opened_at:
+            opened_at = position.opened_at.isoformat() if hasattr(position.opened_at, "isoformat") else str(position.opened_at)
         return PositionSnapshot(
             position_id=position.position_id,
             market=position.market,
@@ -55,6 +63,8 @@ class PositionSnapshot:
             unrealized_pnl=position.unrealized_pnl,
             realized_pnl=position.realized_pnl,
             status=position.status.name,
+            closed_at=closed_at,
+            opened_at=opened_at,
         )
 
 
@@ -224,6 +234,19 @@ class AccountMetrics:
             else 0.0
         )
 
+        closed = [p for p in account.positions.values() if p.status == TradeStatus.CLOSED]
+        win_rate = None
+        profit_factor = None
+        max_dd = None
+        if closed:
+            wins = sum(1 for p in closed if p.realized_pnl > 0)
+            win_rate = (wins / len(closed)) * 100.0
+            gross_profit = sum(p.realized_pnl for p in closed if p.realized_pnl > 0)
+            gross_loss = abs(sum(p.realized_pnl for p in closed if p.realized_pnl < 0))
+            profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else gross_profit
+            if account.initial_balance > 0:
+                max_dd = (abs(total_return) / account.initial_balance * 100.0) if total_return < 0 else 0.0
+
         return AccountMetrics(
             account_id=account.account_id,
             equity=account.equity,
@@ -232,8 +255,8 @@ class AccountMetrics:
             margin_available=account.cash - margin_used,
             total_return=total_return,
             return_percentage=return_pct,
-            sharpe_ratio=None,  # Requires historical equity curve
-            win_rate=None,  # Requires win/loss tracking
-            profit_factor=None,  # Requires gross profit/loss tracking
-            max_drawdown=None,  # Requires equity curve
+            sharpe_ratio=None,
+            win_rate=win_rate,
+            profit_factor=profit_factor,
+            max_drawdown=max_dd,
         )

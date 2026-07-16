@@ -23,14 +23,17 @@ def test_create_dashboard_api_with_brain_root(tmp_path: Path) -> None:
         assert health_resp.status_code == 200
         assert health_resp.json == {"status": "healthy"}
 
-        # Verify portfolio overview works and loads default balance
+        # Verify portfolio overview works and loads the freshly bootstrapped
+        # commander profile's starting capital (500000 is BrainBootstrapper's
+        # seeded default for a brand-new brain, not a hardcoded fallback —
+        # JsonPortfolioStore must resolve the real brain root to read it).
         portfolio_resp = client.get("/api/v1/portfolio/paper/overview")
         assert portfolio_resp.status_code == 200
-        
+
         data = portfolio_resp.json
         assert data["account_id"] == "paper"
-        assert data["initial_balance"] == 10000.0
-        assert data["cash"] == 10000.0
+        assert data["initial_balance"] == 500000.0
+        assert data["cash"] == 500000.0
         assert data["open_positions_count"] == 0
 
         # Verify index page loads html
@@ -100,3 +103,49 @@ def test_create_dashboard_api_with_brain_root(tmp_path: Path) -> None:
         assert port_data["open_positions_count"] == 1
 
 
+
+def test_gate_tally_endpoint_ranks_the_bottleneck_gate(tmp_path: Path) -> None:
+    """The tally endpoint is what turns 'trades feel starved' into a number.
+
+    Seeds real refusal prose through the journal and asserts the endpoint ranks
+    the starving gate first — and that capital-protecting gates come back
+    marked non-tunable so a reader can never treat them as knobs.
+    """
+    from datetime import datetime, timezone
+
+    from bots.autonomous.decision_journal import DecisionJournalSystem
+    from bots.autonomous.models import NoTradeDecision
+
+    brain_root = tmp_path / "gate_brain"
+    app = create_dashboard_api(brain_root=brain_root)
+    journal = DecisionJournalSystem(brain_root)
+
+    now = datetime.now(timezone.utc).isoformat()
+    for _ in range(3):
+        journal.record_no_trade_decision(NoTradeDecision(
+            asset="CRUDE_OIL",
+            timestamp=now,
+            reasons=("VolumeEngine: THIN_TAPE: Volume ratio 0.35x < required 0.80x (trend entry).",),
+        ))
+    journal.record_no_trade_decision(NoTradeDecision(
+        asset="NIFTY",
+        timestamp=now,
+        reasons=("LiquidityEngine: LIQUIDITY_TRAP: Bid-ask spread 0.30% exceeds max allowed 0.20%.",),
+    ))
+
+    with app.test_client() as client:
+        resp = client.get("/api/v1/journal/gate-tally?days=7")
+        assert resp.status_code == 200
+        data = resp.json
+
+        assert data["top_gate"] == "VOLUME"
+        assert data["total_rejections"] == 4
+        assert data["unclassified_count"] == 0
+        assert data["window_days"] == 7
+
+        by_gate = {g["gate"]: g for g in data["gates"]}
+        assert by_gate["VOLUME"]["count"] == 3
+        assert by_gate["VOLUME"]["tunable"] is True
+        # Liquidity protects capital: it must never be advertised as a knob.
+        assert by_gate["LIQUIDITY"]["tunable"] is False
+        assert by_gate["LIQUIDITY"]["kind"] == "SAFETY"
