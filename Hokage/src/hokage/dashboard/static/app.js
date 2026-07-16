@@ -583,11 +583,16 @@ document?.addEventListener("DOMContentLoaded", () => {
                         <td>${formatINR(pos.entry_price)}</td>
                         <td>${formatINR(pos.current_price || pos.entry_price)}</td>
                         <td style="color: ${pos.unrealized_pnl >= 0 ? 'var(--color-green)' : 'var(--color-red)'}"><strong>${formatINR(pos.unrealized_pnl)}</strong></td>
+                        <td><button class="hk-exit-now-btn" data-symbol="${pos.market}" title="Close this position immediately, ignoring Hokage's target/stop"
+                            style="background:var(--color-red,#e5484d);color:#fff;border:none;border-radius:4px;padding:4px 10px;font-weight:600;cursor:pointer;">Exit Now</button></td>
                     `;
                     tbody.appendChild(tr);
                 });
+                tbody.querySelectorAll(".hk-exit-now-btn").forEach(btn => {
+                    btn.addEventListener("click", () => forceClosePosition(btn.getAttribute("data-symbol"), btn));
+                });
             } else {
-                tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No open positions found.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No open positions found.</td></tr>`;
             }
 
             loadPortfolioStats();
@@ -595,6 +600,36 @@ document?.addEventListener("DOMContentLoaded", () => {
             await loadTaxData();
         } catch (error) {
             console.error(error);
+        }
+    }
+
+    async function loadPlainEodReport() {
+        const pre = document.getElementById("plain-eod-report");
+        if (pre) pre.textContent = "Loading…";
+        try {
+            const res = await fetch("/api/v1/reports/eod-plain");
+            const data = await res.json();
+            if (pre) pre.textContent = data.report || "No report available.";
+        } catch (e) {
+            if (pre) pre.textContent = `Couldn't load the report: ${e.message}`;
+        }
+    }
+    document.getElementById("btn-plain-eod")?.addEventListener("click", loadPlainEodReport);
+
+    async function forceClosePosition(symbol, btn) {
+        if (!symbol) return;
+        if (!confirm(`Close ${symbol} right now at market price, ignoring Hokage's target and stop?`)) return;
+        const original = btn ? btn.textContent : "";
+        if (btn) { btn.disabled = true; btn.textContent = "Closing…"; }
+        try {
+            const res = await fetch(`/api/v1/positions/${encodeURIComponent(symbol)}/close`, { method: "POST" });
+            const data = await res.json().catch(() => ({}));
+            alert(data.message || (res.ok ? `Closed ${symbol}.` : `Could not close ${symbol}.`));
+        } catch (e) {
+            alert(`Could not close ${symbol}: ${e.message}`);
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = original || "Exit Now"; }
+            loadPositionsData();
         }
     }
 

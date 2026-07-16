@@ -49,12 +49,17 @@ def test_create_dashboard_api_with_brain_root(tmp_path: Path) -> None:
         assert chat_data["mapped_command"] == "hokage status"
         assert "=== Hokage System Status ===" in chat_data["response_text"]
 
-        # Verify unmapped chat mapping returns instructions
+        # Unmapped free-text now flows through the natural conversation engine
+        # (no robotic "couldn't map your request" prefix). Offline (no LLM key)
+        # it returns the processor's stub, but it must still be a non-empty,
+        # natural reply tagged "unmapped".
         chat_unmapped = client.post("/api/v1/chat", json={"message": "random gibberish message"})
         assert chat_unmapped.status_code == 200
         unmapped_data = chat_unmapped.json
         assert unmapped_data["mapped_command"] == "unmapped"
-        assert "couldn't map your request" in unmapped_data["response_text"]
+        assert isinstance(unmapped_data["response_text"], str)
+        assert len(unmapped_data["response_text"]) > 0
+        assert "couldn't map your request" not in unmapped_data["response_text"]
 
         # Verify summary dashboard endpoint compiles stats
         summary_resp = client.get("/api/v1/dashboard/summary")

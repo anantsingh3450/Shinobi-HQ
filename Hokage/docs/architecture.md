@@ -118,9 +118,6 @@ Between **09:15 AM and 09:30 AM IST**, the bot enters a strict **Observation Gat
 - **Opening Auction Exchanges (NSE/BSE)**: Trade entry execution is hard-blocked. Hokage consumes live websockets passively to map the opening horizontal ranges.
 - **Continuous Feeds (Crypto/Forex)**: The gate is intentionally bypassed to respect the 24/7 continuous rolling window nature of these venues.
 
-### Generative Microstructure Synthesis
-The Generative AI (`processor.py`) System prompts are hardcoded to completely ignore legacy indicators (such as EMA, MACD, RSI). It derives conviction purely through the `MicrostructureEngine`'s fractional price series, Volume Delta Sweeps, and institutional absorption anomaly flags.
-
 ---
 
 ## 5. HNEP Phase 4: Risk & Capital Management
@@ -159,6 +156,5 @@ The `MacroIngestor` (`macro_ingestor.py`) constantly polls global NLP-assessed n
 - If a severe event is detected, Kelly sizing is instantly halved, and long exposures are discouraged.
 - The **Anbu Intel Dispatch** logic immediately pushes a hardcoded `🚨 ANBU INTEL DISPATCH 🚨` alert via the Telegram Bot summarizing the event and Hokage's structural reaction.
 
-### The Midnight Crucible & CPCV Validator
+### The Midnight Crucible
 - `midnight_crucible.py` triggers at 23:30 IST to evaluate the immutable execution ledger and score the AI's daily alpha logic, simulating real-time weight adjustments (reinforcement).
-- `cpcv_validator.py` enforces Combinatorial Purged Cross-Validation for any new strategies. It aggressively purges overlapping data points between training folds and test folds (embargoing) to ensure zero data leakage.

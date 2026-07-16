@@ -1273,6 +1273,16 @@
                     <h2 style="margin: 0; color: var(--color-orange);">📋 Reports</h2>
                     <button class="btn-primary-sm" style="padding: 0.4rem 0.8rem;">Generate Report</button>
                 </div>
+
+                <!-- Plain-English end-of-day report: today's trades explained
+                     so a non-trader can follow along. -->
+                <div class="glass-panel" style="padding: 1.5rem; border-radius: 12px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); margin-bottom: 1.5rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
+                        <h3 style="margin:0;">🗒️ Today in Plain English</h3>
+                        <button id="btn-plain-eod" class="btn-primary-sm" style="padding: 0.4rem 0.8rem;">Show today's report</button>
+                    </div>
+                    <pre id="plain-eod-report" style="white-space:pre-wrap; word-break:break-word; font-family:inherit; font-size:0.92rem; line-height:1.5; color:#e8e8e8; margin:0;">Click “Show today's report” for a simple recap of every trade today.</pre>
+                </div>
                 <div class="glass-panel" style="padding: 1.5rem; border-radius: 12px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color);">
                     <h3>Shinobi Performance Reports</h3>
                     <div style="margin-top: 1rem; display: flex; flex-direction: column; gap: 0.75rem;">

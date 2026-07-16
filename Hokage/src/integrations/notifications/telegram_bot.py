@@ -275,6 +275,70 @@ class TelegramBotUplink:
                 
             time.sleep(5.0)
 
+    def _conversational_reply(self, text: str) -> str:
+        """Answer a free-text query the way the dashboard chat does.
+
+        Routes through the natural CommanderConversationEngine (humor controls,
+        plain-language explainers) when a trading bot is attached; otherwise
+        falls back to the raw LLM processor.
+        """
+        handler = self.command_handler
+        orch = getattr(handler, "orchestrator", None) if handler is not None else None
+        if orch is not None:
+            try:
+                from bots.autonomous.conversation import CommanderConversationEngine
+                from bots.autonomous.cache import IntelligenceCache
+                engine = CommanderConversationEngine(orch, IntelligenceCache(orch.resolver.resolve_brain_root()))
+                return engine.respond(text)
+            except Exception as e:
+                logger.error(f"Conversation engine failed on Telegram, using LLM fallback: {e}")
+        return self.llm_processor.generate_response(text)
+
+    def _try_natural_trade(self, text: str) -> str | None:
+        """Detect plain-English trade intent and execute it immediately.
+
+        "exit nifty", "close my banknifty", "sell sensex", "buy nifty call",
+        "go short on banknifty" → an immediate paper action. Returns the ack,
+        or None when the text isn't an imperative trade (so it flows on to
+        normal conversation). Questions ("how do I buy nifty?") are ignored.
+        """
+        handler = self.command_handler
+        if handler is None:
+            return None
+        low = text.strip().lower()
+        # Never fire a trade from a question or an explainer request.
+        if "?" in low or low.split()[0] in ("how", "what", "why", "can", "should", "is", "are", "do", "does", "when", "where", "which", "explain", "tell"):
+            return None
+
+        import re
+        if re.search(r"\bbank\s*nifty\b|\bbanknifty\b", low):
+            underlying = "BANKNIFTY"
+        elif re.search(r"\bnifty\b", low):
+            underlying = "NIFTY"
+        elif re.search(r"\bsensex\b", low):
+            underlying = "SENSEX"
+        else:
+            underlying = None
+
+        exit_words = ("exit", "close", "sell", "square off", "squareoff", "get out", "dump", "offload")
+        buy_words = ("buy", "enter", "go long", "take a call", "go short", "purchase")
+        is_exit = any(w in low for w in exit_words)
+        is_buy = any(w in low for w in buy_words) or bool(re.search(r"\blong\b|\bshort\b", low))
+
+        # "close/exit everything"
+        if is_exit and any(w in low for w in ("all", "everything", "every position")) and underlying is None:
+            return handler.handle_remote_command("/close_all")
+
+        if underlying is None:
+            return None
+
+        if is_exit and not is_buy:
+            return handler.handle_remote_command(f"/exit {underlying}")
+        if is_buy and not is_exit:
+            direction = "put" if re.search(r"\bput\b|\bpe\b|\bshort\b|\bbear", low) else "call"
+            return handler.handle_remote_command(f"/buy {underlying} {direction}")
+        return None
+
     def _check_telegram_updates(self) -> None:
         url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
         params = {"offset": self._last_update_id + 1, "timeout": 2}
@@ -344,32 +408,47 @@ class TelegramBotUplink:
                             else:
                                 self.send_message(f"❌ *Login Failed*: {e}")
                             
-                    elif text.lower().split()[0] in ("/kill", "/pause", "/resume", "/close_all", "/status"):
-                        cmd = text.lower().split()[0]
-                        logger.warning(f"Received control command via Telegram: {cmd}")
+                    elif text.lower().split()[0] in (
+                        "/kill", "/pause", "/resume", "/close_all", "/status",
+                        "/exit", "/sell", "/close", "/squareoff", "/square_off",
+                        "/buy", "/enter", "/long", "/short",
+                        "/report", "/summary", "/eod", "/daily",
+                    ):
+                        first = text.lower().split()[0]
+                        logger.warning(f"Received control command via Telegram: {first}")
                         if self.command_handler is None:
                             self.send_message("❌ Control command received but no trading bot is attached to the uplink.")
                         else:
                             try:
-                                ack = self.command_handler.handle_remote_command(cmd)
+                                # Pass the FULL text so commands with arguments
+                                # (/exit NIFTY, /buy BANKNIFTY put) keep their arg.
+                                ack = self.command_handler.handle_remote_command(text)
                                 self.send_message(ack)
                             except Exception as e:
-                                logger.error(f"Control command {cmd} failed: {e}")
-                                self.send_message(f"❌ Command {cmd} failed: {e}")
+                                logger.error(f"Control command {first} failed: {e}")
+                                self.send_message(f"❌ Command {first} failed: {e}")
                     elif text.isdigit() and len(text) == 6:
                         self.latest_totp = text
                         logger.info(f"Received valid 6-digit TOTP token: {text}")
                         # Echo confirmation back to the user
                         self.send_message(f"✅ Received TOTP token: {text}. Authenticating Zerodha Connect...")
                     elif text:
-                        # Process conversational query
+                        # Conversational query. Route through the SAME natural
+                        # conversation engine the dashboard chat uses, so humor
+                        # controls ("be funnier") and the plain-language
+                        # explainers work over Telegram too. It also catches
+                        # plain-English trade intent like "exit nifty" / "buy
+                        # banknifty put" and executes it immediately.
                         logger.info(f"Received conversational query via Telegram: {text}")
                         try:
-                            # Run LLM processor
-                            response = self.llm_processor.generate_response(text)
-                            self.send_message(response)
+                            trade_reply = self._try_natural_trade(text)
+                            if trade_reply is not None:
+                                self.send_message(trade_reply)
+                            else:
+                                response = self._conversational_reply(text)
+                                self.send_message(response)
                         except Exception as e:
-                            logger.error(f"Failed to generate LLM response for Telegram: {e}")
-                            self.send_message("❌ Commander, my logic circuits encountered an error while processing that query.")
+                            logger.error(f"Failed to generate response for Telegram: {e}")
+                            self.send_message("❌ Commander, I hit an error processing that. Try again?")
         except Exception as e:
             logger.debug(f"Failed to check Telegram updates: {e}")

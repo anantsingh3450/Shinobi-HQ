@@ -386,6 +386,40 @@ def create_dashboard_api(
             return jsonify({"error": str(e)}), 500
 
     # =====================================================================
+    # Plain-language end-of-day report (non-trader friendly)
+    # =====================================================================
+    @dashboard_bp.route("/reports/eod-plain", methods=["GET"])
+    def eod_plain_report() -> dict:
+        """Today's trades explained in plain English anyone can follow."""
+        try:
+            bot = getattr(orchestrator, "autonomous_bot", None)
+            if bot is None or not hasattr(bot, "build_eod_plain_report"):
+                return jsonify({"report": "Trading engine is not available."}), 503
+            return jsonify({"report": bot.build_eod_plain_report()})
+        except Exception as e:
+            return jsonify({"report": f"Couldn't build the report: {e}"}), 500
+
+    # =====================================================================
+    # Instant exit (hard sell) — close ONE open position immediately
+    # =====================================================================
+    @dashboard_bp.route("/positions/<path:symbol>/close", methods=["POST"])
+    def force_close_position(symbol: str) -> dict:
+        """Close a single open position right now, ignoring its target/plan.
+
+        Drives the same instant-exit the commander can trigger over Telegram.
+        Matches the option contract symbol OR its underlying. Paper only.
+        """
+        try:
+            bot = getattr(orchestrator, "autonomous_bot", None)
+            if bot is None:
+                return jsonify({"success": False, "message": "Trading engine is not available."}), 503
+            result = bot.request_force_exit(symbol)
+            code = 200 if result.get("success") else 409
+            return jsonify(result), code
+        except Exception as e:
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    # =====================================================================
     # Trade History
     # =====================================================================
     @dashboard_bp.route("/portfolio/<account_id>/trades", methods=["GET"])
@@ -671,37 +705,16 @@ def create_dashboard_api(
 
             mapped_cmd = nl_router.parse_query(message)
 
-            # Force the endpoint to dynamically read HOKAGE_HUMOR_MODE
-            import json
-            humor_mode = "NORMAL"
-            try:
-                brain_json_path = resolver.resolve_brain_root() / "brain.json"
-                if brain_json_path.exists():
-                    with open(brain_json_path, "r", encoding="utf-8") as f:
-                        brain_data = json.load(f)
-                    humor_mode = brain_data.get("HOKAGE_HUMOR_MODE", "NORMAL").upper()
-                    if "persona" in brain_data and isinstance(brain_data["persona"], dict):
-                        humor_mode = brain_data["persona"].get("HOKAGE_HUMOR_MODE", humor_mode).upper()
-            except Exception as e:
-                logger.error(f"Failed to load humor mode from brain.json: {e}")
-            humor_mode = os.environ.get("HOKAGE_HUMOR_MODE", humor_mode).upper()
-
-            system_instruction = ""
-            if humor_mode == "SARCASTIC":
-                system_instruction = (
-                    "You are Hokage, a cynical, highly experienced quant trading system that has seen countless retail traders blow up their accounts. "
-                    "You respond with witty, sarcastic retail-critiques, referencing ninja jutsu (Will of Fire, shuriken, kunai, genjutsu) "
-                    "and mocking standard retail trading mistakes (trading without stop-losses, over-leveraging, chasing FOMO, buying options during IV crush). "
-                    "Analyze the query and provide a sarcastic critique or answer."
-                )
-
             if mapped_cmd == "unmapped":
-                from integrations.llm.processor import LLMProcessor
-                processor = LLMProcessor(orchestrator)
-                response_text = processor.generate_response(message, system_instruction=system_instruction)
-                if humor_mode != "SARCASTIC":
-                    response_text = "I'm sorry, I couldn't map your request. " + response_text
-                
+                # Free-text: answer naturally through the same conversation
+                # engine the main chat uses, so tone/humor and plain-language
+                # style are consistent everywhere (no separate SARCASTIC path,
+                # no robotic "I couldn't map your request" prefix).
+                from bots.autonomous.conversation import CommanderConversationEngine
+                from bots.autonomous.cache import IntelligenceCache
+                engine = CommanderConversationEngine(orchestrator, IntelligenceCache(resolver.resolve_brain_root()))
+                response_text = engine.respond(message)
+
                 # Conversational Halt Protocol Interceptor
                 if "[SYSTEM_ACTION: HALT]" in response_text:
                     response_text = response_text.replace("[SYSTEM_ACTION: HALT]", "").strip()
@@ -738,12 +751,6 @@ def create_dashboard_api(
                 response_text = "\n".join(lines)
             else:
                 response_text = str(result)
-
-            # Wrap with persona LLM response if sarcastic
-            if humor_mode == "SARCASTIC":
-                from integrations.llm.processor import LLMProcessor
-                processor = LLMProcessor(orchestrator)
-                response_text = processor.generate_response(message + f"\nContext data: {response_text}", system_instruction=system_instruction)
 
             return jsonify({
                 "query": message,

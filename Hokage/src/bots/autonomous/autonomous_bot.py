@@ -121,12 +121,20 @@ class AutonomousTradingBot:
         self._exits_executed_today = []
         self._last_crypto_report_date = None
         self._last_bar_key = None
+        # Guards the once-a-day automatic plain-language EOD report send.
+        self._eod_report_sent_date = None
         # Post-exit re-entry cooldown per UNDERLYING (UTC exit timestamps).
         # Same-day re-entries are allowed (evolution needs repetition), but an
         # immediate re-entry after an exit is usually the same thesis being
         # revenge-traded into the same tape. In-memory only: a restart clears
         # it, which at worst permits one earlier re-entry.
         self._underlying_exit_cooldowns: dict[str, datetime] = {}
+        # Commander-requested instant exits (hard sell). Holds tracked-position
+        # symbols the commander wants closed NOW, regardless of the ladder's
+        # target/stop. The monitor's exit path honors these first, so a forced
+        # exit gets the same full bookkeeping (journal outcome, strategy stats,
+        # cooldown, tracking removal) as any other exit.
+        self._forced_exits: set[str] = set()
 
         # Gatekeeper, overrides and reset tracking
         self.intraday_override = {}
@@ -487,6 +495,20 @@ class AutonomousTradingBot:
                         self.gatekeeper_state = None
                 else:
                     self.gatekeeper_state = None
+
+                # Auto-send the plain-language end-of-day report once, shortly
+                # after the NSE close (square-off is 15:20 IST). Non-trader
+                # friendly recap of every trade — pushed to Telegram.
+                if dt_time(15, 35) <= ist_time < dt_time(16, 30):
+                    if self._eod_report_sent_date != current_date_str:
+                        self._eod_report_sent_date = current_date_str
+                        try:
+                            report = self.build_eod_plain_report()
+                            if self.telegram_bot and self.telegram_bot.enabled:
+                                self.telegram_bot.send_message(report)
+                            logger.info("Sent plain-language end-of-day report.")
+                        except Exception as exc:
+                            logger.error(f"Failed to send EOD plain report: {exc}")
 
                 # Manage shadow sessions independently per exchange
                 for exchange in tracked_exchanges:
@@ -1237,7 +1259,44 @@ class AutonomousTradingBot:
         /close_all (liquidate, no halt), /status. Returns an acknowledgement
         string that the uplink sends back to the commander.
         """
-        cmd = command.strip().lower().lstrip("/")
+        raw = command.strip()
+        parts = raw.split()
+        cmd = parts[0].strip().lower().lstrip("/") if parts else ""
+        arg = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+
+        # Instant exit of ONE named position (hard sell): "/exit NIFTY",
+        # "/sell NIFTY", "/close NIFTY". Executes immediately, full bookkeeping.
+        if cmd in ("exit", "sell", "close", "squareoff", "square_off"):
+            if not arg:
+                if not self._active_positions_tracking:
+                    return "No open positions to close."
+                open_list = ", ".join(self._active_positions_tracking.keys())
+                return f"Which one? Say e.g. /exit NIFTY. Currently open: {open_list}."
+            res = self.request_force_exit(arg)
+            return ("✅ " if res.get("success") else "⚠️ ") + res.get("message", "Done.")
+
+        # Instant entry of a named underlying (paper): "/buy NIFTY",
+        # "/buy BANKNIFTY put", "/enter SENSEX call".
+        if cmd in ("buy", "enter", "long", "short"):
+            direction = "long"
+            arg_l = (cmd + " " + arg).lower()
+            if cmd == "short" or any(w in arg_l for w in ("put", " pe", "short", "bear")):
+                direction = "short"
+            underlying = arg
+            for w in ("call", "put", "ce", "pe", "long", "short", "bull", "bear", "option", "options"):
+                underlying = __import__("re").sub(rf"\b{w}\b", "", underlying, flags=__import__("re").IGNORECASE)
+            underlying = underlying.strip().upper()
+            if not underlying:
+                return "Which index? Say e.g. /buy NIFTY call (or put). Tradable: NIFTY, BANKNIFTY, SENSEX."
+            res = self.request_force_entry(underlying, direction)
+            return ("✅ " if res.get("success") else "⚠️ ") + res.get("message", "Done.")
+
+        if cmd in ("report", "summary", "eod", "daily"):
+            try:
+                return self.build_eod_plain_report()
+            except Exception as e:
+                return f"Couldn't build the report right now: {e}"
+
         if cmd == "kill":
             self.intraday_override["halted"] = True
             self.gatekeeper_state = "KILL_SWITCH_ENGAGED"
@@ -1300,6 +1359,236 @@ class AutonomousTradingBot:
                 )
             return "\n".join(lines)
         return f"Unknown control command: /{cmd}"
+
+    def request_force_exit(self, identifier: str) -> dict[str, Any]:
+        """Close open position(s) matching ``identifier`` immediately (hard sell).
+
+        ``identifier`` may be the option contract symbol OR its underlying —
+        the commander types "NIFTY"; the tracked symbol is NIFTY2672124150CE.
+        Runs one synchronous monitor pass so the exit fills right away with the
+        SAME bookkeeping as a laddered exit (journal outcome, strategy stats,
+        re-entry cooldown, tracking removal, Telegram notify). Returns a result
+        dict the dashboard button and the Telegram command both render.
+        """
+        ident = (identifier or "").strip().upper()
+        if not ident:
+            return {"success": False, "message": "Tell me which position to close (e.g. NIFTY)."}
+
+        tracked = dict(self._active_positions_tracking)
+        if not tracked:
+            return {"success": False, "message": "There are no open positions to close right now."}
+
+        matches = []
+        for sym, pos in tracked.items():
+            underlying = str(pos.get("underlying") or "").upper()
+            if ident == sym.upper() or (underlying and ident == underlying) or ident in sym.upper():
+                matches.append(sym)
+        if not matches:
+            open_list = ", ".join(tracked.keys())
+            return {"success": False, "message": f"No open position matches '{identifier}'. Currently open: {open_list}."}
+
+        added: set[str] = set()
+        for sym in matches:
+            added.add(sym.upper())
+            u = str(tracked[sym].get("underlying") or "").upper()
+            if u:
+                added.add(u)
+        self._forced_exits |= added
+        try:
+            self._monitor_and_exit_positions(is_tick=True)
+        except Exception as exc:
+            logger.error(f"Force-exit monitor pass failed: {exc}")
+        finally:
+            self._forced_exits -= added
+
+        closed = [s for s in matches if s not in self._active_positions_tracking]
+        still_open = [s for s in matches if s in self._active_positions_tracking]
+        if closed:
+            logger.warning("Commander instant-exit closed: %s", ", ".join(closed))
+            return {
+                "success": True,
+                "closed": closed,
+                "still_open": still_open,
+                "message": f"Closed immediately: {', '.join(closed)}.",
+            }
+        return {
+            "success": False,
+            "closed": [],
+            "still_open": still_open,
+            "message": (
+                f"Sent the exit order for {', '.join(still_open)} but it hasn't confirmed closed yet "
+                f"(likely a momentary data gap) — it will square off on the next check."
+            ),
+        }
+
+    def request_force_entry(self, underlying: str, direction: str = "long") -> dict[str, Any]:
+        """Manually open a paper option position (hard buy) on ``underlying``.
+
+        Commander-commanded entries (dashboard / Telegram) skip the league vote
+        and the daily-bar gates — the commander decides — but they STILL go
+        through the real option router (nearest-expiry ATM CE for long / PE for
+        short, real live premium, cash-capped size) and land on the PAPER venue
+        ONLY. A chat/Telegram command must never touch live capital. The new
+        position is tracked so the normal exit ladder and instant-exit manage it.
+        """
+        from bots.execution.options_router import OptionsRouter, OptionsRoutingError
+        from integrations.brokers.models import OrderRequest, OrderSide, OrderType
+        from integrations.data.models import Instrument
+
+        underlying = (underlying or "").strip().upper()
+        direction = "short" if str(direction).lower().startswith("s") else "long"
+
+        if not OptionsRouter.routes(underlying):
+            return {"success": False, "message": f"I only trade options on NIFTY, BANKNIFTY, and SENSEX — '{underlying}' isn't one of those."}
+
+        for sym, pos in self._active_positions_tracking.items():
+            if str(pos.get("underlying") or "").upper() == underlying:
+                return {"success": False, "message": f"There's already an open {underlying} position ({sym}). Close it first with /exit {underlying}."}
+
+        entry_price, reason = self._get_validated_live_price(underlying)
+        if entry_price is None:
+            return {"success": False, "message": f"Couldn't get a fresh live price for {underlying} right now ({reason}). Try again in a moment."}
+
+        # PAPER VENUE ONLY — hard safety seam for a commander-typed trade.
+        venue = self.orchestrator.paper_venue
+        side = OrderSide.BUY if direction == "long" else OrderSide.SELL
+        resolved_ac = self.orchestrator.session_manager.resolve_asset_class(underlying)
+        resolved_exch = self.orchestrator.session_manager.resolve_exchange(underlying)
+        inst = Instrument(symbol=underlying, asset_class=resolved_ac, exchange=resolved_exch)
+        req = OrderRequest(
+            instrument=inst, side=side, quantity=1.0, order_type=OrderType.MARKET,
+            venue_id=venue.venue_id, strategy_id="COMMANDER_MANUAL",
+            execution_reason="Commander manual entry (hard buy)",
+        )
+
+        try:
+            cash = float(venue.get_account_balance().cash)
+        except Exception:
+            cash = None
+        try:
+            opt_router = OptionsRouter(price_source=self.orchestrator.price_source)
+            req = opt_router.route_to_options(req, current_price=entry_price, available_cash=cash, risk_budget=cash)
+        except OptionsRoutingError as e:
+            return {"success": False, "message": f"Couldn't set up the {underlying} option trade: {e}"}
+
+        try:
+            resp = venue.place_order(req)
+        except Exception as e:
+            return {"success": False, "message": f"The order failed: {e}"}
+        if resp is None or str(getattr(resp, "status", "")).upper() in ("REJECTED", "CANCELLED", "ERROR", "FAILED"):
+            return {"success": False, "message": f"The order was rejected: {getattr(resp, 'error_message', 'unknown reason')}."}
+
+        qty_filled = getattr(resp, "filled_quantity", req.quantity) or req.quantity
+        req_meta = req.instrument.metadata or {}
+        tracked_symbol = req.instrument.symbol
+        tracked_entry_price = float(req_meta.get("premium_at_entry", entry_price)) if req_meta.get("is_option") else float(entry_price)
+        entry_und_atr = self._get_atr_for_symbol(underlying)
+        self._active_positions_tracking[tracked_symbol] = {
+            "entry_price": tracked_entry_price,
+            "peak_price": tracked_entry_price,
+            "stop_price": tracked_entry_price * (1.0 - self.tsl_percent),
+            "target_price": tracked_entry_price * (1.0 + self.tp_percent),
+            "decision_id": f"manual-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
+            "strategy_id": "COMMANDER_MANUAL",
+            "side": side.value,
+            "quantity": float(qty_filled),
+            "venue_id": venue.venue_id,
+            "underlying": underlying,
+            "entry_timestamp": datetime.now(timezone.utc).isoformat(),
+            "entry_underlying_price": float(entry_price),
+            "entry_underlying_atr": float(entry_und_atr) if entry_und_atr else None,
+            "lot_size": req_meta.get("lot_size"),
+            "option_type": req_meta.get("option_type"),
+            "strike": req_meta.get("strike"),
+            "expiry": req_meta.get("expiry"),
+        }
+        self._save_positions_tracking()
+        if self.telegram_bot and self.telegram_bot.enabled:
+            try:
+                self.telegram_bot.notify_entry(
+                    symbol=tracked_symbol, cmp=tracked_entry_price,
+                    target=self._active_positions_tracking[tracked_symbol]["target_price"], edge=100.0,
+                )
+            except Exception:
+                pass
+        kind = "call" if str(req_meta.get("option_type", "")).upper().startswith("C") else "put"
+        return {
+            "success": True,
+            "symbol": tracked_symbol,
+            "message": (
+                f"Done — bought a {underlying} {kind} option ({tracked_symbol}) at ₹{tracked_entry_price:.2f} "
+                f"for {int(qty_filled)} qty on paper. I'll manage the exit, or say /exit {underlying} to close it yourself."
+            ),
+        }
+
+    def build_eod_plain_report(self) -> str:
+        """A plain-English recap of today's trades a non-trader can follow.
+
+        Numbers come straight from the paper account (never guessed); exit
+        reasons come from today's exit log. Reused by the dashboard, the
+        /report Telegram command, and the automatic end-of-day send.
+        """
+        from bots.autonomous.plain_report import build_plain_report
+        from integrations.brokers.session_manager import KolkataTime
+
+        now_ist = datetime.now(timezone.utc).astimezone(KolkataTime())
+        date_label = now_ist.strftime("%A, %d %b %Y")
+        today = now_ist.strftime("%Y-%m-%d")
+
+        reason_by_symbol: dict[str, Any] = {}
+        for ex in getattr(self, "_exits_executed_today", []):
+            reason_by_symbol[str(ex.get("symbol", "")).upper()] = ex.get("reason")
+
+        closed: list[dict[str, Any]] = []
+        try:
+            account = self.orchestrator.portfolio_store.load_account("paper")
+            for pos in account.positions.values():
+                if getattr(pos.status, "value", str(pos.status)) != "CLOSED":
+                    continue
+                if str(getattr(pos, "failure_reason", "") or "").startswith("PHANTOM"):
+                    continue
+                closed_at = getattr(pos, "closed_at", None)
+                if closed_at is None:
+                    continue
+                try:
+                    ist = closed_at.astimezone(KolkataTime())
+                except Exception:
+                    continue
+                if ist.strftime("%Y-%m-%d") != today:
+                    continue
+                closed.append({
+                    "symbol": pos.market,
+                    "entry_price": pos.entry_price,
+                    "exit_price": pos.current_price,
+                    "quantity": pos.quantity,
+                    "pnl": pos.realized_pnl,
+                    "exit_reason": reason_by_symbol.get(str(pos.market).upper()) or getattr(pos, "failure_reason", None),
+                    "closed_at_label": ist.strftime("%I:%M %p"),
+                })
+        except Exception as exc:
+            logger.error(f"EOD report: failed to read closed trades: {exc}")
+
+        open_trades: list[dict[str, Any]] = []
+        for sym, pos in dict(self._active_positions_tracking).items():
+            entry = float(pos.get("entry_price", 0.0))
+            ltp = None
+            try:
+                ltp, _ = self._get_validated_live_price(sym)
+            except Exception:
+                ltp = None
+            unreal = None
+            if isinstance(ltp, (int, float)):
+                sign = 1.0 if pos.get("side", "BUY") == "BUY" else -1.0
+                unreal = round((ltp - entry) * float(pos.get("quantity", 0.0)) * sign, 2)
+            open_trades.append({
+                "symbol": sym,
+                "entry_price": entry,
+                "current_price": ltp,
+                "quantity": float(pos.get("quantity", 0.0)),
+                "unrealized_pnl": unreal,
+            })
+
+        return build_plain_report(closed, open_trades, date_label)
 
     def _close_all_positions(self, reason: str) -> int:
         """Send liquidation orders for every locally tracked open position.
@@ -1443,6 +1732,16 @@ class AutonomousTradingBot:
                 "entry_price": average_price,
                 "peak_price": max(average_price, current_price) if (side == OrderSide.BUY or side.value == "BUY") else min(average_price, current_price)
             }
+
+        # 0. Commander instant-exit (hard sell). Outranks every ladder rung:
+        # when the commander says close it, it closes now — matched by the
+        # option contract symbol OR its underlying (they typed "NIFTY", the
+        # tracked symbol is NIFTY2672124150CE).
+        forced = getattr(self, "_forced_exits", set())
+        if forced:
+            underlying = str((tracking or {}).get("underlying") or "").upper()
+            if symbol.upper() in forced or (underlying and underlying in forced):
+                return True, "Commander instant-exit (hard sell)", tracking
 
         # 1. Manual Kill Switch
         if getattr(self, "intraday_override", {}).get(symbol) == "KILL":

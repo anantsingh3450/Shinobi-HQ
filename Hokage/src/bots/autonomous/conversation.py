@@ -27,9 +27,62 @@ class CommanderConversationEngine:
         pe = PersonaEngine(self.orchestrator.resolver.resolve_brain_root())
         return pe.format_text(raw_response)
 
+    def _handle_humor_command(self, cleaned: str) -> str | None:
+        """Detect a plain-language humor adjustment and apply it.
+
+        Returns a confirmation string if the query was a humor command, else
+        None so normal routing continues. Lets the commander say "be funnier",
+        "tone it down", "be serious", "set humor to 8", etc. — no codes.
+        """
+        import re
+        from bots.autonomous.persona import PersonaEngine
+
+        pe = PersonaEngine(self.orchestrator.resolver.resolve_brain_root())
+
+        # Explicit numeric set: "set humor to 8", "humor level 5", "humor = 3"
+        m = re.search(r"humou?r\s*(?:level|to|=|:)?\s*(\d{1,2})\b", cleaned)
+        if m and ("humor" in cleaned or "humour" in cleaned):
+            new = pe.set_humor_level(int(m.group(1)))
+            tail = "I'll keep it strictly business." if new <= 1 else "Let's have some fun with it."
+            return f"Done — humor set to {pe.describe_humor()}. {tail}"
+
+        wants_humor_topic = any(w in cleaned for w in ["funny", "funnier", "humor", "humour", "joke", "jokes", "playful", "serious", "lighten up", "tone it down", "tone down"])
+        if not wants_humor_topic:
+            return None
+
+        increase = any(w in cleaned for w in ["funnier", "more funny", "more jokes", "more humor", "more humour", "more playful", "be funny", "be playful", "lighten up", "crack jokes", "be more funny", "funnier please"])
+        decrease = any(w in cleaned for w in ["less funny", "less jokes", "less humor", "less humour", "tone it down", "tone down", "be serious", "more serious", "no jokes", "stop joking", "stop the jokes", "cut the jokes", "less playful", "be strictly"])
+
+        # "how funny are you / what's your humor" — report, don't change.
+        if not increase and not decrease and any(w in cleaned for w in ["how funny", "what's your humor", "whats your humor", "your humour", "humor level", "humour level"]):
+            return f"My humor is currently at {pe.describe_humor()}. Say 'be funnier' or 'tone it down' anytime and I'll adjust."
+
+        if increase and not decrease:
+            new = pe.adjust_humor(+2)
+            return f"You got it — dialing the humor up to {pe.describe_humor()}. 😄"
+        if decrease and not increase:
+            new = pe.adjust_humor(-2)
+            level = pe.get_humor_level()
+            return f"Understood — humor down to {pe.describe_humor()}." + ("" if level > 1 else " Strictly business from here.")
+        return None
+
     def _generate_response(self, query: str) -> str:
         """Generate conversational response based on query keywords."""
         cleaned = query.strip().lower()
+
+        # 0. Humor control in plain language ("be funnier", "tone it down").
+        humor_reply = self._handle_humor_command(cleaned)
+        if humor_reply is not None:
+            return humor_reply
+
+        # 0b. Plain-language end-of-day report on request.
+        if any(p in cleaned for p in ("daily report", "eod report", "end of day report", "today's report", "todays report", "how did we do", "how did we do today", "how are we doing today", "recap", "summary of today", "today's trades", "todays trades")):
+            bot = getattr(self.orchestrator, "autonomous_bot", None)
+            if bot is not None and hasattr(bot, "build_eod_plain_report"):
+                try:
+                    return bot.build_eod_plain_report()
+                except Exception as e:
+                    logger.error(f"Plain EOD report failed: {e}")
 
         # 1. Explain committee votes / consensus decisions
         if "committee" in cleaned or "approve" in cleaned:
@@ -91,34 +144,13 @@ class CommanderConversationEngine:
         if ("buy" in cleaned or "sell" in cleaned) and ("crude" in cleaned or "nifty" in cleaned or "market" in cleaned or "trade" in cleaned):
             return self._explain_manual_trade()
 
-        # Fallback to dynamic conversation using the LLMProcessor
-        import os
-        import json
-        humor_mode = "NORMAL"
-        try:
-            brain_json_path = self.orchestrator.resolver.resolve_brain_root() / "brain.json"
-            if brain_json_path.exists():
-                with open(brain_json_path, "r", encoding="utf-8") as f:
-                    brain_data = json.load(f)
-                humor_mode = brain_data.get("HOKAGE_HUMOR_MODE", "NORMAL").upper()
-                if "persona" in brain_data and isinstance(brain_data["persona"], dict):
-                    humor_mode = brain_data["persona"].get("HOKAGE_HUMOR_MODE", humor_mode).upper()
-        except Exception as e:
-            logger.error(f"Failed to load humor mode from brain.json: {e}")
-        humor_mode = os.environ.get("HOKAGE_HUMOR_MODE", humor_mode).upper()
-
-        system_instruction = ""
-        if humor_mode == "SARCASTIC":
-            system_instruction = (
-                "You are Hokage, a cynical, highly experienced quant trading system that has seen countless retail traders blow up their accounts. "
-                "You respond with witty, sarcastic retail-critiques, referencing ninja jutsu (Will of Fire, shuriken, kunai, genjutsu) "
-                "and mocking standard retail trading mistakes (trading without stop-losses, over-leveraging, chasing FOMO, buying options during IV crush). "
-                "Analyze the query and provide a sarcastic critique or answer."
-            )
-
+        # Fallback to dynamic natural conversation via the LLMProcessor. Tone
+        # (humor) now lives on the persona dial inside the processor's system
+        # prompt — no separate SARCASTIC branch. The model talks like a real
+        # assistant and adapts to the commander's chosen humor level.
         from integrations.llm.processor import LLMProcessor
         processor = LLMProcessor(self.orchestrator)
-        return processor.generate_response(query, system_instruction=system_instruction)
+        return processor.generate_response(query, system_instruction="")
 
     def _explain_recommendation(self) -> str:
         """Query AI Coach or Portfolio Intelligence for strategic advice."""
