@@ -1344,7 +1344,12 @@ class AutonomousTradingBot:
             order_type=OrderType.MARKET,
             venue_id=venue.venue_id,
             strategy_id="AutonomousExit",
-            execution_reason=reason
+            execution_reason=reason,
+            # This is the kill-switch / close-all seam. An exit must NEVER be
+            # able to OPEN exposure: on 2026-07-15 a non-reduce-only exit storm
+            # against an already-flat book minted 207 phantom positions. The
+            # monitor's exit path carries this flag; this path had escaped.
+            reduce_only=True,
         )
         try:
             logger.info(f"Connoisseur Scale-Out: Placing order to {exit_side} {quantity} {symbol} on {venue.venue_id} for {reason}")

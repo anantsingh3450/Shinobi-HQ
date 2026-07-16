@@ -95,9 +95,14 @@ class DashboardService:
             List of all PositionSnapshot objects.
         """
         account = self.portfolio_store.load_account(account_id)
+        # The 2026-07-15 exit runaway minted hundreds of PHANTOM-tagged
+        # positions (exits that opened exposure, later force-flattened). They
+        # are bookkeeping, not trading history — showing them (with their
+        # fabricated ±PnL) misleads the commander. Same filter as the arena.
         return [
             PositionSnapshot.from_position(pos)
             for pos in account.positions.values()
+            if not str(getattr(pos, "failure_reason", "") or "").startswith("PHANTOM")
         ]
 
     def get_trade_history(self, account_id: str, limit: int | None = None) -> list[TradeSnapshot]:

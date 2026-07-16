@@ -199,7 +199,9 @@ document?.addEventListener("DOMContentLoaded", () => {
             // Welcome banner & profile info
             const welcomeMsgEl = document.getElementById("welcome-message");
             if (welcomeMsgEl) {
-                welcomeMsgEl.textContent = `Good Morning, ${data.commander_title || "Elder"}.`;
+                const hour = new Date().getHours();
+                const daypart = hour < 12 ? "Morning" : hour < 17 ? "Afternoon" : "Evening";
+                welcomeMsgEl.textContent = `Good ${daypart}, ${data.commander_title || "Elder"}.`;
             }
             const profileElderEl = document.getElementById("profile-elder");
             if (profileElderEl) {
@@ -822,7 +824,12 @@ document?.addEventListener("DOMContentLoaded", () => {
         return div;
     }
 
-    async function sendChatMessage(messageText) {
+    // Named distinctly from the Commander Chat tab's sendChatMessage (further
+    // down): both used to be `function sendChatMessage`, and since function
+    // declarations hoist within the same scope, the LATER one silently won —
+    // this widget's Send cleared the input, POSTed, and rendered the reply
+    // into the other tab's container. The war-room console looked dead.
+    async function sendWarroomChatMessage(messageText) {
         if (!messageText) return;
         appendMessage(messageText, true);
 
@@ -850,7 +857,7 @@ document?.addEventListener("DOMContentLoaded", () => {
     btnChatSend?.addEventListener("click", () => {
         const msg = inputChat.value.trim();
         if (msg) {
-            sendChatMessage(msg);
+            sendWarroomChatMessage(msg);
             inputChat.value = "";
         }
     });
@@ -860,7 +867,7 @@ document?.addEventListener("DOMContentLoaded", () => {
             e.preventDefault();
             const msg = inputChat.value.trim();
             if (msg) {
-                sendChatMessage(msg);
+                sendWarroomChatMessage(msg);
                 inputChat.value = "";
             }
         }
@@ -870,7 +877,7 @@ document?.addEventListener("DOMContentLoaded", () => {
     document.querySelectorAll(".chip").forEach(chip => {
         chip?.addEventListener("click", () => {
             const text = chip.getAttribute("data-query");
-            sendChatMessage(text);
+            sendWarroomChatMessage(text);
         });
     });
 
@@ -4781,7 +4788,9 @@ document?.addEventListener("DOMContentLoaded", () => {
         qaScanMarkets?.addEventListener("click", () => {
             const btn = document.querySelector('.nav-item[data-tab="markets"]');
             if (btn) btn.click();
-            sendCommanderCommand("SCAN_MARKETS");
+            // CommandType enum knows RUN_SCAN, not SCAN_MARKETS — the old
+            // action name 400'd on every click of this quick action.
+            sendCommanderCommand("RUN_SCAN");
         });
     }
     if (qaNewOpportunity) {

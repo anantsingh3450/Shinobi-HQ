@@ -95,6 +95,9 @@ def test_create_dashboard_api_with_brain_root(tmp_path: Path) -> None:
         buy_data = manual_buy_resp.json
         assert buy_data["mapped_command"] == "execute_manual_trade"
         assert "Executed manual BUY order for 10 shares of TCS" in buy_data["response_text"]
+        # Manual chat trades are pinned to the PAPER venue: this path skips the
+        # risk framework entirely, so it must never reach live capital.
+        assert "PAPER venue" in buy_data["response_text"]
 
         # Check if position registered in paper portfolio overview
         portfolio_updated = client.get("/api/v1/portfolio/paper/overview")

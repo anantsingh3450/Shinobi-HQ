@@ -119,17 +119,32 @@ def try_manual_trade_execution(message: str, orchestrator) -> str | None:
             order_type=OrderType.MARKET,
         )
         
+        # SAFETY SEAM: a chat message must never reach a live venue. This path
+        # bypasses the entire risk framework (no HardLotCapRule, no sizing, no
+        # exit-ladder tracking) — the venues fill raw quantity verbatim. On
+        # paper that pollutes the book; on a live venue it would be an
+        # unclamped real market order typed into a chat box. The active venue
+        # is honored only while it is a paper venue; anything else falls back
+        # to the paper venue until a risk-gated manual path exists.
         active_venue_id = orchestrator.get_execution_context().active_venue_id
         venue = orchestrator.registry.get_venue(active_venue_id)
-        if not venue:
+        is_paper_venue = venue is not None and (
+            "paper" in venue.venue_id.lower() or "mock" in venue.venue_id.lower()
+        )
+        if not is_paper_venue:
             venue = orchestrator.paper_venue
-            
+
         if venue.get_status().state != ConnectionState.CONNECTED:
             venue.connect()
-            
+
         res = venue.place_order(order_req)
-        
-        return f"Executed manual {side.upper()} order for {quantity} shares of {symbol}. Trade ID: {res.venue_order_id}."
+
+        return (
+            f"Executed manual {side.upper()} order for {quantity} shares of {symbol} "
+            f"on the PAPER venue (manual chat trades never touch live capital). "
+            f"Trade ID: {res.venue_order_id}. Note: manual trades skip the risk "
+            f"framework and the exit ladder — you manage this position yourself."
+        )
     except Exception as e:
         import logging
         logging.getLogger("Hokage.DashboardAPI").error(f"Failed to execute manual trade intent: {e}")

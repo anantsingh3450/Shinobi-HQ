@@ -234,7 +234,15 @@ class AccountMetrics:
             else 0.0
         )
 
-        closed = [p for p in account.positions.values() if p.status == TradeStatus.CLOSED]
+        # PHANTOM-tagged rows (2026-07-15 exit runaway bookkeeping) are not
+        # trading history: counting their fabricated ±PnL turned the win rate
+        # and profit factor into fiction (24.8% win rate from a storm of
+        # force-flattened phantoms). Same exclusion as the arena/positions views.
+        closed = [
+            p for p in account.positions.values()
+            if p.status == TradeStatus.CLOSED
+            and not str(getattr(p, "failure_reason", "") or "").startswith("PHANTOM")
+        ]
         win_rate = None
         profit_factor = None
         max_dd = None
