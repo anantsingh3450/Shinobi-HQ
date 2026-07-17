@@ -163,7 +163,8 @@ async function load() {
       <span class="${vixClass}">${vixPct === null || vixPct === undefined ? "no data — guard skipped" : (vixPct*100).toFixed(0) + "%"}</span></div>
     <div class="kv"><span class="k">Option-buy block above</span><span>${((g.vix_block_percentile ?? .8)*100).toFixed(0)}%</span></div>
     <div class="kv"><span class="k">Midday blackout (NSE)</span><span>${fmt(g.midday_blackout_ist)}</span></div>
-    <div class="kv"><span class="k">Last new entry (NSE)</span><span>${fmt(g.late_session_cutoff_ist)}</span></div>`;
+    <div class="kv"><span class="k">Last new entry (NSE)</span><span>${fmt(g.late_session_cutoff_ist)}</span></div>
+    <div class="kv"><span class="k">Re-entry cooldown after an exit</span><span>${g.reentry_cooldown_minutes ?? "—"} min</span></div>`;
 
   const l = d.exit_ladder || {};
   document.getElementById("ladder").innerHTML = `

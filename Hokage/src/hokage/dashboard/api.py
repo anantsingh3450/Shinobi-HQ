@@ -1880,9 +1880,15 @@ def create_dashboard_api(
         try:
             bot = getattr(orchestrator, "autonomous_bot", None)
             if bot is not None:
+                # Read the LIVE constants — these were hardcoded strings that
+                # kept advertising the retired global 11:30-13:30 blackout and
+                # the old 14:00 cutoff after both were changed in code. The
+                # arena must never describe rules the engine isn't running.
+                _cut_h, _cut_m = bot._NSE_LAST_ENTRY
                 gates: dict = {
-                    "midday_blackout_ist": "11:30-13:30",
-                    "late_session_cutoff_ist": "14:00",
+                    "midday_blackout_ist": "none (retired; Malfoy keeps its own)",
+                    "late_session_cutoff_ist": f"{_cut_h:02d}:{_cut_m:02d}",
+                    "reentry_cooldown_minutes": bot._REENTRY_COOLDOWN_MINUTES,
                     "vix_block_percentile": bot._VIX_PERCENTILE_BLOCK,
                 }
                 try:
