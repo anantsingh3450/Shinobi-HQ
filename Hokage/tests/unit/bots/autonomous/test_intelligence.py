@@ -66,7 +66,7 @@ def test_liquidity_engine():
 def test_volume_engine():
     engine = VolumeEngine()
 
-    # Normal volume fails the default breakout family (1.0x < 1.2x)
+    # Normal volume fails the default breakout family (1.0x < 1.1x)
     allowed, msg = engine.validate_breakout(100.0, 100.0)
     assert not allowed
     assert "FAKE_BREAKOUT" in msg
@@ -82,8 +82,9 @@ def test_volume_engine():
 
 
 def test_volume_engine_entry_families():
-    """Commander-approved: breakout entries keep the 1.2x surge bar; trend/
-    pullback entries only reject a genuinely dead tape (< 0.5x).
+    """Breakout entries demand an above-typical tape (1.1x, commander-approved
+    2026-07-18 after three 0.01-0.06x near-misses on a real BANKNIFTY rally);
+    trend/pullback entries only reject a genuinely dead tape (< 0.5x).
 
     Ratios here are time-of-day-normalised (see _get_volume_context): 1.0x is
     "normal volume for this clock time", NOT a fraction of a whole session.
@@ -95,6 +96,11 @@ def test_volume_engine_entry_families():
     allowed, msg = engine.validate_breakout(84.0, 100.0, entry_family="breakout")
     assert not allowed and "FAKE_BREAKOUT" in msg
     allowed, msg = engine.validate_breakout(84.0, 100.0, entry_family="trend")
+    assert allowed
+
+    # 1.14x: the real BANKNIFTY afternoon rally of 2026-07-17 that the old
+    # 1.2x bar refused three scans running while the breakout ran without us.
+    allowed, msg = engine.validate_breakout(114.0, 100.0, entry_family="breakout")
     assert allowed
 
     # 1.31x: NIFTY's real 09:15 surge on 2026-07-15. The old whole-session

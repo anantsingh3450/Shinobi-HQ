@@ -130,7 +130,14 @@ class VolumeEngine:
     # 80% of typical — quiet, not dead — which is stricter than this gate's
     # stated intent. 0.5x is the "genuinely dead tape" line the comment above
     # always described. Breakout keeps 1.2x: a surge bar should demand a surge.
-    BREAKOUT_MIN_RATIO = 1.2
+    #
+    # Commander-approved 2026-07-18: breakout bar 1.2 -> 1.1. The 1.2x bar was
+    # written before the baseline fix and never recalibrated on honest ratios.
+    # First live evidence (2026-07-17 final hour): MacroBreakout fired on a
+    # genuine BANKNIFTY rally three scans running and was refused at 1.14x /
+    # 1.15x / 1.19x — missing the bar by 0.01x at 15:00 while the breakout ran
+    # without us. 1.1x still demands above-typical tape, not a surge fantasy.
+    BREAKOUT_MIN_RATIO = 1.1
     TREND_MIN_RATIO = 0.5
 
     def validate_breakout(
