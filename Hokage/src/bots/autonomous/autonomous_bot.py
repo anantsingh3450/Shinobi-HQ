@@ -2932,10 +2932,17 @@ class AutonomousTradingBot:
             else:
                 logger.debug(f"Symbol {s} is not currently tradable (exchange session closed). Skipping scan.")
 
-        # Day-of-Week Isolator Filter
-        from integrations.brokers.session_manager import KolkataTime
-        tz = KolkataTime()
-        ist_now = datetime.now(timezone.utc).astimezone(tz)
+        # Tracking evaluations to update states. Initialized BEFORE the
+        # day-of-week filter below: that filter journals blocked symbols into
+        # eval_results, and on weekends every equity/index symbol is blocked —
+        # referencing it before assignment crashed every Saturday/Sunday scan
+        # with UnboundLocalError (latent since the filter was added; the test
+        # suite only caught it the first time it ran on a Saturday).
+        eval_results = {}
+
+        # Day-of-Week Isolator Filter. Weekday comes from the injectable clock
+        # seam so tests can pin a weekday instead of inheriting the wall clock.
+        ist_now = self._now_ist()
         weekday = ist_now.weekday() # 0 = Monday, 6 = Sunday
         
         if 0 <= weekday <= 4:
@@ -2982,8 +2989,8 @@ class AutonomousTradingBot:
 
         symbols_to_scan = [s for s in tradable_symbols if s not in existing_symbols and s not in observation_blocked]
 
-        # Tracking evaluations to update states
-        eval_results = {}
+        # (eval_results is initialized above the day-of-week filter — a second
+        # init here would silently wipe the day-filter's journaled blocks.)
 
         # Add observation blocked symbols to eval results early
         for s in observation_blocked:
