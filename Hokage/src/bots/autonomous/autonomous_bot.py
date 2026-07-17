@@ -138,6 +138,10 @@ class AutonomousTradingBot:
         # Reason label for the current forced-exit sweep (kill switch vs
         # commander hard-sell) so the journal records WHY it closed.
         self._forced_exit_label: str | None = None
+        # Post-win re-entry watermarks per underlying: after a TARGET_HIT
+        # exit, same-direction re-entry needs the index PAST the exit level.
+        # In-memory (a restart clears it — worst case one earlier re-entry).
+        self._target_exit_watermarks: dict[str, dict[str, Any]] = {}
 
         # Gatekeeper, overrides and reset tracking
         self.intraday_override = {}
@@ -919,6 +923,73 @@ class AutonomousTradingBot:
             )
 
         return True, "conduct gates passed"
+
+    #: NIFTY/BANKNIFTY/SENSEX move ~90% together — simultaneous same-direction
+    #: entries across them are ONE macro bet taken multiple times. On
+    #: 2026-07-17 three 12:15 CE entries lost together (-6.3k in 100 minutes).
+    #: Cap same-direction exposure across the family (commander-approved).
+    _INDEX_FAMILY = {"NIFTY", "BANKNIFTY", "SENSEX", "BANKEX", "FINNIFTY", "MIDCPNIFTY"}
+    _MAX_FAMILY_SAME_DIRECTION = 2
+
+    @staticmethod
+    def _position_direction(pos: dict[str, Any]) -> str:
+        """Directional sense of a tracked position: long or short.
+
+        Bought options carry the bet in the CONTRACT TYPE (CE = long the
+        index, PE = short the index) while side stays BUY; non-options carry
+        it in the side.
+        """
+        opt_type = str(pos.get("option_type") or "").upper()
+        if opt_type.startswith("C"):
+            return "long"
+        if opt_type.startswith("P"):
+            return "short"
+        return "long" if str(pos.get("side", "BUY")).upper() == "BUY" else "short"
+
+    def _entry_cluster_gate(
+        self, symbol: str, direction: str, underlying_price: float | None
+    ) -> tuple[bool, str]:
+        """Portfolio-level entry checks the per-trade gates cannot see.
+
+        1. Correlation cap: at most _MAX_FAMILY_SAME_DIRECTION open positions
+           betting the same way across the index family.
+        2. Re-entry watermark: after a TARGET_HIT win, the same direction on
+           that underlying is only allowed if the index has pushed PAST the
+           level where we took profit — never buying the dip of our own
+           winner (the 13:03 re-entry mistake, -1,774).
+        """
+        symbol_upper = symbol.upper()
+        direction = "short" if str(direction).lower().startswith("s") else "long"
+
+        # --- 1. correlation cap across the index family -------------------
+        if symbol_upper in self._INDEX_FAMILY:
+            same_dir = 0
+            for pos in self._active_positions_tracking.values():
+                und = str(pos.get("underlying") or "").upper()
+                if und in self._INDEX_FAMILY and self._position_direction(pos) == direction:
+                    same_dir += 1
+            if same_dir >= self._MAX_FAMILY_SAME_DIRECTION:
+                return False, (
+                    f"CorrelationCap: already {same_dir} same-direction ({direction}) index-family "
+                    f"positions open — NIFTY/BANKNIFTY/SENSEX are one macro bet, not three."
+                )
+
+        # --- 2. post-win re-entry watermark --------------------------------
+        wm = getattr(self, "_target_exit_watermarks", {}).get(symbol_upper)
+        if wm and wm.get("direction") == direction and isinstance(underlying_price, (int, float)):
+            level = float(wm.get("level") or 0.0)
+            if level > 0:
+                stale = (direction == "long" and underlying_price <= level) or (
+                    direction == "short" and underlying_price >= level
+                )
+                if stale:
+                    return False, (
+                        f"ReentryWatermark: took {direction} profit on {symbol_upper} at index level "
+                        f"{level:.2f}; now {underlying_price:.2f} — not buying the dip of our own winner. "
+                        f"Re-entry unlocks past {level:.2f}."
+                    )
+
+        return True, "cluster gates passed"
 
     def _compute_underlying_bias(self, symbol: str) -> str | None:
         """Classify the underlying tape as BULLISH / BEARISH / MIXED from real
@@ -1883,7 +1954,11 @@ class AutonomousTradingBot:
 
     #: Tiered premium hard backstop: cheap options are noisier, so their
     #: catastrophe cap is proportionally wider. (entry premium floor, max loss %)
-    _OPTION_BACKSTOP_TIERS = ((500.0, 0.15), (200.0, 0.25), (100.0, 0.35), (0.0, 0.50))
+    #: Tightened one notch 2026-07-17 (commander-approved) after the SENSEX CE
+    #: rode its -25% tier and gap-filled at -28.4%: a backstop on a falling
+    #: premium always slips a little past the line, so the line itself must
+    #: sit tighter. Was (0.15, 0.25, 0.35, 0.50).
+    _OPTION_BACKSTOP_TIERS = ((500.0, 0.12), (200.0, 0.20), (100.0, 0.28), (0.0, 0.40))
     #: Underlying thesis stop: adverse move >= this multiple of entry-time ATR
     #: on the UNDERLYING invalidates the directional premise.
     _OPTION_THESIS_ATR_MULT = 1.25
@@ -2264,6 +2339,24 @@ class AutonomousTradingBot:
                     # Arm the same-day re-entry cooldown for this underlying:
                     # re-entries are allowed, immediate revenge re-entry is not.
                     self._underlying_exit_cooldowns[str(outcome_asset).upper()] = datetime.now(timezone.utc)
+
+                    # After a TARGET_HIT win, remember the index level where
+                    # profit was taken: same-direction re-entry only unlocks
+                    # PAST that level (never buy the dip of our own winner —
+                    # the 2026-07-17 13:03 re-entry gave back -1,774).
+                    if str(exit_reason or "").upper().startswith("TARGET_HIT"):
+                        _und_sym = str(outcome_asset).upper()
+                        _und_level, _ = self._get_validated_live_price(_und_sym)
+                        if _und_level is not None:
+                            _dir = self._position_direction(entry_meta)
+                            self._target_exit_watermarks[_und_sym] = {
+                                "direction": _dir,
+                                "level": float(_und_level),
+                                "set_at": datetime.now(timezone.utc).isoformat(),
+                            }
+                            logger.info(
+                                f"Re-entry watermark set: {_und_sym} {_dir} unlocks past {_und_level:.2f}."
+                            )
 
                     # --- Layer 1: Journal outcome update ---
                     if stored_decision_id:
@@ -3637,6 +3730,22 @@ class AutonomousTradingBot:
                         "conviction": int(committee_decision.decision_confidence),
                         "risk": 0.0,
                         "reasons": [conduct_reason],
+                    }
+                    continue
+
+                # Portfolio-level cluster gates: correlation cap across the
+                # index family + post-win re-entry watermark (2026-07-17:
+                # three simultaneous same-direction CE = one bet tripled).
+                cluster_ok, cluster_reason = self._entry_cluster_gate(symbol, original_entry, entry_price)
+                if not cluster_ok:
+                    logger.info(f"Entry blocked for {symbol}: {cluster_reason}")
+                    eval_results[symbol] = {
+                        "state": "NO_TRADE",
+                        "blockers": [cluster_reason],
+                        "confirmations": [],
+                        "conviction": int(committee_decision.decision_confidence),
+                        "risk": 0.0,
+                        "reasons": [cluster_reason],
                     }
                     continue
 

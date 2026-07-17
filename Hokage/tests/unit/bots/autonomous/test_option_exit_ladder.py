@@ -40,18 +40,27 @@ def _run(bot, symbol="NIFTY25JUL24300CE", entry=200.0, current=200.0, tracking=N
 
 
 def test_tiered_backstop_wider_for_cheap_options(bot):
-    # Entry 250 (tier 200-500): -25% cap = 187.5
+    # Tiers tightened 2026-07-17 after the SENSEX -28.4% gap-fill:
+    # (500+: -12%, 200-500: -20%, 100-200: -28%, <100: -40%).
+    # Entry 250 (tier 200-500): -20% cap = 200.0
     hit, reason, _ = _run(bot, entry=250.0, current=187.0)
     assert hit and "Hard Backstop" in reason
-    # -20% is inside the tier's tolerance: no exit
+    # -19.6% is inside the tier's tolerance: no exit
     hit, reason, _ = _run(bot, entry=250.0, current=201.0)
     assert not hit
 
-    # Cheap option (entry 80, tier <100): survives -40%, dies at -50%
+    # Cheap option (entry 80, tier <100): survives -39%, dies at -40%
     hit, _, _ = _run(bot, entry=80.0, current=48.5)
     assert not hit
     hit, reason, _ = _run(bot, entry=80.0, current=39.9)
     assert hit and "Hard Backstop" in reason
+
+    # The SENSEX class (entry ~494, tier 200-500): the old -25% line let it
+    # gap-fill at -28.4%; the -20% line exits at 395.
+    hit, reason, _ = _run(bot, entry=493.75, current=394.0)
+    assert hit and "Hard Backstop" in reason
+    hit, _, _ = _run(bot, entry=493.75, current=396.0)
+    assert not hit
 
 
 def test_underlying_thesis_stop_cuts_broken_premise(bot):

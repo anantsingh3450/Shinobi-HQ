@@ -2034,7 +2034,8 @@ def create_dashboard_api(
                 "order": [
                     "KILL_SWITCH", "EOD_SQUARE_OFF (15:20 NSE / 23:15 MCX)",
                     "TIERED_PREMIUM_BACKSTOP", "UNDERLYING_THESIS_STOP",
-                    "TARGET_HIT (adaptive)", "TRAIL_LOCK",
+                    "TARGET_HIT (adaptive)", "PROFIT_LOCK (breakeven ratchet + partial locks)",
+                    "TRAIL_LOCK",
                 ],
                 "backstop_tiers": [
                     {"entry_premium_at_least": t, "max_loss_pct": p}

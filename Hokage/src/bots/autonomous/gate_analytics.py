@@ -48,6 +48,8 @@ class GateId(StrEnum):
     ALLOCATION_ZERO = "ALLOCATION_ZERO"
     REENTRY_COOLDOWN = "REENTRY_COOLDOWN"
     REENTRY_CAP = "REENTRY_CAP"
+    CORRELATION_CAP = "CORRELATION_CAP"
+    REENTRY_WATERMARK = "REENTRY_WATERMARK"
     SCAN_PIPELINE = "SCAN_PIPELINE"
     UNCLASSIFIED = "UNCLASSIFIED"
 
@@ -95,6 +97,8 @@ _RULES: tuple[tuple[str, GateId], ...] = (
     ("committee", GateId.COMMITTEE),
     ("re-entry cooldown", GateId.REENTRY_COOLDOWN),
     ("re-entry cap", GateId.REENTRY_CAP),
+    ("correlationcap", GateId.CORRELATION_CAP),
+    ("reentrywatermark", GateId.REENTRY_WATERMARK),
     ("scan pipeline error", GateId.SCAN_PIPELINE),
     # League stand-aside rows are journaled with the entry module's id as the
     # prefix ("entry-malfoy-momentum-v1: ..."); without this rule they tally
@@ -123,6 +127,8 @@ GATE_KINDS: Mapping[GateId, GateKind] = {
     GateId.ALLOCATION_ZERO: GateKind.SAFETY,
     GateId.REENTRY_COOLDOWN: GateKind.QUALITY,
     GateId.REENTRY_CAP: GateKind.QUALITY,
+    GateId.CORRELATION_CAP: GateKind.SAFETY,
+    GateId.REENTRY_WATERMARK: GateKind.QUALITY,
     GateId.SCAN_PIPELINE: GateKind.INFRA,
     GateId.UNCLASSIFIED: GateKind.INFRA,
 }
@@ -148,6 +154,8 @@ GATE_LABELS: Mapping[GateId, str] = {
     GateId.ALLOCATION_ZERO: "Position sized to zero",
     GateId.REENTRY_COOLDOWN: "Post-exit re-entry cooldown",
     GateId.REENTRY_CAP: "Daily re-entry cap per symbol",
+    GateId.CORRELATION_CAP: "Index-family same-direction cap (one macro bet, not three)",
+    GateId.REENTRY_WATERMARK: "Post-win re-entry watermark (no buying our own dip)",
     GateId.SCAN_PIPELINE: "Scan pipeline error (research/backtest crash)",
     GateId.UNCLASSIFIED: "Unclassified reason",
 }
