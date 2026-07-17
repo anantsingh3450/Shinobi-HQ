@@ -144,16 +144,40 @@ def test_negative_kelly_blocks_sizing(mock_orchestrator, monkeypatch):
 
 
 def test_telegram_remote_commands(mock_orchestrator):
-    """Commander control commands: /pause /resume /close_all /kill /status."""
+    """Commander control commands: /pause /resume /close_all /kill /status.
+
+    /close_all and /kill now liquidate THROUGH the monitor's forced-exit path
+    (full bookkeeping: journal outcome, chest debit, cooldown) instead of
+    firing direct orders that skipped every ledger — the 2026-07-16 PE
+    kill-switch exit vanished from the strategy ledger exactly that way. The
+    fixture therefore needs the venue to report the open position, like the
+    monitor sees in production.
+    """
+    from datetime import datetime, timezone
+    from integrations.data.models import Instrument, AssetClass, Exchange
+    from integrations.brokers.models import VenuePosition, OrderSide
+
     bot = AutonomousTradingBot(mock_orchestrator, watchlist=["TCS"], scan_interval_seconds=1)
     mock_venue = mock_orchestrator.registry.get_venue.return_value
 
     # The uplink must be wired to this bot as its command handler.
     assert bot.telegram_bot.command_handler is bot
 
-    bot._active_positions_tracking["TCS"] = {
-        "entry_price": 3000.0, "side": "BUY", "quantity": 5.0, "venue_id": "paper_main",
-    }
+    def _arm_open_position():
+        bot._active_positions_tracking["TCS"] = {
+            "entry_price": 3000.0, "side": "BUY", "quantity": 5.0, "venue_id": "paper_main",
+        }
+        inst = Instrument(symbol="TCS", asset_class=AssetClass.INDIAN_EQUITY, exchange=Exchange.NSE)
+        mock_venue.get_positions.return_value = [VenuePosition(
+            instrument=inst, side=OrderSide.BUY, quantity=5.0,
+            average_price=3000.0, current_price=3000.0, unrealized_pnl=0.0,
+            venue_id="paper_main",
+        )]
+        mock_orchestrator.price_source.get_price.return_value = 3000.0
+        mock_orchestrator.price_source.get_quote.return_value.price = 3000.0
+
+    # Pin mid-session so EOD square-off can't fire instead of the forced exit.
+    bot._now_ist = lambda: datetime(2026, 7, 13, 11, 0, tzinfo=timezone.utc)
 
     # /pause halts entries
     ack = bot.handle_remote_command("/pause")
@@ -166,12 +190,16 @@ def test_telegram_remote_commands(mock_orchestrator):
     assert "RESUMED" in ack
 
     # /close_all liquidates tracked positions WITHOUT halting entries
+    _arm_open_position()
     mock_venue.place_order.reset_mock()
     ack = bot.handle_remote_command("/close_all")
     assert mock_venue.place_order.call_count == 1
+    # Forced exits must never be able to OPEN exposure.
+    assert mock_venue.place_order.call_args[0][0].reduce_only is True
     assert not bot.intraday_override.get("halted", False)
 
     # /kill halts, engages the kill switch, liquidates, and refuses /resume
+    _arm_open_position()
     mock_venue.place_order.reset_mock()
     ack = bot.handle_remote_command("/kill")
     assert bot.intraday_override.get("halted") is True
@@ -182,6 +210,7 @@ def test_telegram_remote_commands(mock_orchestrator):
     assert bot.intraday_override.get("halted") is True
 
     # /status reports state
+    mock_venue.get_positions.return_value = []
     ack = bot.handle_remote_command("/status")
     assert "STATUS" in ack
 

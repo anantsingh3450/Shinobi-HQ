@@ -135,6 +135,9 @@ class AutonomousTradingBot:
         # exit gets the same full bookkeeping (journal outcome, strategy stats,
         # cooldown, tracking removal) as any other exit.
         self._forced_exits: set[str] = set()
+        # Reason label for the current forced-exit sweep (kill switch vs
+        # commander hard-sell) so the journal records WHY it closed.
+        self._forced_exit_label: str | None = None
 
         # Gatekeeper, overrides and reset tracking
         self.intraday_override = {}
@@ -1591,28 +1594,34 @@ class AutonomousTradingBot:
         return build_plain_report(closed, open_trades, date_label)
 
     def _close_all_positions(self, reason: str) -> int:
-        """Send liquidation orders for every locally tracked open position.
+        """Liquidate every tracked open position WITH full exit bookkeeping.
 
-        Returns the number of positions a liquidation order was sent for.
-        Used by the manual kill switch and /close_all.
+        Used by the kill switch and /close_all. Routes through the monitor's
+        forced-exit path so each close records its journal outcome, strategy
+        chest debit, and cooldown — the old direct-order version skipped all
+        bookkeeping, which is how a kill-switch exit (PE -188.50 on
+        2026-07-16) vanished from the strategy ledger while the account book
+        took the loss.
         """
-        closed = 0
-        for asset, pos_data in list(self._active_positions_tracking.items()):
-            try:
-                side_str = pos_data.get("side", "BUY")
-                side = OrderSide.BUY if side_str == "BUY" else OrderSide.SELL
-                qty = float(pos_data.get("quantity", 1.0))
-                venue_id = pos_data.get("venue_id", "paper_main")
-                venue = self.orchestrator.registry.get_venue(venue_id)
-                if not venue:
-                    venue = getattr(self.orchestrator, "paper_venue", None)
-                if not venue:
-                    raise ValueError(f"Venue {venue_id} not found and paper_venue unavailable.")
-                self._execute_partial_exit(symbol=asset, side=side, quantity=qty, reason=reason, venue=venue)
-                closed += 1
-            except Exception as e:
-                logger.error(f"Failed to liquidate {asset} during {reason}: {e}")
-        return closed
+        symbols = list(self._active_positions_tracking.keys())
+        if not symbols:
+            return 0
+        added: set[str] = set()
+        for sym in symbols:
+            added.add(sym.upper())
+            u = str(self._active_positions_tracking[sym].get("underlying") or "").upper()
+            if u:
+                added.add(u)
+        self._forced_exits |= added
+        self._forced_exit_label = reason
+        try:
+            self._monitor_and_exit_positions(is_tick=True)
+        except Exception as e:
+            logger.error(f"Close-all monitor pass failed during {reason}: {e}")
+        finally:
+            self._forced_exits -= added
+            self._forced_exit_label = None
+        return len([s for s in symbols if s not in self._active_positions_tracking])
 
     def _execute_partial_exit(self, symbol: str, side: OrderSide, quantity: float, reason: str, venue: Any) -> None:
         """Place a partial exit order to scale out of a position."""
@@ -1741,7 +1750,8 @@ class AutonomousTradingBot:
         if forced:
             underlying = str((tracking or {}).get("underlying") or "").upper()
             if symbol.upper() in forced or (underlying and underlying in forced):
-                return True, "Commander instant-exit (hard sell)", tracking
+                label = getattr(self, "_forced_exit_label", None) or "Commander instant-exit (hard sell)"
+                return True, label, tracking
 
         # 1. Manual Kill Switch
         if getattr(self, "intraday_override", {}).get(symbol) == "KILL":

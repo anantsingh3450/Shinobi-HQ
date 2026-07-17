@@ -110,8 +110,14 @@ async function load() {
   const totalPnl = chests.reduce((a, c) => a + Number(c.realized_pnl || 0), 0);
   const totalAvail = chests.reduce((a, c) => a + Number(c.available || 0), 0);
   const pnlCls = totalPnl > 0 ? "ok" : totalPnl < 0 ? "bad" : "dim";
+  const rec = d.ledger_reconciliation || {};
+  const recHtml = rec.ok === true
+    ? ` · <span class="ok">✓ ledger reconciled (chests = account ${inr(rec.account_equity)})</span>`
+    : rec.ok === false
+      ? ` · <span class="bad">⚠ LEDGER DRIFT: chests ${inr(rec.chest_total)} vs account ${inr(rec.account_equity)} (${inr(rec.drift)})</span>`
+      : "";
   document.getElementById("chest-total").innerHTML = chests.length
-    ? `Total war chest: <b>${inr(totalStart)}</b> <span class="dim">(PAPER money — ${chests.length} strategies × ${inr(chests[0].starting_capital)})</span> · Combined realized P&L: <span class="${pnlCls}">${inr(totalPnl)}</span> · Available: <b>${inr(totalAvail)}</b>`
+    ? `Total war chest: <b>${inr(totalStart)}</b> <span class="dim">(PAPER money — ${chests.length} strategies × ${inr(chests[0].starting_capital)})</span> · Combined realized P&L: <span class="${pnlCls}">${inr(totalPnl)}</span> · Available: <b>${inr(totalAvail)}</b>${recHtml}`
     : "";
   document.getElementById("chests").innerHTML = chests.length
     ? `<table><tr><th>Strategy</th><th>Status</th><th>Starting</th><th>Deployed</th><th>Realized P&L</th><th>Available</th></tr>` +

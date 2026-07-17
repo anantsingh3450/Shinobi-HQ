@@ -1876,6 +1876,28 @@ def create_dashboard_api(
         except Exception as exc:
             payload["war_chests_error"] = str(exc)
 
+        # 2b. LEDGER RECONCILIATION — the war chests are the strategy-level
+        # ledger, the paper account is the money ledger; they must agree:
+        # sum(starting + realized) across chests == account equity. On
+        # 2026-07-16 they silently diverged by ₹1,959.75 (two exits never
+        # booked to any chest) and only the commander noticed. Surface drift.
+        try:
+            chests = payload.get("war_chests") or []
+            chest_total = sum(
+                float(c.get("starting_capital", 0.0)) + float(c.get("realized_pnl", 0.0))
+                for c in chests
+            )
+            account = orchestrator.portfolio_store.load_account("paper")
+            drift = round(chest_total - float(account.equity), 2)
+            payload["ledger_reconciliation"] = {
+                "chest_total": round(chest_total, 2),
+                "account_equity": round(float(account.equity), 2),
+                "drift": drift,
+                "ok": abs(drift) < 1.0,
+            }
+        except Exception as exc:
+            payload["ledger_reconciliation"] = {"ok": False, "error": str(exc)}
+
         # 3. Conduct-gate live state (best effort; live API calls guarded)
         try:
             bot = getattr(orchestrator, "autonomous_bot", None)
