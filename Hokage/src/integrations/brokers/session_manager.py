@@ -102,8 +102,17 @@ class TradingSessionManager:
         if asset_upper in ("EURUSD", "EUR/USD", "USDINR", "USD/INR", "GBPUSD", "GBP/USD"):
             return Exchange.FOREX
 
-        # MCX
-        if asset_upper in ("GOLD", "GOLDM", "CRUDE", "CRUDE_OIL", "CRUDEOIL", "NATURALGAS", "SILVER", "COPPER") or "CRUDEOIL" in asset_upper or "NATURALGAS" in asset_upper or "GOLD" in asset_upper:
+        # MCX. Bug fixed 2026-07-18: "SILVER" was missing from the substring
+        # chain (only an exact-match entry existed) — a SILVER/SILVERM OPTION
+        # tradingsymbol (e.g. "SILVERM26AUG...PE") fell through to the NSE
+        # default instead of resolving to MCX.
+        if (
+            asset_upper in ("GOLD", "GOLDM", "CRUDE", "CRUDE_OIL", "CRUDEOIL", "NATURALGAS", "SILVER", "SILVERM", "COPPER")
+            or "CRUDEOIL" in asset_upper
+            or "NATURALGAS" in asset_upper
+            or "GOLD" in asset_upper
+            or "SILVER" in asset_upper
+        ):
             return Exchange.MCX
 
         # NASDAQ / US Equity

@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hokage — MCX Commodity Arena</title>
+<style>
+  :root { --bg:#0d1117; --card:#161b22; --line:#30363d; --text:#e6edf3; --dim:#8b949e;
+          --green:#3fb950; --red:#f85149; --amber:#d29922; --blue:#58a6ff; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font:14px/1.5 "Segoe UI",system-ui,sans-serif; padding:20px; }
+  h1 { font-size:20px; margin-bottom:4px; }
+  .sub { color:var(--dim); margin-bottom:20px; font-size:12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px; }
+  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin-bottom:10px; }
+  .strat { border:1px solid var(--line); border-radius:6px; padding:10px; margin-bottom:10px; }
+  .strat .name { font-weight:600; font-size:15px; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; font-weight:600; margin-left:8px; vertical-align:middle; }
+  .b-active { background:rgba(63,185,80,.15); color:var(--green); border:1px solid var(--green); }
+  .b-shadow { background:rgba(88,166,255,.12); color:var(--blue); border:1px solid var(--blue); }
+  .b-probation { background:rgba(210,153,34,.15); color:var(--amber); border:1px solid var(--amber); }
+  .b-archived { background:rgba(139,148,158,.15); color:var(--dim); border:1px solid var(--dim); }
+  .kv { display:flex; justify-content:space-between; font-size:12.5px; padding:2px 0; }
+  .kv .k { color:var(--dim); }
+  .notes { color:var(--dim); font-size:12px; margin-top:6px; font-style:italic; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th, td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-weight:600; }
+  .ok { color:var(--green); } .warn { color:var(--amber); } .bad { color:var(--red); } .dim { color:var(--dim); }
+  #refresh { color:var(--dim); font-size:11px; margin-top:16px; }
+  ul.plain { list-style:none; } ul.plain li { padding:3px 0; border-bottom:1px solid var(--line); font-size:12.5px; }
+  .nav-links a { color:var(--blue); margin-right:14px; }
+</style>
+</head>
+<body>
+  <h1>MCX Commodity Arena <span class="dim">— the second league</span></h1>
+  <div class="sub">A fully separate league from the index Dojo: four commodity strategies trade CRUDEOIL, NATURALGAS, GOLDM (mini gold), and SILVERM (mini silver) options through the same Zerodha paper venue, each funded by its own <b>₹1,00,000 PAPER war chest</b> (fake money, real prices) — <b>₹4,00,000 total, on its own ledger</b>. Trades until 22:30 IST, squares off by 23:15 — hours after the index Dojo's 15:20 close. After ~2-3 months of paper evidence, the commander picks one champion from each arena: one trading 09:30-15:30, one trading 09:30-23:30. <span class="nav-links"><a href="/arena">← index Dojo</a><a href="/">main dashboard</a></span></div>
+
+  <div class="grid">
+    <div class="card" style="grid-column:1/-1">
+      <h2>War Chests — Commodity Ledger</h2>
+      <div id="chest-total" style="font-size:13px; margin-bottom:8px;"></div>
+      <div id="chests"></div>
+    </div>
+
+    <div class="card" style="grid-column:1/-1">
+      <h2>Strategy Ladder</h2>
+      <div id="strategies" class="grid"></div>
+    </div>
+
+    <div class="card" style="grid-column:1/-1">
+      <h2>What each strategy does (plain language)</h2>
+      <div id="explanations"></div>
+    </div>
+
+    <div class="card">
+      <h2>Conduct Gates (live)</h2>
+      <div id="gates"></div>
+    </div>
+
+    <div class="card">
+      <h2>Options Exit Ladder</h2>
+      <div id="ladder"></div>
+    </div>
+
+    <div class="card" style="grid-column:1/-1">
+      <h2>Open Trades (live)</h2>
+      <div id="open-trades" class="dim">loading…</div>
+    </div>
+
+    <div class="card" style="grid-column:1/-1">
+      <h2>Closed Trades</h2>
+      <div id="closed-trades" class="dim">loading…</div>
+    </div>
+
+    <div class="card" style="grid-column:1/-1">
+      <h2>Today's Refusals (no-trade decisions)</h2>
+      <div id="refusals" class="dim">loading…</div>
+    </div>
+  </div>
+  <div id="refresh"></div>
+
+<script>
+const badge = s => {
+  const cls = {ACTIVE:"b-active", SHADOW_MODE:"b-shadow", PROBATION:"b-probation", ARCHIVED:"b-archived"}[s] || "b-archived";
+  return `<span class="badge ${cls}">${s}</span>`;
+};
+const fmt = v => (v === null || v === undefined) ? "—" : v;
+const istTime = ts => {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  return isNaN(d) ? String(ts).slice(11, 19)
+    : d.toLocaleTimeString("en-IN", {timeZone: "Asia/Kolkata", hour12: false}) + " IST";
+};
+
+async function load() {
+  let d;
+  try {
+    d = await (await fetch("/api/v1/arena/mcx")).json();
+  } catch (e) {
+    document.getElementById("refresh").textContent = "MCX arena feed unavailable: " + e;
+    return;
+  }
+
+  const inr = v => "₹" + Number(v || 0).toLocaleString("en-IN", {maximumFractionDigits: 0});
+  const chests = d.war_chests || [];
+  const totalStart = chests.reduce((a, c) => a + Number(c.starting_capital || 0), 0);
+  const totalPnl = chests.reduce((a, c) => a + Number(c.realized_pnl || 0), 0);
+  const totalAvail = chests.reduce((a, c) => a + Number(c.available || 0), 0);
+  const pnlCls = totalPnl > 0 ? "ok" : totalPnl < 0 ? "bad" : "dim";
+  const rec = d.ledger_reconciliation || {};
+  const recHtml = rec.ok === true
+    ? ` · <span class="ok">✓ ledger reconciled (chests = account ${inr(rec.account_equity)})</span>`
+    : rec.ok === false
+      ? ` · <span class="bad">⚠ LEDGER DRIFT: chests ${inr(rec.chest_total)} vs account ${inr(rec.account_equity)} (${inr(rec.drift)})</span>`
+      : "";
+  document.getElementById("chest-total").innerHTML = chests.length
+    ? `Total war chest: <b>${inr(totalStart)}</b> <span class="dim">(PAPER money — ${chests.length} strategies × ${inr(chests[0].starting_capital)})</span> · Combined realized P&L: <span class="${pnlCls}">${inr(totalPnl)}</span> · Available: <b>${inr(totalAvail)}</b>${recHtml}`
+    : "";
+  document.getElementById("chests").innerHTML = chests.length
+    ? `<table><tr><th>Strategy</th><th>Status</th><th>Starting</th><th>Deployed</th><th>Realized P&L</th><th>Available</th></tr>` +
+      chests.map(c => {
+        const pnlCls = c.realized_pnl > 0 ? "ok" : c.realized_pnl < 0 ? "bad" : "dim";
+        const availCls = c.available <= 0 ? "bad" : c.deployed > 0 ? "warn" : "ok";
+        return `<tr><td>${c.name}</td><td>${badge(c.status)}</td><td>${inr(c.starting_capital)}</td>
+          <td>${c.deployed > 0 ? inr(c.deployed) : '<span class="dim">idle</span>'}</td>
+          <td class="${pnlCls}">${inr(c.realized_pnl)}</td>
+          <td class="${availCls}">${inr(c.available)}</td></tr>`;
+      }).join("") + "</table>"
+    : '<span class="dim">war chests unavailable</span>';
+
+  document.getElementById("strategies").innerHTML = (d.strategies || []).map(s => `
+    <div class="strat">
+      <div class="name">${s.name} ${badge(s.status)}</div>
+      <div class="kv"><span class="k">Assets</span><span>${(s.supported_assets||[]).join(", ")}</span></div>
+      <div class="kv"><span class="k">Regimes</span><span>${(s.supported_regimes||[]).join(", ")}</span></div>
+      <div class="kv"><span class="k">Trades (earned)</span><span>${fmt((s.trade_count||{}).DEFAULT)}</span></div>
+      <div class="kv"><span class="k">Win rate</span><span>${fmt((s.win_rate||{}).DEFAULT)}%</span></div>
+      <div class="kv"><span class="k">Expectancy</span><span>₹${fmt((s.expectancy||{}).DEFAULT)}</span></div>
+      <div class="notes">${s.notes || ""}</div>
+      <div class="notes">${s.last_event || ""}</div>
+    </div>`).join("") || '<div class="dim">no strategies registered</div>';
+
+  // Plain-language explanation of each commodity competitor.
+  const EXPLAIN = {
+    SessionShift: "Trades the 17:00-19:30 IST hand-off when US trading hours start overlapping India's evening session — the window where crude/gold genuinely wake up. Standard trend + VWAP alignment, but gated to fire ONLY in that window.",
+    EventRider: "Rides sharp momentum thrusts in the 17:00-18:30 IST evening volatility window (a public, recurring cadence — never a guessed calendar). Needs no prior trend: a release can reverse the day's direction entirely.",
+    RangeFade: "Fades VWAP overstretches during the quiet 09:30-16:30 IST pre-overlap hours, before US volume joins in. Refuses to fire once a real trend is present — same discipline as the index Dojo's MeanReversion.",
+    TrendRider: "Joins an ALREADY-confirmed evening trend (18:00-22:30 IST) with volume behind it — pure continuation, no pullback or range-break requirement. Bet: a volume-backed evening trend in crude/gold tends to run into the close.",
+  };
+  document.getElementById("explanations").innerHTML = (d.strategies || []).map(s => {
+    const text = EXPLAIN[s.name] || s.notes || "No description available.";
+    return `<div class="strat"><div class="name">${s.name} ${badge(s.status)}</div>
+      <div class="notes" style="font-style:normal; color:var(--text); margin-top:6px;">${text}</div></div>`;
+  }).join("") || '<div class="dim">no strategies registered</div>';
+
+  const g = d.conduct_gates || {};
+  const vixPct = g.india_vix_percentile;
+  const vixClass = vixPct === null || vixPct === undefined ? "dim" : (vixPct >= (g.vix_block_percentile ?? .8) ? "bad" : "ok");
+  const biasRow = (sym, b) => {
+    const cls = b === "BULLISH" ? "ok" : b === "BEARISH" ? "bad" : b === "MIXED" ? "warn" : "dim";
+    return `<div class="kv"><span class="k">Bias — ${sym}</span><span class="${cls}">${fmt(b)}</span></div>`;
+  };
+  const fam = g.correlation_families || {};
+  document.getElementById("gates").innerHTML = `
+    ${Object.entries(g.bias || {}).map(([s, b]) => biasRow(s, b)).join("")}
+    <div class="kv"><span class="k">India VIX percentile (60d)</span>
+      <span class="${vixClass}">${vixPct === null || vixPct === undefined ? "no data — guard skipped" : (vixPct*100).toFixed(0) + "%"}</span></div>
+    <div class="kv"><span class="k">Option-buy block above</span><span>${((g.vix_block_percentile ?? .8)*100).toFixed(0)}%</span></div>
+    <div class="kv"><span class="k">Entry window (MCX)</span><span>${fmt(g.session_window_ist)}</span></div>
+    <div class="kv"><span class="k">Square-off (MCX)</span><span>${fmt(g.square_off_ist)}</span></div>
+    <div class="kv"><span class="k">Re-entry cooldown after an exit</span><span>${g.reentry_cooldown_minutes ?? "—"} min</span></div>
+    <div class="kv"><span class="k">ENERGY family</span><span>${(fam.ENERGY||[]).join(", ") || "—"}</span></div>
+    <div class="kv"><span class="k">PRECIOUS family</span><span>${(fam.PRECIOUS||[]).join(", ") || "—"}</span></div>`;
+
+  const l = d.exit_ladder || {};
+  document.getElementById("ladder").innerHTML = `
+    <ul class="plain">${(l.order || []).map((r, i) => `<li>${i+1}. ${r}</li>`).join("")}</ul>
+    <table style="margin-top:8px">
+      <tr><th>Entry premium ≥</th><th>Max premium loss</th></tr>
+      ${(l.backstop_tiers || []).map(t => `<tr><td>₹${t.entry_premium_at_least}</td><td>−${(t.max_loss_pct*100).toFixed(0)}%</td></tr>`).join("")}
+    </table>
+    <div class="kv" style="margin-top:8px"><span class="k">Thesis stop</span><span>${fmt(l.thesis_stop_atr_mult)}× underlying ATR</span></div>
+    <div class="kv"><span class="k">Trail lock</span><span>₹${fmt(l.trail_lock_rupees)} from peak</span></div>
+    <div class="kv"><span class="k">Adaptive target clamp</span><span>+${((l.target_clamp_pct||[0,0])[0]*100).toFixed(0)}% … +${((l.target_clamp_pct||[0,0])[1]*100).toFixed(0)}%</span></div>`;
+
+  const bookBadge = b => `<span class="badge ${b === "REAL" ? "b-active" : "b-shadow"}">${b}</span>`;
+  const pnlCell = v => {
+    if (v === null || v === undefined) return '<td class="dim">—</td>';
+    const cls = v > 0 ? "ok" : v < 0 ? "bad" : "dim";
+    return `<td class="${cls}">${inr(v)}</td>`;
+  };
+  const num = v => (v === null || v === undefined) ? "—" : Number(v).toLocaleString("en-IN", {maximumFractionDigits: 2});
+
+  const open = d.open_trades || [];
+  document.getElementById("open-trades").innerHTML = open.length
+    ? `<table><tr><th>Book</th><th>Strategy</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>LTP</th><th>Unrealized P&L</th><th>Stop</th><th>Target</th><th>Opened</th></tr>` +
+      open.map(t => `<tr><td>${bookBadge(t.book)}</td><td>${fmt(t.strategy)}</td><td>${fmt(t.symbol)}</td><td>${fmt(t.side)}</td><td>${num(t.quantity)}</td><td>${num(t.entry_price)}</td><td>${num(t.ltp)}</td>${pnlCell(t.unrealized_pnl)}<td>${num(t.stop_price)}</td><td>${num(t.target_price)}</td><td>${istTime(t.opened_at)}</td></tr>`).join("") + "</table>"
+    : '<span class="dim">no open positions</span>';
+
+  const closed = d.closed_trades || [];
+  document.getElementById("closed-trades").innerHTML = closed.length
+    ? `<table><tr><th>Book</th><th>Strategy</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Closed</th><th>Reason</th></tr>` +
+      closed.map(t => `<tr><td>${bookBadge(t.book)}</td><td>${fmt(t.strategy)}</td><td>${fmt(t.symbol)}</td><td>${fmt(t.side)}</td><td>${num(t.quantity)}</td><td>${num(t.entry_price)}</td><td>${num(t.exit_price)}</td>${pnlCell(t.pnl)}<td>${istTime(t.closed_at)}</td><td>${fmt(t.reason)}</td></tr>`).join("") + "</table>"
+    : '<span class="dim">no closed trades yet</span>';
+
+  const refusals = d.no_trade_today || [];
+  document.getElementById("refusals").innerHTML = refusals.length
+    ? `<table><tr><th>Asset</th><th>Time</th><th>Reasons</th></tr>` +
+      refusals.slice(-30).reverse().map(r => `<tr><td>${fmt(r.asset)}</td><td>${istTime(r.timestamp)}</td><td>${
+        Array.isArray(r.reasons) ? r.reasons.join("; ") : fmt(r.reasons)}</td></tr>`).join("") + "</table>"
+    : '<span class="dim">no refusals logged yet — the MCX league reuses the same journal as the index Dojo</span>';
+
+  document.getElementById("refresh").textContent = "updated " + new Date().toLocaleTimeString() + " — refreshes every 30s";
+}
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>

@@ -2051,6 +2051,183 @@ def create_dashboard_api(
         return jsonify(payload)
 
     # =====================================================================
+    # MCX Commodity Arena (commander-approved 2026-07-18): a SEPARATE league
+    # — own venue ("paper_mcx"), own account_id, own 4-strategy portfolio
+    # file, own ₹4,00,000 war chest. Deliberately its own route rather than
+    # a parameter on /arena: the index Dojo endpoint above must never gain a
+    # code path that could touch the MCX ledger, or vice versa.
+    # =====================================================================
+    @dashboard_bp.route("/arena/mcx", methods=["GET"])
+    def strategy_arena_mcx() -> dict:
+        """Same shape as /arena, sourced entirely from the MCX Arena's own
+        ledger (bot.mcx_strategy_portfolio, account_id="paper_mcx")."""
+        import json as _json
+
+        payload: dict = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "strategies": [],
+            "no_trade_today": [],
+            "conduct_gates": {},
+            "exit_ladder": {},
+        }
+
+        bot = getattr(orchestrator, "autonomous_bot", None)
+
+        # 1. Strategy portfolio (statuses + earned stats)
+        try:
+            pf_path = resolver.resolve_portfolio_dir() / "mcx_strategy_portfolio.json"
+            if pf_path.exists():
+                pf = _json.loads(pf_path.read_text(encoding="utf-8"))
+                for s in pf.get("strategies", {}).values():
+                    payload["strategies"].append({
+                        "strategy_id": s.get("strategy_id"),
+                        "name": s.get("name"),
+                        "status": s.get("status"),
+                        "supported_assets": s.get("supported_assets", []),
+                        "supported_regimes": s.get("supported_regimes", []),
+                        "win_rate": s.get("win_rate", {}),
+                        "expectancy": s.get("expectancy", {}),
+                        "trade_count": s.get("trade_count", {}),
+                        "notes": (s.get("context_memory") or {}).get("notes", ""),
+                        "last_event": (s.get("history") or [{}])[-1].get("event", ""),
+                    })
+        except Exception as exc:
+            payload["strategies_error"] = str(exc)
+
+        # 2. War chests
+        try:
+            if bot is not None:
+                payload["war_chests"] = bot.mcx_strategy_portfolio.get_capital_report(
+                    bot.strategy_deployed_capital()
+                )
+            else:
+                from bots.strategy.portfolio import StrategyPortfolioManager
+                from bots.strategy.mcx_portfolio import generate_mcx_seed_portfolio, MCX_STRATEGY_STARTING_CAPITAL
+                payload["war_chests"] = StrategyPortfolioManager(
+                    resolver, file_name="mcx_strategy_portfolio.json",
+                    starting_capital=MCX_STRATEGY_STARTING_CAPITAL, seed_generator=generate_mcx_seed_portfolio,
+                ).get_capital_report()
+        except Exception as exc:
+            payload["war_chests_error"] = str(exc)
+
+        # 2b. Ledger reconciliation against the MCX account (same discipline
+        # as the index arena: sum(chests) must equal account.equity).
+        try:
+            chests = payload.get("war_chests") or []
+            chest_total = sum(
+                float(c.get("starting_capital", 0.0)) + float(c.get("realized_pnl", 0.0))
+                for c in chests
+            )
+            account = orchestrator.portfolio_store.load_account("paper_mcx")
+            drift = round(chest_total - float(account.equity), 2)
+            payload["ledger_reconciliation"] = {
+                "chest_total": round(chest_total, 2),
+                "account_equity": round(float(account.equity), 2),
+                "drift": drift,
+                "ok": abs(drift) < 1.0,
+            }
+        except Exception as exc:
+            payload["ledger_reconciliation"] = {"ok": False, "error": str(exc)}
+
+        # 3. Conduct-gate live state
+        try:
+            if bot is not None:
+                from bots.strategy.mcx_portfolio import MCX_UNIVERSE
+                fh, fm = bot._MCX_FIRST_ENTRY
+                lh, lm = bot._MCX_LAST_ENTRY
+                gates: dict = {
+                    "session_window_ist": f"{fh:02d}:{fm:02d}-{lh:02d}:{lm:02d}",
+                    "square_off_ist": "23:15",
+                    "reentry_cooldown_minutes": bot._REENTRY_COOLDOWN_MINUTES,
+                    "vix_block_percentile": bot._VIX_PERCENTILE_BLOCK,
+                    "correlation_families": {"ENERGY": ["CRUDEOIL", "NATURALGAS"], "PRECIOUS": ["GOLDM", "SILVERM"]},
+                }
+                bias_map = {}
+                for sym in MCX_UNIVERSE:
+                    try:
+                        bias_map[sym] = bot._compute_underlying_bias(sym)
+                    except Exception:
+                        bias_map[sym] = None
+                gates["bias"] = bias_map
+                payload["conduct_gates"] = gates
+        except Exception as exc:
+            payload["conduct_gates_error"] = str(exc)
+
+        # 4. Open trades (MCX-venue positions only)
+        strat_names = {s.get("strategy_id"): s.get("name") for s in payload["strategies"] if s.get("strategy_id")}
+        payload["open_trades"] = []
+        try:
+            if bot is not None:
+                def _ltp(sym: str) -> float | None:
+                    try:
+                        px = orchestrator.price_source.get_price(sym)
+                        return float(px) if px and px > 0 else None
+                    except Exception:
+                        return None
+                for sym, t in bot._active_positions_tracking.items():
+                    if t.get("venue_id") != "paper_mcx":
+                        continue
+                    entry = float(t.get("entry_price", 0.0))
+                    qty = float(t.get("quantity", 0.0))
+                    ltp = _ltp(sym)
+                    sign = 1.0 if t.get("side", "BUY") == "BUY" else -1.0
+                    payload["open_trades"].append({
+                        "book": "REAL",
+                        "strategy": strat_names.get(t.get("strategy_id"), t.get("strategy_id") or "—"),
+                        "symbol": sym, "side": t.get("side", "BUY"), "quantity": qty,
+                        "entry_price": entry, "ltp": ltp,
+                        "unrealized_pnl": None if ltp is None else round((ltp - entry) * qty * sign, 2),
+                        "stop_price": t.get("stop_price"), "target_price": t.get("target_price"),
+                        "opened_at": t.get("entry_timestamp"),
+                    })
+        except Exception as exc:
+            payload["open_trades_error"] = str(exc)
+
+        # 5. Closed trades (paper_mcx account only; same PHANTOM exclusion)
+        payload["closed_trades"] = []
+        try:
+            account = orchestrator.portfolio_store.load_account("paper_mcx")
+            for pos in account.positions.values():
+                if getattr(pos.status, "value", str(pos.status)) != "CLOSED":
+                    continue
+                if str(getattr(pos, "failure_reason", "") or "").startswith("PHANTOM"):
+                    continue
+                payload["closed_trades"].append({
+                    "book": "REAL",
+                    "strategy": "—",
+                    "symbol": pos.market,
+                    "side": "BUY" if getattr(pos.direction, "value", str(pos.direction)) == "LONG" else "SELL",
+                    "quantity": pos.quantity, "entry_price": pos.entry_price, "exit_price": pos.current_price,
+                    "pnl": pos.realized_pnl,
+                    "closed_at": pos.closed_at.isoformat() if pos.closed_at else None,
+                    "reason": None,
+                })
+        except Exception as exc:
+            payload["closed_trades_error"] = str(exc)
+        payload["closed_trades"].sort(key=lambda t: t.get("closed_at") or "", reverse=True)
+        payload["closed_trades"] = payload["closed_trades"][:60]
+
+        # 6. Exit-ladder config (shared machinery, same numbers as the index arena)
+        try:
+            from bots.autonomous.autonomous_bot import AutonomousTradingBot as _Bot
+            payload["exit_ladder"] = {
+                "order": [
+                    "KILL_SWITCH", "TIME_SQUARE_OFF (23:15 MCX)",
+                    "TIERED_PREMIUM_BACKSTOP", "UNDERLYING_THESIS_STOP",
+                    "TARGET_HIT (adaptive)", "PROFIT_LOCK (breakeven ratchet + partial locks)",
+                    "TRAIL_LOCK",
+                ],
+                "backstop_tiers": [{"entry_premium_at_least": t, "max_loss_pct": p} for t, p in _Bot._OPTION_BACKSTOP_TIERS],
+                "thesis_stop_atr_mult": _Bot._OPTION_THESIS_ATR_MULT,
+                "trail_lock_rupees": _Bot._OPTION_TRAIL_LOCK_RUPEES,
+                "target_clamp_pct": [_Bot._OPTION_TARGET_MIN_PCT, _Bot._OPTION_TARGET_MAX_PCT],
+            }
+        except Exception as exc:
+            payload["exit_ladder_error"] = str(exc)
+
+        return jsonify(payload)
+
+    # =====================================================================
     # Market Intelligence Endpoint (Phase 6.8)
     # =====================================================================
     @dashboard_bp.route("/market/intelligence", methods=["GET"])
@@ -3762,6 +3939,12 @@ def create_dashboard_api(
     def arena_page() -> str:
         """Render the Strategy Arena (Dojo) page."""
         return render_template("arena.html")
+
+    @app.route("/arena/mcx", methods=["GET"])
+    def arena_mcx_page() -> str:
+        """Render the MCX Commodity Arena page — a separate league, separate
+        page, own ₹4,00,000 ledger (commander-approved 2026-07-18)."""
+        return render_template("arena_mcx.html")
 
     # =====================================================================
     # Error handling

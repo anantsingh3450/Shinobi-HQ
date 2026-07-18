@@ -34,6 +34,12 @@ _OPTION_ROUTED_UNDERLYINGS = {
     "BANKEX": Exchange.BSE,
     "CRUDE_OIL": Exchange.MCX,
     "CRUDEOIL": Exchange.MCX,
+    # MCX Arena (commander-approved 2026-07-18): NATURALGAS standard contract
+    # (good liquidity, ~15-22k premium/lot); GOLDM/SILVERM MINI contracts
+    # (big GOLD/SILVER cost 1.5-2.5 LAKH premium/lot, too large for the chest).
+    "NATURALGAS": Exchange.MCX,
+    "GOLDM": Exchange.MCX,
+    "SILVERM": Exchange.MCX,
 }
 
 #: An option position's premium notional (premium x lot size) may consume at

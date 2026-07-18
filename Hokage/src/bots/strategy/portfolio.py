@@ -21,14 +21,43 @@ STRATEGY_STARTING_CAPITAL = 50_000.0
 
 
 class StrategyPortfolioManager:
-    """Manages the portfolio of coexisting specialized trading strategies."""
+    """Manages the portfolio of coexisting specialized trading strategies.
 
-    def __init__(self, resolver: PathResolver) -> None:
-        """Initialize StrategyPortfolioManager."""
+    One instance = one league with its own file, its own seed lineup, and its
+    own per-strategy war chest size. The index Dojo and the MCX Arena
+    (commander-approved 2026-07-18) each get a separate instance so neither
+    ledger can ever touch the other: two different files on disk, two
+    different in-memory dicts, promotion/demotion checks scoped to whichever
+    instance's `self.portfolio` is being evaluated.
+    """
+
+    def __init__(
+        self,
+        resolver: PathResolver,
+        file_name: str = "strategy_portfolio.json",
+        starting_capital: float = STRATEGY_STARTING_CAPITAL,
+        seed_generator: Any = None,
+    ) -> None:
+        """Initialize StrategyPortfolioManager.
+
+        Args:
+            resolver: Brain-root path resolver.
+            file_name: Portfolio JSON filename under the portfolio dir. A
+                second league (e.g. MCX) MUST pass a distinct name here —
+                this is the entire mechanism that keeps two leagues' capital
+                from ever being read/written as one.
+            starting_capital: Per-strategy war chest for THIS league's seeds.
+            seed_generator: Optional zero-arg callable returning the seed
+                portfolio dict (same shape as `_generate_default_portfolio`).
+                None keeps the original index Dojo lineup — fully backward
+                compatible with every existing call site.
+        """
         self.resolver = resolver
         self.portfolio_dir = self.resolver.resolve_portfolio_dir()
         self.portfolio_dir.mkdir(parents=True, exist_ok=True)
-        self.file_path = self.portfolio_dir / "strategy_portfolio.json"
+        self.file_path = self.portfolio_dir / file_name
+        self._starting_capital = starting_capital
+        self._seed_generator = seed_generator
         from bots.strategy.evolution import StrategyEvolutionEngine
         self.strategy_evolution = StrategyEvolutionEngine(self.resolver)
         self.portfolio: dict[str, Any] = self._load_portfolio()
@@ -51,13 +80,12 @@ class StrategyPortfolioManager:
             default_portfolio = self._generate_default_portfolio()
             return default_portfolio
 
-    @staticmethod
-    def _ensure_capital_fields(portfolio: dict[str, Any]) -> None:
+    def _ensure_capital_fields(self, portfolio: dict[str, Any]) -> None:
         """Migrate persisted portfolios: every strategy gets a war chest."""
         for strat in portfolio.get("strategies", {}).values():
             strat.setdefault(
                 "capital",
-                {"starting": STRATEGY_STARTING_CAPITAL, "realized_pnl": 0.0},
+                {"starting": self._starting_capital, "realized_pnl": 0.0},
             )
 
     def _ensure_seed_strategies(self, portfolio: dict[str, Any]) -> None:
@@ -99,8 +127,8 @@ class StrategyPortfolioManager:
         """Persist current in-memory state to disk."""
         self._save_portfolio_atomic(self.portfolio)
 
-    @staticmethod
     def _seed_strategy(
+        self,
         strategy_id: str,
         name: str,
         status: str,
@@ -129,7 +157,7 @@ class StrategyPortfolioManager:
             "expectancy": {"DEFAULT": 0.0},
             "win_rate": {"DEFAULT": 0.0},
             "trade_count": {"DEFAULT": 0},
-            "capital": {"starting": STRATEGY_STARTING_CAPITAL, "realized_pnl": 0.0},
+            "capital": {"starting": self._starting_capital, "realized_pnl": 0.0},
             "context_memory": {
                 "regime_performance": {},
                 "volatility_performance": {},
@@ -139,6 +167,13 @@ class StrategyPortfolioManager:
         }
 
     def _generate_default_portfolio(self) -> dict[str, Any]:
+        """Dispatch to this league's seed lineup (index Dojo, unless a
+        `seed_generator` was supplied at construction — e.g. the MCX Arena)."""
+        if self._seed_generator is not None:
+            return self._seed_generator()
+        return self._generate_default_index_portfolio()
+
+    def _generate_default_index_portfolio(self) -> dict[str, Any]:
         """Generate the baseline strategy portfolio (Strategy Dojo seeds).
 
         Evidence-first lineup: the trend/pullback family starts ACTIVE (the
@@ -249,7 +284,7 @@ class StrategyPortfolioManager:
             "sharpe_ratio": {"DEFAULT": 1.0},
             "trade_count": {"DEFAULT": 0},
             "supporting_evidence": supporting_evidence or {},
-            "capital": {"starting": STRATEGY_STARTING_CAPITAL, "realized_pnl": 0.0},
+            "capital": {"starting": self._starting_capital, "realized_pnl": 0.0},
             "context_memory": {
                 "regime_performance": {},
                 "volatility_performance": {}
@@ -499,9 +534,9 @@ class StrategyPortfolioManager:
         report = []
         for s_id, strat in self.portfolio.get("strategies", {}).items():
             capital = strat.get(
-                "capital", {"starting": STRATEGY_STARTING_CAPITAL, "realized_pnl": 0.0}
+                "capital", {"starting": self._starting_capital, "realized_pnl": 0.0}
             )
-            starting = float(capital.get("starting", STRATEGY_STARTING_CAPITAL))
+            starting = float(capital.get("starting", self._starting_capital))
             realized = float(capital.get("realized_pnl", 0.0))
             deployed = round(float(deployed_by_strategy.get(s_id, 0.0)), 2)
             report.append(

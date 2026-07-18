@@ -195,6 +195,21 @@ class HokageOrchestrator:
         )
         self.registry.register_venue(self.paper_venue)
 
+        # MCX Commodity Arena (commander-approved 2026-07-18): a SEPARATE
+        # paper venue + account_id so the commodity league's ledger can never
+        # mix with the index Dojo's "paper" account — the account_id is the
+        # sole isolation key once SQLite storage is active (see
+        # bots.portfolio.store / shared.persistence.sqlite_stores).
+        self.mcx_venue = PaperVenue(
+            venue_id="paper_mcx",
+            account_id="paper_mcx",
+            brain_root=brain_root,
+            price_source=self.price_source,
+            context=self.context,
+            friction_model=self.friction_model
+        )
+        self.registry.register_venue(self.mcx_venue)
+
         # Broker-specific paper venues — driven by the registry config so adding a
         # new broker in broker_registry.json automatically creates its paper venue.
         self.paper_venues = {}

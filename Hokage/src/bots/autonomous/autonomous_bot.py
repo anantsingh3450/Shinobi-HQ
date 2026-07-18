@@ -233,6 +233,23 @@ class AutonomousTradingBot:
 
         from bots.strategy.portfolio import StrategyPortfolioManager
         self.strategy_portfolio = StrategyPortfolioManager(self._resolver)
+
+        # MCX Commodity Arena (commander-approved 2026-07-18): a fully
+        # separate league — own file, own seed lineup, own 100,000/strategy
+        # war chest — so its ledger can never mix with the index Dojo's.
+        from bots.strategy.mcx_portfolio import (
+            generate_mcx_seed_portfolio,
+            MCX_STRATEGY_STARTING_CAPITAL,
+        )
+        self.mcx_strategy_portfolio = StrategyPortfolioManager(
+            self._resolver,
+            file_name="mcx_strategy_portfolio.json",
+            starting_capital=MCX_STRATEGY_STARTING_CAPITAL,
+            seed_generator=generate_mcx_seed_portfolio,
+        )
+        # Guards the once-a-day automatic MCX plain-language EOD report send.
+        self._mcx_eod_report_sent_date = None
+
         from bots.autonomous.committee import InvestmentCommittee, CommitteeLedger, CommitteePerformanceTracker
         self.committee = InvestmentCommittee(self._resolver)
         self.committee_ledger = CommitteeLedger(self._resolver)
@@ -376,10 +393,24 @@ class AutonomousTradingBot:
             deployed[strat_id] = deployed.get(strat_id, 0.0) + cost
         return deployed
 
+    def _portfolio_manager_for_strategy(self, strategy_id: str):
+        """Route a strategy_id to its OWNING league (index Dojo vs MCX Arena).
+
+        Two StrategyPortfolioManager instances exist so their ledgers can
+        never mix. Any strategy_id not registered in the MCX portfolio falls
+        back to the index portfolio — the original, unchanged behavior for
+        every index strategy and for legacy/manual strategy_ids.
+        """
+        mcx_pf = getattr(self, "mcx_strategy_portfolio", None)
+        if mcx_pf is not None and strategy_id in mcx_pf.portfolio.get("strategies", {}):
+            return mcx_pf
+        return self.strategy_portfolio
+
     def _strategy_available_capital(self, strategy_id: str) -> float:
         """Remaining war chest for one strategy (starting + realized - deployed)."""
         deployed = self.strategy_deployed_capital()
-        for row in self.strategy_portfolio.get_capital_report(deployed):
+        portfolio_mgr = self._portfolio_manager_for_strategy(strategy_id)
+        for row in portfolio_mgr.get_capital_report(deployed):
             if row["strategy_id"] == strategy_id:
                 return float(row["available"])
         from bots.strategy.portfolio import STRATEGY_STARTING_CAPITAL
@@ -517,6 +548,23 @@ class AutonomousTradingBot:
                         except Exception as exc:
                             logger.error(f"Failed to send EOD plain report: {exc}")
 
+                # MCX Arena's own evening plain-language report, sent once
+                # shortly after its 23:15 square-off (commander-approved
+                # 2026-07-18 plan: a second report for the commodity league).
+                if dt_time(23, 35) <= ist_time < dt_time(23, 59, 59):
+                    if self._mcx_eod_report_sent_date != current_date_str:
+                        self._mcx_eod_report_sent_date = current_date_str
+                        try:
+                            mcx_report = self.build_eod_plain_report(
+                                account_id="paper_mcx", venue_id="paper_mcx",
+                                title=f"MCX Arena — {ist_now.strftime('%A, %d %b %Y')}",
+                            )
+                            if self.telegram_bot and self.telegram_bot.enabled:
+                                self.telegram_bot.send_message(mcx_report)
+                            logger.info("Sent MCX Arena plain-language end-of-day report.")
+                        except Exception as exc:
+                            logger.error(f"Failed to send MCX EOD plain report: {exc}")
+
                 # Manage shadow sessions independently per exchange
                 for exchange in tracked_exchanges:
                     status = self.orchestrator.session_manager.get_exchange_status(exchange, utc_now)
@@ -568,6 +616,10 @@ class AutonomousTradingBot:
                 if not is_tick and self.gatekeeper_state not in ("Await_Elder_Command", "KILL_SWITCH_ENGAGED"):
                     if not self.intraday_override.get('halted', False):
                         self._scan_and_enter_opportunities()
+                        try:
+                            self._scan_and_enter_mcx_opportunities()
+                        except Exception as exc:
+                            logger.error(f"MCX Arena scan failed (index league unaffected): {exc}")
 
                 # 3. Direct Broker Reconciliation Sync (every 180 seconds)
                 if not hasattr(self, "_last_reconciliation_time") or self._last_reconciliation_time is None:
@@ -947,12 +999,20 @@ class AutonomousTradingBot:
         return "long" if str(pos.get("side", "BUY")).upper() == "BUY" else "short"
 
     def _entry_cluster_gate(
-        self, symbol: str, direction: str, underlying_price: float | None
+        self,
+        symbol: str,
+        direction: str,
+        underlying_price: float | None,
+        family: set[str] | None = None,
+        max_same_direction: int | None = None,
+        family_label: str = "index-family",
     ) -> tuple[bool, str]:
         """Portfolio-level entry checks the per-trade gates cannot see.
 
-        1. Correlation cap: at most _MAX_FAMILY_SAME_DIRECTION open positions
-           betting the same way across the index family.
+        1. Correlation cap: at most `max_same_direction` open positions
+           betting the same way across `family`. Defaults to the index
+           family/cap; the MCX Arena calls this with its own ENERGY/PRECIOUS
+           family sets (2026-07-18) — same discipline, different universe.
         2. Re-entry watermark: after a TARGET_HIT win, the same direction on
            that underlying is only allowed if the index has pushed PAST the
            level where we took profit — never buying the dip of our own
@@ -960,18 +1020,20 @@ class AutonomousTradingBot:
         """
         symbol_upper = symbol.upper()
         direction = "short" if str(direction).lower().startswith("s") else "long"
+        family = family if family is not None else self._INDEX_FAMILY
+        cap = max_same_direction if max_same_direction is not None else self._MAX_FAMILY_SAME_DIRECTION
 
-        # --- 1. correlation cap across the index family -------------------
-        if symbol_upper in self._INDEX_FAMILY:
+        # --- 1. correlation cap across the family --------------------------
+        if symbol_upper in family:
             same_dir = 0
             for pos in self._active_positions_tracking.values():
                 und = str(pos.get("underlying") or "").upper()
-                if und in self._INDEX_FAMILY and self._position_direction(pos) == direction:
+                if und in family and self._position_direction(pos) == direction:
                     same_dir += 1
-            if same_dir >= self._MAX_FAMILY_SAME_DIRECTION:
+            if same_dir >= cap:
                 return False, (
-                    f"CorrelationCap: already {same_dir} same-direction ({direction}) index-family "
-                    f"positions open — NIFTY/BANKNIFTY/SENSEX are one macro bet, not three."
+                    f"CorrelationCap: already {same_dir} same-direction ({direction}) {family_label} "
+                    f"positions open — one shared bet, not several."
                 )
 
         # --- 2. post-win re-entry watermark --------------------------------
@@ -1513,7 +1575,7 @@ class AutonomousTradingBot:
         direction = "short" if str(direction).lower().startswith("s") else "long"
 
         if not OptionsRouter.routes(underlying):
-            return {"success": False, "message": f"I only trade options on NIFTY, BANKNIFTY, and SENSEX — '{underlying}' isn't one of those."}
+            return {"success": False, "message": f"I only trade options on NIFTY, BANKNIFTY, SENSEX, CRUDEOIL, NATURALGAS, GOLDM, and SILVERM — '{underlying}' isn't one of those."}
 
         for sym, pos in self._active_positions_tracking.items():
             if str(pos.get("underlying") or "").upper() == underlying:
@@ -1524,14 +1586,25 @@ class AutonomousTradingBot:
             return {"success": False, "message": f"Couldn't get a fresh live price for {underlying} right now ({reason}). Try again in a moment."}
 
         # PAPER VENUE ONLY — hard safety seam for a commander-typed trade.
-        venue = self.orchestrator.paper_venue
+        # Routed to the underlying's OWN league: a commodity buy must land on
+        # the MCX Arena's ledger, never the index Dojo's (the two accounts
+        # exist specifically so their capital can never mix).
+        from bots.strategy.mcx_portfolio import MCX_UNIVERSE
+        if underlying in MCX_UNIVERSE:
+            venue = getattr(self.orchestrator, "mcx_venue", None)
+            manual_strategy_id = "COMMANDER_MANUAL_MCX"
+        else:
+            venue = self.orchestrator.paper_venue
+            manual_strategy_id = "COMMANDER_MANUAL"
+        if venue is None:
+            return {"success": False, "message": f"No trading venue is available for {underlying} right now."}
         side = OrderSide.BUY if direction == "long" else OrderSide.SELL
         resolved_ac = self.orchestrator.session_manager.resolve_asset_class(underlying)
         resolved_exch = self.orchestrator.session_manager.resolve_exchange(underlying)
         inst = Instrument(symbol=underlying, asset_class=resolved_ac, exchange=resolved_exch)
         req = OrderRequest(
             instrument=inst, side=side, quantity=1.0, order_type=OrderType.MARKET,
-            venue_id=venue.venue_id, strategy_id="COMMANDER_MANUAL",
+            venue_id=venue.venue_id, strategy_id=manual_strategy_id,
             execution_reason="Commander manual entry (hard buy)",
         )
 
@@ -1563,7 +1636,7 @@ class AutonomousTradingBot:
             "stop_price": tracked_entry_price * (1.0 - self.tsl_percent),
             "target_price": tracked_entry_price * (1.0 + self.tp_percent),
             "decision_id": f"manual-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
-            "strategy_id": "COMMANDER_MANUAL",
+            "strategy_id": manual_strategy_id,
             "side": side.value,
             "quantity": float(qty_filled),
             "venue_id": venue.venue_id,
@@ -1595,18 +1668,20 @@ class AutonomousTradingBot:
             ),
         }
 
-    def build_eod_plain_report(self) -> str:
+    def build_eod_plain_report(self, account_id: str = "paper", venue_id: str | None = None, title: str | None = None) -> str:
         """A plain-English recap of today's trades a non-trader can follow.
 
         Numbers come straight from the paper account (never guessed); exit
         reasons come from today's exit log. Reused by the dashboard, the
-        /report Telegram command, and the automatic end-of-day send.
+        /report Telegram command, the automatic end-of-day send, and (with
+        account_id="paper_mcx", venue_id="paper_mcx") the MCX Arena's own
+        23:35 evening report.
         """
         from bots.autonomous.plain_report import build_plain_report
         from integrations.brokers.session_manager import KolkataTime
 
         now_ist = datetime.now(timezone.utc).astimezone(KolkataTime())
-        date_label = now_ist.strftime("%A, %d %b %Y")
+        date_label = title or now_ist.strftime("%A, %d %b %Y")
         today = now_ist.strftime("%Y-%m-%d")
 
         reason_by_symbol: dict[str, Any] = {}
@@ -1615,7 +1690,7 @@ class AutonomousTradingBot:
 
         closed: list[dict[str, Any]] = []
         try:
-            account = self.orchestrator.portfolio_store.load_account("paper")
+            account = self.orchestrator.portfolio_store.load_account(account_id)
             for pos in account.positions.values():
                 if getattr(pos.status, "value", str(pos.status)) != "CLOSED":
                     continue
@@ -1640,10 +1715,12 @@ class AutonomousTradingBot:
                     "closed_at_label": ist.strftime("%I:%M %p"),
                 })
         except Exception as exc:
-            logger.error(f"EOD report: failed to read closed trades: {exc}")
+            logger.error(f"EOD report: failed to read closed trades ({account_id}): {exc}")
 
         open_trades: list[dict[str, Any]] = []
         for sym, pos in dict(self._active_positions_tracking).items():
+            if venue_id is not None and pos.get("venue_id") != venue_id:
+                continue
             entry = float(pos.get("entry_price", 0.0))
             ltp = None
             try:
@@ -2328,7 +2405,7 @@ class AutonomousTradingBot:
                     # strategies were never comparable on the same axis.
                     stored_strategy_id = entry_meta.get("strategy_id", "strat-autotrend-equities-v1")
                     outcome_asset = entry_meta.get("underlying") or symbol
-                    self.strategy_portfolio.record_trade_outcome(
+                    self._portfolio_manager_for_strategy(stored_strategy_id).record_trade_outcome(
                         strategy_id=stored_strategy_id,
                         asset=outcome_asset,
                         is_win=is_win,
@@ -2736,6 +2813,245 @@ class AutonomousTradingBot:
         except Exception as exc:
             logger.error(f"Failed to scan opportunity for {symbol}: {exc}")
             return {"blocked_reason": f"Scan pipeline error for {symbol}: {exc}"}
+
+    #: MCX Arena entry window (commander-approved 2026-07-18): the exchange
+    #: itself trades 09:00-23:30 IST; Hokage opens entries at 09:30 (after a
+    #: short observation window, same discipline as the index open) and takes
+    #: no NEW risk after 22:30, leaving 45 minutes of runway before the
+    #: 23:15 square-off already enforced by the option exit ladder.
+    _MCX_FIRST_ENTRY = (9, 30)
+    _MCX_LAST_ENTRY = (22, 30)
+
+    def _scan_and_enter_mcx_opportunities(self) -> None:
+        """MCX Commodity Arena: winner-take-asset entries for CRUDEOIL/
+        NATURALGAS/GOLDM/SILVERM, on its own venue, its own war chests, its
+        own 4-strategy league. Sibling to `_scan_and_enter_opportunities` —
+        deliberately NOT a shared code path: a bug in this method can never
+        touch the index Dojo's scan logic. The two leagues DO share the
+        hardened lower-level primitives (options router, exit ladder, gate
+        journaling, reduce_only) — those are what were tested and fixed
+        first, so reusing them here is a feature, not a shortcut.
+        """
+        from bots.strategy.components.mcx_entries import MCX_ENTRY_MODULES
+        from bots.strategy.mcx_portfolio import MCX_UNIVERSE, MCX_FAMILY_ENERGY, MCX_FAMILY_PRECIOUS
+        from bots.execution.options_router import OptionsRouter, OptionsRoutingError
+        from integrations.brokers.models import OrderRequest, OrderSide, OrderType
+        from integrations.data.models import Instrument
+        from hokage.dashboard.event_bus import EventBus
+
+        context = self.orchestrator.get_execution_context()
+        if context.execution_mode == ExecutionMode.READ_ONLY:
+            return
+
+        now_ist = self._now_ist()
+        # Weekday guard: MCX still runs Monday-Friday only.
+        if now_ist.weekday() >= 5:
+            return
+        hm = (now_ist.hour, now_ist.minute)
+        if hm < self._MCX_FIRST_ENTRY or hm >= self._MCX_LAST_ENTRY:
+            return
+
+        venue = getattr(self.orchestrator, "mcx_venue", None)
+        if venue is None:
+            return
+
+        try:
+            bal = venue.get_account_balance()
+            if bal.cash <= 1000.0:
+                return
+        except Exception as exc:
+            logger.error(f"MCX Arena: failed to query account balance: {exc}")
+            return
+
+        # Skip underlyings that already have an open MCX position (dedup by
+        # underlying, same discipline as the index league).
+        existing_underlyings: set[str] = set()
+        for trk in self._active_positions_tracking.values():
+            if trk.get("venue_id") == "paper_mcx":
+                und = str(trk.get("underlying") or "").upper()
+                if und:
+                    existing_underlyings.add(und)
+
+        bus = EventBus()
+        _ctx_cache: dict[str, Any] = {}
+
+        for symbol in MCX_UNIVERSE:
+            if symbol in existing_underlyings:
+                continue
+            if not self.orchestrator.session_manager.is_tradable(symbol):
+                continue
+
+            # Post-exit re-entry cooldown (shared dict with the index league;
+            # MCX underlyings are distinct strings, no collision risk).
+            exited_at = self._underlying_exit_cooldowns.get(symbol)
+            if exited_at is not None:
+                elapsed_min = (datetime.now(timezone.utc) - exited_at).total_seconds() / 60.0
+                if elapsed_min < self._REENTRY_COOLDOWN_MINUTES:
+                    logger.info(
+                        f"MCX Arena: {symbol} re-entry cooldown, "
+                        f"{self._REENTRY_COOLDOWN_MINUTES - elapsed_min:.0f}m remaining."
+                    )
+                    continue
+
+            mkt_ctx = self._build_market_context(symbol, cache=_ctx_cache)
+            if mkt_ctx is None:
+                logger.info(f"MCX Arena: no live market context for {symbol}; standing aside.")
+                continue
+
+            module_verdicts: list[str] = []
+            winner = None  # (confidence, strategy_dict, signal)
+            for sid, strat in self.mcx_strategy_portfolio.portfolio.get("strategies", {}).items():
+                if strat.get("status") == "ARCHIVED":
+                    continue
+                module = MCX_ENTRY_MODULES.get(sid)
+                if module is None:
+                    continue
+                sig = module.evaluate(mkt_ctx)
+                if not sig.should_enter:
+                    module_verdicts.append(f"EntrySignal: {strat.get('name', sid)}: {sig.reason}")
+                    continue
+                conf = float(sig.confidence or 0.0)
+                module_verdicts.append(f"EntrySignal: {strat.get('name', sid)}: {sig.direction.upper()} (conf {conf:.0f})")
+                if winner is None or conf > winner[0]:
+                    winner = (conf, strat, sig)
+
+            if winner is None:
+                reason_txt = "MCX league stand-aside on " + symbol + ": " + " | ".join(module_verdicts)
+                logger.info(reason_txt)
+                bus.publish("OPPORTUNITY_REJECTED", {"symbol": symbol, "reason": reason_txt, "timestamp": datetime.now(timezone.utc).isoformat()})
+                continue
+
+            win_conf, selected_strat, signal = winner
+            direction = signal.direction
+            logger.info(
+                f"MCX league entry for {symbol}: {selected_strat.get('name')} wins with "
+                f"{direction.upper()} (conf {win_conf:.0f}) — {signal.reason}. Field: {' | '.join(module_verdicts)}"
+            )
+
+            # Entry conduct gate (bias alignment + IV premium guard) is
+            # universe-agnostic and already MCX-aware for its NSE-only time
+            # windows (skipped for MCX symbols there) — reused as-is.
+            conduct_ok, conduct_reason = self._entry_conduct_gate(symbol, direction)
+            if not conduct_ok:
+                logger.info(f"MCX Arena entry blocked for {symbol}: {conduct_reason}")
+                continue
+
+            try:
+                entry_price = self.orchestrator.price_source.get_price(symbol)
+                valid_price = isinstance(entry_price, (int, float)) and entry_price > 0.0
+            except Exception:
+                entry_price, valid_price = 0.0, False
+            if not valid_price:
+                logger.info(f"MCX Arena: no valid live price for {symbol}; standing aside.")
+                continue
+
+            # Correlation cap: ENERGY (crude/natgas) and PRECIOUS (gold/silver
+            # minis) are separate families with independent drivers — same
+            # discipline as the index family cap, applied to the right family.
+            if symbol in MCX_FAMILY_ENERGY:
+                family, label = MCX_FAMILY_ENERGY, "ENERGY"
+            elif symbol in MCX_FAMILY_PRECIOUS:
+                family, label = MCX_FAMILY_PRECIOUS, "PRECIOUS"
+            else:
+                family, label = set(), "unclassified"
+            cluster_ok, cluster_reason = self._entry_cluster_gate(
+                symbol, direction, entry_price, family=family, max_same_direction=2, family_label=label,
+            )
+            if not cluster_ok:
+                logger.info(f"MCX Arena entry blocked for {symbol}: {cluster_reason}")
+                continue
+
+            side = OrderSide.BUY if direction == "long" else OrderSide.SELL
+            resolved_ac = self.orchestrator.session_manager.resolve_asset_class(symbol)
+            resolved_exch = self.orchestrator.session_manager.resolve_exchange(symbol)
+            inst = Instrument(symbol=symbol, asset_class=resolved_ac, exchange=resolved_exch)
+            req = OrderRequest(
+                instrument=inst, side=side, quantity=1.0, order_type=OrderType.MARKET,
+                venue_id=venue.venue_id, strategy_id=selected_strat["strategy_id"],
+                execution_reason=f"MCX Arena: {selected_strat.get('name')} {direction} — {signal.reason}",
+            )
+
+            if not OptionsRouter.routes(symbol):
+                logger.warning(f"MCX Arena: {symbol} is not options-routed; skipping (never trade spot/futures).")
+                continue
+            try:
+                cash_for_premium = float(venue.get_account_balance().cash)
+            except Exception:
+                cash_for_premium = None
+            chest_budget = self._strategy_available_capital(selected_strat["strategy_id"])
+            try:
+                opt_router = OptionsRouter(price_source=self.orchestrator.price_source)
+                req = opt_router.route_to_options(
+                    req, current_price=entry_price, available_cash=cash_for_premium, risk_budget=chest_budget,
+                )
+            except OptionsRoutingError as e:
+                logger.warning(f"MCX Arena: options routing blocked entry for {symbol}: {e}")
+                bus.publish("OPPORTUNITY_REJECTED", {"symbol": symbol, "reason": f"OptionsRouter: {e}", "timestamp": datetime.now(timezone.utc).isoformat()})
+                continue
+
+            req_meta = req.instrument.metadata or {}
+            entry_cost = float(req_meta.get("premium_at_entry", entry_price)) * float(req.quantity)
+            if entry_cost > chest_budget:
+                logger.warning(
+                    f"MCX Arena: war chest exhausted for {selected_strat['strategy_id']}: "
+                    f"entry cost Rs{entry_cost:,.0f} exceeds remaining Rs{chest_budget:,.0f}."
+                )
+                continue
+
+            try:
+                resp = venue.place_order(req)
+            except Exception as e:
+                logger.error(f"MCX Arena: exception during place_order for {symbol}: {e}")
+                resp = None
+            if resp is None:
+                logger.warning(f"MCX Arena: order for {symbol} returned None; skipping tracking.")
+                continue
+            if str(getattr(resp, "status", "")).upper() in ("REJECTED", "CANCELLED", "ERROR", "FAILED"):
+                logger.error(f"MCX Arena: order for {symbol} REJECTED: {getattr(resp, 'error_message', 'unknown')}")
+                continue
+
+            qty_filled = getattr(resp, "filled_quantity", req.quantity) or req.quantity
+            tracked_symbol = req.instrument.symbol
+            tracked_entry_price = float(req_meta.get("premium_at_entry", entry_price))
+            entry_und_atr = self._get_atr_for_symbol(symbol)
+
+            self.strategy_engine.record_trade(f"MCX_{selected_strat['name']}", symbol, now_ist.strftime("%Y-%m-%d"))
+
+            self._active_positions_tracking[tracked_symbol] = {
+                "entry_price": tracked_entry_price,
+                "peak_price": tracked_entry_price,
+                "stop_price": tracked_entry_price * (1.0 - self.tsl_percent) if side == OrderSide.BUY else tracked_entry_price * (1.0 + self.tsl_percent),
+                "target_price": tracked_entry_price * (1.0 + self.tp_percent),
+                "decision_id": f"mcx-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
+                "strategy_id": selected_strat["strategy_id"],
+                "conviction_score": int(win_conf),
+                "side": side.value,
+                "quantity": float(qty_filled),
+                "venue_id": venue.venue_id,
+                "underlying": symbol,
+                "entry_timestamp": datetime.now(timezone.utc).isoformat(),
+                "entry_underlying_price": float(entry_price),
+                "entry_underlying_atr": float(entry_und_atr) if entry_und_atr else None,
+                "lot_size": req_meta.get("lot_size"),
+                "option_type": req_meta.get("option_type"),
+                "strike": req_meta.get("strike"),
+                "expiry": req_meta.get("expiry"),
+            }
+            self._save_positions_tracking()
+
+            if self.telegram_bot and self.telegram_bot.enabled:
+                try:
+                    self.telegram_bot.notify_entry(
+                        symbol=tracked_symbol, cmp=tracked_entry_price,
+                        target=self._active_positions_tracking[tracked_symbol]["target_price"],
+                        edge=win_conf,
+                    )
+                except Exception:
+                    pass
+            bus.publish("EXECUTION_COMPLETED", {
+                "symbol": symbol, "side": side.value, "quantity": qty_filled,
+                "price": tracked_entry_price, "status": "SUCCESS", "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
 
     def _scan_and_enter_opportunities(self) -> None:
         """Scan watchlist/market universe for opportunities, rank, size and place entry orders."""

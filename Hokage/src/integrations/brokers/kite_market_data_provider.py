@@ -34,6 +34,13 @@ class KiteMarketDataProvider(MarketDataProvider):
         "GOLD": ("MCX", "GOLD"),
         "SILVER": ("MCX", "SILVER"),
         "NATURALGAS": ("MCX", "NATURALGAS"),
+        # Mini contracts (commander-approved 2026-07-18, MCX Arena): the BIG
+        # GOLD/SILVER contracts cost 1.5-2.5 LAKH premium per lot — too large
+        # for a 1L commodity war chest. GOLDM/SILVERM are real, separately
+        # listed MCX products (not a synthetic downsizing), same price series,
+        # 1/10th and 1/6th the physical lot.
+        "GOLDM": ("MCX", "GOLDM"),
+        "SILVERM": ("MCX", "SILVERM"),
     }
 
     #: Index quote symbols (benchmarks like the circuit-breaker feed, and BSE
@@ -142,10 +149,21 @@ class KiteMarketDataProvider(MarketDataProvider):
     #: Kite instruments dump for both options AND their underlying futures —
     #: there is no way to read the real economic lot size from the API. This
     #: is MCX's own published contract specification (unit of trading per
-    #: exchange circulars), not a Hokage assumption: CRUDEOIL = 100 barrels.
-    #: Only commodities Hokage is authorised to trade need an entry here.
+    #: exchange circulars), not a Hokage assumption. Value = physical lot size
+    #: expressed IN THE QUOTATION UNIT (premium is quoted per quotation-unit,
+    #: so premium_per_lot = premium * this value):
+    #:   CRUDEOIL: 100 barrels/lot, quoted per barrel        -> 100
+    #:   NATURALGAS: 1250 mmBtu/lot, quoted per mmBtu         -> 1250
+    #:   GOLDM (mini): 100g/lot, quoted per 10g (same as GOLD) -> 10
+    #:   SILVERM (mini): 5kg/lot, quoted per kg               -> 5
+    #: Verified 2026-07-18 against MCX's own published contract specs (not
+    #: guessed) before being frozen here. Only commodities Hokage is
+    #: authorised to trade need an entry here.
     _MCX_CONTRACT_MULTIPLIER: dict[str, float] = {
         "CRUDEOIL": 100.0,
+        "NATURALGAS": 1250.0,
+        "GOLDM": 10.0,
+        "SILVERM": 5.0,
     }
 
     #: Refuse to buy an option with less life than this. The resolver picks the
@@ -185,6 +203,8 @@ class KiteMarketDataProvider(MarketDataProvider):
             "GOLD": ("MCX", "GOLD"),
             "SILVER": ("MCX", "SILVER"),
             "NATURALGAS": ("MCX", "NATURALGAS"),
+            "GOLDM": ("MCX", "GOLDM"),
+            "SILVERM": ("MCX", "SILVERM"),
         }
         if underlying_upper not in mapping or option_type not in ("CE", "PE") or spot_price <= 0:
             return None
