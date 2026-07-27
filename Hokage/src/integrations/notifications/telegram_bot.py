@@ -35,6 +35,9 @@ class TelegramBotUplink:
         # restart between 06:30-09:00 IST fired a fresh duplicate prompt).
         self._last_totp_request_date = self._load_prompt_state()
         self._last_confirmation_date = None
+        # Retry throttle for the two daily alerts (login prompt / 09:00
+        # confirmation). Negative seed so the first attempt is never delayed.
+        self._last_daily_alert_attempt = -1e9
         self._last_update_id = 0
         self.latest_totp = None
         self.llm_processor = LLMProcessor()
@@ -67,6 +70,25 @@ class TelegramBotUplink:
             )
         except Exception as e:
             logger.warning(f"Failed to save Telegram login-prompt state: {e}")
+
+    def _mark_prompted(self, date_str: str) -> None:
+        """Record that the day's login prompt is genuinely settled — either it
+        was delivered, or the session was already live so no prompt was owed."""
+        self._last_totp_request_date = date_str
+        self._save_prompt_state(date_str)
+
+    def _may_retry_send(self) -> bool:
+        """Throttle daily-alert retries to one attempt a minute.
+
+        The uplink loop ticks every 5s. Without this, an unreachable network
+        would retry the login prompt twelve times a minute and bury the log in
+        identical send failures.
+        """
+        now = time.monotonic()
+        if now - self._last_daily_alert_attempt < 60.0:
+            return False
+        self._last_daily_alert_attempt = now
+        return True
     def start(self) -> None:
         """Start the background polling thread."""
         if not self.enabled:
@@ -224,9 +246,7 @@ class TelegramBotUplink:
                 current_date_str = ist_now.strftime("%Y-%m-%d")
                 
                 if ist_now.hour > 6 or (ist_now.hour == 6 and ist_now.minute >= 30):
-                    if self._last_totp_request_date != current_date_str:
-                        self._last_totp_request_date = current_date_str
-                        self._save_prompt_state(current_date_str)
+                    if self._last_totp_request_date != current_date_str and self._may_retry_send():
                         try:
                             # Skip the prompt entirely when today's session is
                             # already live (e.g. a restart re-ran this loop,
@@ -237,6 +257,7 @@ class TelegramBotUplink:
                                 logger.info(
                                     "Morning login prompt skipped: existing Zerodha session is already valid."
                                 )
+                                self._mark_prompted(current_date_str)
                             else:
                                 mgr = SecretManager()
                                 api_key = mgr.get_secret("api_key", broker="zerodha")
@@ -248,23 +269,40 @@ class TelegramBotUplink:
                                     totp_pin = pyotp.TOTP(totp_secret).now()
                                     totp_msg = f"\n• *Live TOTP*: `{totp_pin}` (Tap to copy)"
 
-                                self.send_message(
+                                sent = self.send_message(
                                     "⚠️ *ZERODHA LIVE AUTONOMOUS LOGIN REQUIRED* ⚠️\n"
                                     f"1. Click here to login: [Kite Login]({login_url}){totp_msg}\n"
                                     "2. The browser will show \"Authentication successful\" when done — that's it, you're logged in.\n"
                                     "3. Only reply with `/token URL` if the browser shows an error page instead."
                                 )
+                                # Only burn the day's prompt once it actually
+                                # LANDED. Marking it before the send meant a
+                                # transient network failure (laptop asleep, DNS
+                                # down) silently consumed the day's only login
+                                # prompt: on 2026-07-27 the send failed at
+                                # 11:46 with getaddrinfo failed, was never
+                                # retried, and Hokage sat blind on an expired
+                                # token with the commander never told.
+                                if sent:
+                                    self._mark_prompted(current_date_str)
+                                else:
+                                    logger.warning(
+                                        "Morning login prompt failed to send; will retry (day NOT marked as prompted)."
+                                    )
                         except Exception as e:
                             logger.error(f"Failed to generate morning login brief: {e}")
 
                 # 1.5 Handle daily 09:00 AM IST Connection Confirmation
                 if ist_now.hour >= 9:
-                    if self._last_confirmation_date != current_date_str:
-                        self._last_confirmation_date = current_date_str
+                    if self._last_confirmation_date != current_date_str and self._may_retry_send():
                         if self._validate_broker_session():
-                            self.send_message("✅ *Login Successful* - Broker Connected. Execution engines standing by.")
+                            sent = self.send_message("✅ *Login Successful* - Broker Connected. Execution engines standing by.")
                         else:
-                            self.send_message("🚨 *Login Missing* - No valid Zerodha session. Autonomous execution halted. Please login via Dashboard or /token command.")
+                            sent = self.send_message("🚨 *Login Missing* - No valid Zerodha session. Autonomous execution halted. Please login via Dashboard or /token command.")
+                        # Same rule as the login prompt: a dropped send must not
+                        # count as "the commander has been told".
+                        if sent:
+                            self._last_confirmation_date = current_date_str
                 
                 # 2. Check for updates from Telegram
                 if self.enabled:

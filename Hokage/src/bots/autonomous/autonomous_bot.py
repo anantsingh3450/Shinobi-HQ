@@ -593,6 +593,16 @@ class AutonomousTradingBot:
                     self._last_bar_key = bar_key
                     is_tick = False
 
+                # 0. Is the market data feed even answering? This runs FIRST and
+                # in its own guard: a dead feed is exactly the condition that
+                # makes the steps below throw, and when they threw, the shared
+                # except swallowed the iteration and the blind-system alarm
+                # further down never ran at all.
+                try:
+                    self._check_data_feed_session()
+                except Exception as exc:
+                    logger.error(f"Data feed health check failed: {exc}")
+
                 # 1. Active Exit Monitors across all active venues (Runs on both is_tick=True and is_tick=False)
                 self._monitor_and_exit_positions(is_tick=is_tick)
                 
@@ -1351,14 +1361,67 @@ class AutonomousTradingBot:
             return False, ""
         return False, ""
 
+    # An auth-shaped failure means the token is dead; anything else (DNS,
+    # timeout, Kite outage) means the feed is merely unreachable. Both blind
+    # Hokage, but only the first is fixed by logging in again.
+    _AUTH_ERROR_TAGS = ("token", "auth", "session", "api_key", "forbidden", "403")
+
+    def _check_data_feed_session(self) -> None:
+        """Probe the Kite market-data feed and alert once per IST date if blind.
+
+        Runs in EVERY execution mode. Paper trading is real data with fake money,
+        so a dead feed is a dead system regardless of where the orders go. Alert
+        only — no halt: the entry path already fails closed without prices, and a
+        sticky halt would make the commander send /resume after re-login for no
+        added safety.
+        """
+        try:
+            self.orchestrator.price_source.get_price("NIFTY 50")
+        except Exception as exc:
+            reason = str(exc)
+            is_auth = any(tag in reason.lower() for tag in self._AUTH_ERROR_TAGS)
+            today = self._now_ist().strftime("%Y-%m-%d")
+            if getattr(self, "_last_feed_alert_date", None) == today:
+                return
+            logger.critical(f"Market data feed is DOWN ({'auth' if is_auth else 'network'}): {reason}")
+            if self.telegram_bot:
+                if is_auth:
+                    body = (
+                        "🚨 *HOKAGE IS BLIND — ZERODHA TOKEN EXPIRED* 🚨\n"
+                        f"The market data feed rejected authentication: {reason}\n"
+                        "No scans, no entries, no new trades until you log in again.\n"
+                        "Open the dashboard and log in to Kite, or send `/token URL`."
+                    )
+                else:
+                    body = (
+                        "⚠️ *HOKAGE IS BLIND — MARKET DATA UNREACHABLE* ⚠️\n"
+                        f"The Kite feed could not be reached: {reason}\n"
+                        "No scans or entries until it comes back. Check the network."
+                    )
+                # Only burn the day's alert once it has actually landed — the
+                # same mark-before-send trap that swallowed the login prompt.
+                if self.telegram_bot.send_message(body):
+                    self._last_feed_alert_date = today
+            else:
+                self._last_feed_alert_date = today
+            return
+        # Feed answered: clear the latch so a later outage alerts again today.
+        self._last_feed_alert_date = None
+
     def _check_broker_session_health(self) -> None:
         """Detect mid-session broker auth failure (e.g. Kite daily token expiry).
 
         Probes every live (non-paper) venue; on an auth-shaped failure, halts
         new entries and alerts the commander via Telegram once per IST date.
-        Exits remain active. Paper/mock venues carry no token risk and are
-        skipped. (Data-feed token expiry is separately fail-closed by the
-        price-provenance guard on the entry path.)
+        Exits remain active. Paper/mock venues carry no ORDER token risk and are
+        skipped for the venue probe.
+
+        The DATA FEED is probed in every mode, paper included. Paper money still
+        trades on real Kite data, so an expired token blinds the whole system.
+        The entry path fails closed on missing prices, which is safe but utterly
+        silent: on 2026-07-27 Hokage sat on a 7-day-expired token, refused every
+        scan, and said nothing. `_check_data_feed_session` breaks that silence
+        and runs at the top of every loop iteration, not from here.
         """
         context = self.orchestrator.get_execution_context()
         if context.execution_mode != ExecutionMode.LIVE:
@@ -1375,7 +1438,7 @@ class AutonomousTradingBot:
                 venue.get_account_balance()
             except Exception as exc:
                 msg = str(exc).lower()
-                if any(tag in msg for tag in ("token", "auth", "session", "api_key", "forbidden", "403")):
+                if any(tag in msg for tag in self._AUTH_ERROR_TAGS):
                     today = self._now_ist().strftime("%Y-%m-%d")
                     if getattr(self, "_last_token_alert_date", None) != today:
                         self._last_token_alert_date = today
