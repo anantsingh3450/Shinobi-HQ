@@ -1361,10 +1361,47 @@ class AutonomousTradingBot:
             return False, ""
         return False, ""
 
-    # An auth-shaped failure means the token is dead; anything else (DNS,
-    # timeout, Kite outage) means the feed is merely unreachable. Both blind
-    # Hokage, but only the first is fixed by logging in again.
+    # An auth-shaped failure means the token is dead; a network-shaped one means
+    # the feed is merely unreachable. Both blind Hokage, but only the first is
+    # fixed by logging in again — and sending the commander to a login page over
+    # a DNS blip wastes his time, so the two are never conflated.
     _AUTH_ERROR_TAGS = ("token", "auth", "session", "api_key", "forbidden", "403")
+    _NETWORK_ERROR_TAGS = (
+        "getaddrinfo", "resolve", "timed out", "timeout", "unreachable",
+        "max retries", "connection refused", "connection aborted", "connection reset",
+    )
+
+    def _diagnose_feed_failure(self, reason: str) -> str:
+        """Classify a dead feed as 'auth', 'network', or 'unknown'.
+
+        The provider wraps a rejected token as the maddeningly generic "Venue is
+        not connected.", which matches neither tag set. When the message settles
+        nothing, ask Kite directly — one round trip, and only ever on a feed
+        that is already down.
+        """
+        low = reason.lower()
+        if any(tag in low for tag in self._AUTH_ERROR_TAGS):
+            return "auth"
+        if any(tag in low for tag in self._NETWORK_ERROR_TAGS):
+            return "network"
+        try:
+            from integrations.brokers.secrets import SecretManager
+            from kiteconnect import KiteConnect
+            mgr = SecretManager()
+            api_key = mgr.get_secret("api_key", broker="zerodha")
+            access_token = mgr.get_secret("access_token", broker="zerodha")
+            if not api_key or not access_token:
+                return "auth"
+            kite = KiteConnect(api_key=api_key)
+            kite.set_access_token(access_token)
+            kite.profile()
+            # Credentials are live, so the token is not what broke the feed.
+            return "unknown"
+        except Exception as exc:
+            probe = str(exc).lower()
+            if any(tag in probe for tag in self._NETWORK_ERROR_TAGS):
+                return "network"
+            return "auth"
 
     def _check_data_feed_session(self) -> None:
         """Probe the Kite market-data feed and alert once per IST date if blind.
@@ -1379,24 +1416,31 @@ class AutonomousTradingBot:
             self.orchestrator.price_source.get_price("NIFTY 50")
         except Exception as exc:
             reason = str(exc)
-            is_auth = any(tag in reason.lower() for tag in self._AUTH_ERROR_TAGS)
             today = self._now_ist().strftime("%Y-%m-%d")
             if getattr(self, "_last_feed_alert_date", None) == today:
                 return
-            logger.critical(f"Market data feed is DOWN ({'auth' if is_auth else 'network'}): {reason}")
+            kind = self._diagnose_feed_failure(reason)
+            logger.critical(f"Market data feed is DOWN ({kind}): {reason}")
             if self.telegram_bot:
-                if is_auth:
+                if kind == "auth":
                     body = (
-                        "🚨 *HOKAGE IS BLIND — ZERODHA TOKEN EXPIRED* 🚨\n"
+                        "🚨 *HOKAGE IS BLIND — ZERODHA LOGIN NEEDED* 🚨\n"
                         f"The market data feed rejected authentication: {reason}\n"
                         "No scans, no entries, no new trades until you log in again.\n"
                         "Open the dashboard and log in to Kite, or send `/token URL`."
                     )
-                else:
+                elif kind == "network":
                     body = (
                         "⚠️ *HOKAGE IS BLIND — MARKET DATA UNREACHABLE* ⚠️\n"
                         f"The Kite feed could not be reached: {reason}\n"
                         "No scans or entries until it comes back. Check the network."
+                    )
+                else:
+                    body = (
+                        "⚠️ *HOKAGE IS BLIND — MARKET DATA FAILING* ⚠️\n"
+                        f"The feed stopped answering: {reason}\n"
+                        "Your Zerodha login is still valid, so this is not a token problem.\n"
+                        "No scans or entries until it recovers."
                     )
                 # Only burn the day's alert once it has actually landed — the
                 # same mark-before-send trap that swallowed the login prompt.
