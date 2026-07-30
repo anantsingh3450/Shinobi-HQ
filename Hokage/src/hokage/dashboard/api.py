@@ -1888,10 +1888,20 @@ def create_dashboard_api(
                 for c in chests
             )
             account = orchestrator.portfolio_store.load_account("paper")
-            drift = round(chest_total - float(account.equity), 2)
+            # Compare like with like. chest_total is starting + REALIZED, but
+            # account.equity is cash + UNREALIZED, so the two could only ever
+            # agree on a flat book. Every past "drift 0.0" verification happened
+            # to run with no position open; the moment one was live the panel
+            # reported phantom drift (₹100.75 on 2026-07-30) — and worse, real
+            # drift would have been indistinguishable from mark-to-market noise,
+            # blinding the very check built for the 2026-07-16 unbooked exits.
+            account_settled = float(account.initial_balance) + float(account.realized_pnl)
+            drift = round(chest_total - account_settled, 2)
             payload["ledger_reconciliation"] = {
                 "chest_total": round(chest_total, 2),
+                "account_settled": round(account_settled, 2),
                 "account_equity": round(float(account.equity), 2),
+                "open_mark_to_market": round(float(account.equity) - float(account.cash), 2),
                 "drift": drift,
                 "ok": abs(drift) < 1.0,
             }
@@ -2119,10 +2129,17 @@ def create_dashboard_api(
                 for c in chests
             )
             account = orchestrator.portfolio_store.load_account("paper_mcx")
-            drift = round(chest_total - float(account.equity), 2)
+            # Same like-with-like rule as the index arena above: starting +
+            # realized on both sides, never mark-to-market equity. The MCX
+            # ledger has simply not opened a position yet, so this arena had
+            # not yet had the chance to report phantom drift.
+            account_settled = float(account.initial_balance) + float(account.realized_pnl)
+            drift = round(chest_total - account_settled, 2)
             payload["ledger_reconciliation"] = {
                 "chest_total": round(chest_total, 2),
+                "account_settled": round(account_settled, 2),
                 "account_equity": round(float(account.equity), 2),
+                "open_mark_to_market": round(float(account.equity) - float(account.cash), 2),
                 "drift": drift,
                 "ok": abs(drift) < 1.0,
             }
