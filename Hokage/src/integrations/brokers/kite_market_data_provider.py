@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from integrations.brokers.kite_connection import KiteConnectionManager
 from integrations.brokers.models import utc_now
@@ -15,6 +16,8 @@ from integrations.data.models import (
     HistoricalDataResult,
     ProviderHealth,
 )
+
+logger = logging.getLogger("Hokage.MarketDataWatchdog")
 
 
 class KiteMarketDataProvider(MarketDataProvider):
@@ -58,6 +61,51 @@ class KiteMarketDataProvider(MarketDataProvider):
     _BSE_INDEX_UNDERLYINGS: dict[str, str] = {
         "SENSEX": "SENSEX",
     }
+
+    #: Spot quote for each index whose options are CASH-SETTLED ON THE INDEX.
+    #: Used to pick the ATM strike. This is deliberately NOT the same source as
+    #: _FUTURES_UNDERLYINGS: `get_price("NIFTY")` returns the NFO FUTURES price,
+    #: which carries a basis over spot (~45 points on 2026-07-30, against a
+    #: 50-point strike interval), so choosing a strike off it skewed ATM by
+    #: nearly a full step — calls further OTM, puts further ITM, on every single
+    #: index trade. NSE/BSE index options settle on the index, so the index is
+    #: the only correct strike reference.
+    #:
+    #: MCX is absent ON PURPOSE. Commodity options there are options ON THE
+    #: FUTURES contract and exercise into a futures position, so the futures
+    #: price already passed in IS their correct reference. Adding MCX here would
+    #: introduce the very error this table removes.
+    _OPTION_STRIKE_SPOT_SYMBOLS: dict[str, tuple[str, str]] = {
+        "NIFTY": ("NSE", "NIFTY 50"),
+        "BANKNIFTY": ("NSE", "NIFTY BANK"),
+        "SENSEX": ("BSE", "SENSEX"),
+        "BANKEX": ("BSE", "BANKEX"),
+    }
+
+    #: Largest credible gap between an index spot quote and the futures-based
+    #: reference price. The real basis runs ~0.2%; anything past this is a data
+    #: fault, not a basis.
+    _MAX_SPOT_BASIS_PCT = 0.05
+
+    def _index_spot_for_strike(self, underlying: str) -> float | None:
+        """Live spot for an index whose options are cash-settled on that index.
+
+        Returns None when the quote is unavailable so the caller can fall back
+        to the reference it already has: the basis is ~0.2%, so a missing spot
+        quote is a reason to pick a slightly worse strike, not to stop trading.
+        """
+        mapped = self._OPTION_STRIKE_SPOT_SYMBOLS.get(underlying)
+        if not mapped:
+            return None
+        exchange, symbol = mapped
+        kite_symbol = f"{exchange}:{symbol}"
+        try:
+            quotes = self._connection_manager.get_kite_client().quote([kite_symbol])
+            price = float(quotes.get(kite_symbol, {}).get("last_price", 0.0))
+        except Exception as exc:
+            logger.warning(f"Spot quote for {kite_symbol} unavailable: {exc}")
+            return None
+        return price if price > 0 else None
 
     def __init__(self, connection_manager: KiteConnectionManager) -> None:
         """Initialize KiteMarketDataProvider.
@@ -190,6 +238,12 @@ class KiteMarketDataProvider(MarketDataProvider):
         exchange, strike, expiry, and lot_size, or None when no live contract
         matches (callers must fail closed: no trade, never a fabricated
         contract).
+
+        `spot_price` is the caller's REFERENCE price, which for NIFTY/BANKNIFTY
+        is the NFO futures price rather than the index. Index options settle on
+        the index, so for NFO/BFO chains this method re-anchors to true spot
+        itself; parameter name kept for callers. MCX options are options on
+        futures and correctly keep the reference passed in.
         """
         from datetime import date
 
@@ -210,6 +264,39 @@ class KiteMarketDataProvider(MarketDataProvider):
             return None
         kite_exchange, chain_name = mapping[underlying_upper]
 
+        # Index options are cash-settled on the INDEX, but callers hand us
+        # get_price(underlying), which for NIFTY/BANKNIFTY is the NFO FUTURES
+        # price. Re-anchor to true spot before measuring distance to strike.
+        # MCX options are options on futures, so they keep the price passed in.
+        strike_reference = spot_price
+        if kite_exchange in ("NFO", "BFO"):
+            index_spot = self._index_spot_for_strike(underlying_upper)
+            # The futures-to-spot basis is a fraction of a percent. A spot quote
+            # further than _MAX_SPOT_BASIS_PCT from the reference is not a basis,
+            # it is bad data — and anchoring a strike to bad data buys a wildly
+            # wrong contract. Keep the reference we already trust instead.
+            if index_spot is not None:
+                divergence = abs(index_spot - spot_price) / spot_price
+                if divergence > self._MAX_SPOT_BASIS_PCT:
+                    logger.error(
+                        f"Rejecting spot {index_spot:.2f} for {underlying_upper}: "
+                        f"{divergence * 100:.1f}% from reference {spot_price:.2f}, far beyond any "
+                        f"real basis. Selecting strike off the reference price."
+                    )
+                else:
+                    if abs(index_spot - spot_price) > 0.0:
+                        logger.info(
+                            f"{underlying_upper} strike anchored to spot {index_spot:.2f} "
+                            f"(reference price was {spot_price:.2f}, basis "
+                            f"{index_spot - spot_price:+.2f})."
+                        )
+                    strike_reference = index_spot
+            else:
+                logger.warning(
+                    f"No spot quote for {underlying_upper}; selecting strike off the "
+                    f"futures-based reference {spot_price:.2f} (ATM may be one step out)."
+                )
+
         client = self._connection_manager.get_kite_client()
         contracts = client.instruments(kite_exchange)
         today = date.today()
@@ -225,7 +312,7 @@ class KiteMarketDataProvider(MarketDataProvider):
                 continue
             if (expiry_date - today).days < self._MIN_DAYS_TO_EXPIRY:
                 continue
-            candidates.append((expiry_date, abs(strike - spot_price), strike, inst))
+            candidates.append((expiry_date, abs(strike - strike_reference), strike, inst))
         if not candidates:
             return None
 
