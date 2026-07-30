@@ -1422,6 +1422,11 @@ class AutonomousTradingBot:
             kind = self._diagnose_feed_failure(reason)
             logger.critical(f"Market data feed is DOWN ({kind}): {reason}")
             if self.telegram_bot:
+                # Kite's own auth error is "Incorrect `api_key` or
+                # `access_token`." — backticks and underscores that would make
+                # Telegram reject this whole alert. It only survived on
+                # 2026-07-30 because the wrapped message happened to be clean.
+                reason = self.telegram_bot.escape_markdown(reason)
                 if kind == "auth":
                     body = (
                         "🚨 *HOKAGE IS BLIND — ZERODHA LOGIN NEEDED* 🚨\n"
@@ -1491,7 +1496,8 @@ class AutonomousTradingBot:
                         if self.telegram_bot:
                             self.telegram_bot.send_message(
                                 "🚨 *BROKER SESSION EXPIRED* 🚨\n"
-                                f"Venue `{venue_id}` rejected authentication: {exc}\n"
+                                f"Venue `{venue_id}` rejected authentication: "
+                                f"{self.telegram_bot.escape_markdown(exc)}\n"
                                 "Entries are HALTED. Re-login via the dashboard or /token, then send /resume."
                             )
 

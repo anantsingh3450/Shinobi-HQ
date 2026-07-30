@@ -146,6 +146,25 @@ class TelegramBotUplink:
             res = requests.post(url, json=payload, timeout=10)
             if res.status_code == 200:
                 return True
+            # Telegram rejects the WHOLE message when an interpolated value
+            # opens a Markdown entity it cannot close — an underscore in
+            # CRUDE_OIL, a backtick in Kite's "Incorrect `api_key`" error. The
+            # alert is then lost in full, exactly when it matters most: on
+            # 2026-07-30 the login reply died on "request_token" (byte offset
+            # 23) and on 2026-07-15 every CRUDE_OIL exit went unannounced.
+            # Escaping each call site is whack-a-mole, so make the transport
+            # itself refuse to lose a message: resend verbatim as plain text.
+            # Ugly beats unsent.
+            if res.status_code == 400 and "parse" in res.text.lower():
+                logger.warning(
+                    f"Telegram rejected Markdown ({res.text}); resending as plain text."
+                )
+                payload.pop("parse_mode", None)
+                retry = requests.post(url, json=payload, timeout=10)
+                if retry.status_code == 200:
+                    return True
+                logger.error(f"Telegram plain-text retry also failed {retry.status_code}: {retry.text}")
+                return False
             logger.error(f"Telegram API error {res.status_code}: {res.text}")
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
@@ -200,7 +219,7 @@ class TelegramBotUplink:
     def notify_entry(self, symbol: str, cmp: float, target: float, edge: float) -> None:
         """Send a real-time entry notification."""
         msg = (
-            f"🚀 *ENTERING POSITION: {symbol}*\n"
+            f"🚀 *ENTERING POSITION: {self.escape_markdown(symbol)}*\n"
             f"• *CMP*: {cmp:.2f}\n"
             f"• *Target*: {target:.2f}\n"
             f"• *ML Edge Score*: {edge:.1f}%\n\n"
@@ -416,7 +435,7 @@ class TelegramBotUplink:
                                 request_token = request_token.split("request_token=")[1].split("&")[0]
                         
                         logger.info("Intercepted request_token via Telegram")
-                        self.send_message("🔄 Processing request_token...")
+                        self.send_message("🔄 Processing request\\_token...")
                         try:
                             from integrations.brokers.secrets import update_env_file
                             mgr = SecretManager()
@@ -444,7 +463,7 @@ class TelegramBotUplink:
                                     "Broker is connected; no further login needed."
                                 )
                             else:
-                                self.send_message(f"❌ *Login Failed*: {e}")
+                                self.send_message(f"❌ *Login Failed*: {self.escape_markdown(e)}")
                             
                     elif text.lower().split()[0] in (
                         "/kill", "/pause", "/resume", "/close_all", "/status",
@@ -464,7 +483,9 @@ class TelegramBotUplink:
                                 self.send_message(ack)
                             except Exception as e:
                                 logger.error(f"Control command {first} failed: {e}")
-                                self.send_message(f"❌ Command {first} failed: {e}")
+                                self.send_message(
+                                    f"❌ Command {self.escape_markdown(first)} failed: {self.escape_markdown(e)}"
+                                )
                     elif text.isdigit() and len(text) == 6:
                         self.latest_totp = text
                         logger.info(f"Received valid 6-digit TOTP token: {text}")
