@@ -1959,6 +1959,14 @@ def create_dashboard_api(
                         return None
 
                 for sym, t in bot._active_positions_tracking.items():
+                    # The MCX arena filters to its own venue; this one filtered
+                    # nothing, so every commodity position ALSO showed up in the
+                    # index arena — on 2026-07-30 a CRUDEOIL and a NATURALGAS
+                    # put appeared here, priced against index assumptions, so
+                    # the two arenas reported different PnL for the same trade.
+                    # The whole point of the second league is a separate book.
+                    if t.get("venue_id") == "paper_mcx":
+                        continue
                     entry = float(t.get("entry_price", 0.0))
                     qty = float(t.get("quantity", 0.0))
                     ltp = _ltp(sym)
@@ -2893,7 +2901,14 @@ def create_dashboard_api(
                 hb = heartbeats.get(subsystem_name)
                 if hb:
                     age = (now - hb.timestamp).total_seconds()
-                    if age > 30.0:
+                    # Real publishers tick on their work cadence (the scan loop
+                    # every 60s), not on the 15s liveness timer, so a flat 30s
+                    # would show a perfectly healthy engine as OFFLINE most of
+                    # the time. Use the watchdog's own per-subsystem thresholds.
+                    limit = orchestrator.watchdog.heartbeat_stale_threshold_overrides.get(
+                        subsystem_name, 30.0
+                    )
+                    if age > limit:
                         metrics["health_score"] = 0
                         metrics["current_task"] = "OFFLINE"
                     else:
@@ -3273,7 +3288,11 @@ def create_dashboard_api(
                     hb = heartbeats.get(subsystem_name)
                     if hb:
                         age = (now - hb.timestamp).total_seconds()
-                        if age > 30.0:
+                        # Same per-subsystem thresholds as /commander/status.
+                        limit = orchestrator.watchdog.heartbeat_stale_threshold_overrides.get(
+                            subsystem_name, 30.0
+                        )
+                        if age > limit:
                             metrics["health_score"] = 0
                             metrics["current_task"] = "OFFLINE"
                         else:

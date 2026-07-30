@@ -31,6 +31,13 @@ class Watchdog:
         
         # Configuration thresholds
         self.heartbeat_stale_threshold_sec = 30.0
+        # Real publishers tick on their own work cadence, not on a 15s timer, so
+        # one global 30s threshold would call a healthy 60s scan loop "stale"
+        # every single cycle. Allow ~3 missed cycles before believing it died.
+        self.heartbeat_stale_threshold_overrides = {
+            "strategy_engine": 195.0,   # autonomous scan loop: 60s interval
+            "market_data": 195.0,       # published only on a SUCCESSFUL quote
+        }
         self.memory_warning_threshold_mb = 350.0
         self.memory_critical_threshold_mb = 500.0
         self.thread_count_warning_threshold = 30
@@ -69,12 +76,34 @@ class Watchdog:
         # Start background heartbeats for standard critical subsystems to register heartbeats smoothly
         self.start_subsystem_heartbeats()
 
+    #: Subsystems whose heartbeat is published from genuine work, and are
+    #: therefore admissible as evidence of health. Everything outside this set is
+    #: stamped by a timer (see start_subsystem_heartbeats) and proves only that
+    #: the process is running.
+    REAL_HEARTBEAT_SUBSYSTEMS = ("strategy_engine", "market_data")
+
     def start_subsystem_heartbeats(self) -> None:
-        """Start background daemon threads for standard critical subsystems to register heartbeats."""
+        """Stamp a liveness heartbeat for subsystems that have no real publisher.
+
+        This is a PROCESS-LIVENESS stamp, not a health signal: the loop below
+        publishes "HEALTHY" unconditionally without inspecting anything, so the
+        only thing a fresh stamp proves is that this thread still runs. It stays
+        because the dashboard's bot panel reads these ages to show each engine
+        online/offline, and it is genuinely useful for that — it caught the
+        machine sleeping for 6.9 days.
+
+        It must never again be mistaken for evidence that a subsystem WORKS.
+        Anything in REAL_HEARTBEAT_SUBSYSTEMS is excluded here so a timer can
+        never overwrite a real publisher's timestamp and resurrect a dead loop
+        on paper.
+        """
         subsystems = [
-            "orchestrator", "surveillance_loop", "strategy_engine", "risk_engine", 
-            "improvement_engine", "execution_engine", "portfolio_engine", 
-            "research_engine", "shadow_engine", "voice_commander"
+            s for s in (
+                "orchestrator", "surveillance_loop", "strategy_engine", "risk_engine",
+                "improvement_engine", "execution_engine", "portfolio_engine",
+                "research_engine", "shadow_engine", "voice_commander",
+            )
+            if s not in self.REAL_HEARTBEAT_SUBSYSTEMS
         ]
         for sub in subsystems:
             def loop(sub_name=sub):
@@ -245,19 +274,33 @@ class Watchdog:
         stale_subsystems = []
         now = datetime.now(timezone.utc)
         
-        # Check standard critical subsystems
-        critical_subsystems = ["orchestrator", "surveillance_loop", "strategy_engine", "risk_engine", "improvement_engine"]
+        # Only subsystems that publish from REAL work belong here. The old list
+        # named five engines whose heartbeats were stamped "HEALTHY" every 15s by
+        # a timer thread that never checks anything (see
+        # start_subsystem_heartbeats). Freshness then measured the stamper, not
+        # the subsystem: for the seven days Hokage sat blind on an expired token,
+        # refusing every scan, this check passed and the score read 100.0/100.
+        # A signal that cannot fail is not a signal.
+        #   strategy_engine — published by the autonomous loop per completed cycle
+        #   market_data     — published ONLY after a quote actually comes back
+        critical_subsystems = self.REAL_HEARTBEAT_SUBSYSTEMS
         for sub in critical_subsystems:
             hb = heartbeats.get(sub)
+            threshold = self.heartbeat_stale_threshold_overrides.get(
+                sub, self.heartbeat_stale_threshold_sec
+            )
             if not hb:
                 # Missing heartbeat is a warning
                 stale_subsystems.append(sub)
                 logger.warning(f"Watchdog: Subsystem '{sub}' has never published a heartbeat.")
             else:
                 age = (now - hb.timestamp).total_seconds()
-                if age > self.heartbeat_stale_threshold_sec:
+                if age > threshold:
                     stale_subsystems.append(sub)
-                    logger.error(f"Watchdog: Subsystem '{sub}' has a stale heartbeat (age: {age:.1f}s).")
+                    logger.error(
+                        f"Watchdog: Subsystem '{sub}' has a stale heartbeat "
+                        f"(age: {age:.1f}s > {threshold:.0f}s)."
+                    )
 
         if stale_subsystems:
             inc = IncidentJournal.create_incident(

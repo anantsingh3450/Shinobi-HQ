@@ -78,10 +78,15 @@ def test_watchdog_failure_detection_stale_heartbeat(tmp_path: Path):
     resolver = PathResolver(tmp_path)
     watchdog = Watchdog(resolver)
     
-    # Publish an old heartbeat (e.g. 40 seconds ago)
-    old_time = datetime.now(timezone.utc) - timedelta(seconds=40)
+    # Publish an old heartbeat, aged past strategy_engine's own threshold.
+    # Retargeted 2026-07-30: this used to seed "surveillance_loop", which is
+    # timer-stamped and therefore no longer admissible as health evidence — a
+    # heartbeat that cannot fail cannot detect anything. The behaviour under
+    # test (stale heartbeat -> incident -> score below 100) is unchanged; it is
+    # now exercised against a subsystem that publishes from real work.
+    old_time = datetime.now(timezone.utc) - timedelta(seconds=400)
     hb = Heartbeat(
-        subsystem="surveillance_loop",
+        subsystem="strategy_engine",
         timestamp=old_time,
         status="HEALTHY",
         uptime=100.0,
@@ -101,7 +106,7 @@ def test_watchdog_failure_detection_stale_heartbeat(tmp_path: Path):
     assert len(incidents) > 0
     stale_inc = [i for i in incidents if i.subsystem == "heartbeat_freshness"]
     assert len(stale_inc) == 1
-    assert "surveillance_loop" in stale_inc[0].root_cause
+    assert "strategy_engine" in stale_inc[0].root_cause
     assert stale_inc[0].severity in ("WARNING", "HIGH")
 
 

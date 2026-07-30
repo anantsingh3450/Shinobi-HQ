@@ -645,6 +645,16 @@ class AutonomousTradingBot:
                     except Exception as e:
                         logger.error(f"Error in broker session health check: {e}")
 
+                # Reached only when the whole iteration completed without
+                # raising, so this heartbeat means "the scan loop is doing its
+                # job" rather than "a timer thread is still alive". A loop that
+                # throws every cycle now goes stale and shows up in the health
+                # score, which is exactly what did NOT happen while Hokage spent
+                # seven days failing every scan at 100.0/100 health.
+                try:
+                    self.orchestrator.publish_heartbeat("strategy_engine", "HEALTHY")
+                except Exception as exc:
+                    logger.debug(f"Could not publish strategy_engine heartbeat: {exc}")
 
             except Exception as exc:
                 logger.error(f"Error in autonomous loop iteration: {exc}", exc_info=True)
@@ -1023,6 +1033,9 @@ class AutonomousTradingBot:
            betting the same way across `family`. Defaults to the index
            family/cap; the MCX Arena calls this with its own ENERGY/PRECIOUS
            family sets (2026-07-18) — same discipline, different universe.
+        1b. No opposing bet: the family may not be bet both ways at once.
+           Hokage buys premium only, so opposing legs on correlated underlyings
+           cancel the edge and keep both theta bills (2026-07-30).
         2. Re-entry watermark: after a TARGET_HIT win, the same direction on
            that underlying is only allowed if the index has pushed PAST the
            level where we took profit — never buying the dip of our own
@@ -1036,14 +1049,36 @@ class AutonomousTradingBot:
         # --- 1. correlation cap across the family --------------------------
         if symbol_upper in family:
             same_dir = 0
+            opposing: list[str] = []
             for pos in self._active_positions_tracking.values():
                 und = str(pos.get("underlying") or "").upper()
-                if und in family and self._position_direction(pos) == direction:
+                if und not in family:
+                    continue
+                if self._position_direction(pos) == direction:
                     same_dir += 1
+                else:
+                    opposing.append(und)
             if same_dir >= cap:
                 return False, (
                     f"CorrelationCap: already {same_dir} same-direction ({direction}) {family_label} "
                     f"positions open — one shared bet, not several."
+                )
+            # --- 1b. no opposing bet inside a correlated family ------------
+            # The cap stopped the same bet being taken three times, but nothing
+            # stopped the family being bet BOTH ways at once: on 2026-07-30
+            # Hokage held NIFTY calls, SENSEX calls and BANKNIFTY puts together.
+            # Hokage only ever BUYS premium, so that is not a hedge — on indices
+            # that move ~90% together the directional edge largely cancels while
+            # both legs keep paying theta and a spread. If the tape has genuinely
+            # turned, the correct response is for the open position to EXIT via
+            # the ladder, not to be offset by a second premium purchase.
+            if opposing:
+                counter = "short" if direction == "long" else "long"
+                return False, (
+                    f"OpposingFamilyBet: already {counter} on "
+                    f"{', '.join(sorted(set(opposing)))} while this is a {direction} bet on the same "
+                    f"{family_label}. Buying both sides of one correlated move pays two premiums "
+                    f"for a net-flat book — if the thesis flipped, the open position should exit."
                 )
 
         # --- 2. post-win re-entry watermark --------------------------------
@@ -1456,6 +1491,14 @@ class AutonomousTradingBot:
             return
         # Feed answered: clear the latch so a later outage alerts again today.
         self._last_feed_alert_date = None
+        # A heartbeat that can ONLY be published by a quote that actually came
+        # back. The watchdog treats this as evidence the system can see; unlike
+        # the timer-stamped engine heartbeats, it cannot report health while
+        # blind. This is the signal that was missing for the seven silent days.
+        try:
+            self.orchestrator.publish_heartbeat("market_data", "HEALTHY")
+        except Exception as exc:
+            logger.debug(f"Could not publish market_data heartbeat: {exc}")
 
     def _check_broker_session_health(self) -> None:
         """Detect mid-session broker auth failure (e.g. Kite daily token expiry).
@@ -2417,12 +2460,33 @@ class AutonomousTradingBot:
                         )
                         continue
 
-                    # PnL from the LIVE exit price. pos.unrealized_pnl is the
-                    # stale book value (never marked to market = always 0.0),
-                    # which scored every exit as BREAKEVEN and fed the strategy
-                    # scoreboard zeros for real wins and losses.
+                    # PnL from the price the exit ACTUALLY FILLED AT. pos.
+                    # unrealized_pnl is the stale book value (never marked to
+                    # market = always 0.0), which scored every exit as
+                    # BREAKEVEN and fed the strategy scoreboard zeros for real
+                    # wins and losses.
+                    #
+                    # It used to use `current_price` — the quote the exit
+                    # DECISION was made on. The venue books the account from
+                    # resp.average_price instead, so the war chest and the
+                    # account recorded different numbers for the same exit and
+                    # the two drifted apart by the tick plus modelled friction
+                    # on every single trade. They are meant to be ONE ledger.
+                    # Observed 2026-07-30: the NIFTY thesis-stop credited the
+                    # chest -1,043.25 while the account booked -1,036.75, and
+                    # three exits left 6.50 of drift the panel then reported.
+                    # Friction is one-directional, so this accumulates.
                     _pnl_sign = 1.0 if pos.side == OrderSide.BUY else -1.0
-                    live_pnl = round((current_price - pos.average_price) * pos.quantity * _pnl_sign, 2)
+                    fill_price = float(getattr(resp, "average_price", 0.0) or 0.0)
+                    if fill_price <= 0.0:
+                        # Venue reported a fill without a price; the decision
+                        # quote is the only number available.
+                        fill_price = current_price
+                        logger.warning(
+                            f"Exit for {symbol} filled without an average_price; "
+                            f"booking PnL from the decision quote {current_price}."
+                        )
+                    live_pnl = round((fill_price - pos.average_price) * pos.quantity * _pnl_sign, 2)
 
                     exit_record = {
                         "symbol":     symbol,
