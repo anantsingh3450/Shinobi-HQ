@@ -160,12 +160,19 @@ class TestRiskBudgetSizesLots:
             )
 
     def test_budget_covering_one_lot_buys_exactly_one_lot(self):
+        """Chest raised 14,000 -> 50,000 on 2026-07-30 when MAX_PREMIUM_CHEST_
+        FRACTION landed. At 13,500/lot the old figure was 96.4% of the chest —
+        precisely the single-position concentration the cap now forbids, so the
+        fixture described a trade Hokage must no longer take. 50,000 is the real
+        index war chest and puts one lot at 27%, comfortably inside the cap; the
+        behaviour under test (a budget that covers a lot buys exactly one) is
+        unchanged."""
         router = OptionsRouter(price_source=_provider(_NIFTY_CE, premium=180.0))
         req = router.route_to_options(
             _underlying_request("NIFTY", OrderSide.BUY),
             current_price=24310.0,
             available_cash=500000.0,
-            risk_budget=14000.0,
+            risk_budget=50000.0,
         )
         assert req.quantity == 75.0
         assert req.instrument.metadata["lots"] == 1

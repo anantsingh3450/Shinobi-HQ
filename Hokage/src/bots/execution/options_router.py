@@ -46,6 +46,22 @@ _OPTION_ROUTED_UNDERLYINGS = {
 #: most this fraction of account cash. Conservative single-position cap.
 MAX_PREMIUM_CASH_FRACTION = 0.5
 
+#: ...and at most this fraction of the STRATEGY'S OWN WAR CHEST (commander-
+#: approved 2026-07-30). Without it the chest ceiling was the chest ITSELF, so a
+#: single position could consume 100% of a strategy's capital and only
+#: MAX_LOTS_PER_ORDER stood in the way. Measured from live fills that day, one
+#: lot cost: CRUDEOIL 50.2% of its chest, BANKNIFTY 50.0%, SILVERM 41.8%,
+#: GOLDM 34.8%, SENSEX 18.9%, NATURALGAS 16.7%, NIFTY 11.9% — so this was never
+#: an MCX quirk, both leagues were running the same concentration.
+#:
+#: A third of the chest means a strategy can be wrong three times before it is
+#: out of capital, and can hold more than one idea at once. The cap is on
+#: PREMIUM, so it self-adjusts as premiums move and needs no per-instrument
+#: banned list: an option that grows too rich for its chest simply stops being
+#: affordable and comes back when it cheapens — the same way CRUDE_OIL once
+#: self-excluded from the index arena on economics alone.
+MAX_PREMIUM_CHEST_FRACTION = 0.33
+
 #: Hard ceiling on lots per order. The lots formula below can only size DOWN
 #: to zero (skip), never above this. Kelly/VaR upstream speak in underlying
 #: units, and one option lot controls far more underlying notional than the
@@ -146,15 +162,24 @@ class OptionsRouter:
         if available_cash is not None:
             ceilings.append(available_cash * MAX_PREMIUM_CASH_FRACTION)
         if risk_budget is not None:
-            ceilings.append(risk_budget)
+            # The chest ceiling used to be the chest ITSELF, which permitted a
+            # single position worth 100% of a strategy's capital.
+            ceilings.append(risk_budget * MAX_PREMIUM_CHEST_FRACTION)
         if ceilings:
             budget = min(ceilings)
             lots = int(budget // premium_per_lot)
             if lots < 1:
+                chest_note = ""
+                if risk_budget:
+                    chest_note = (
+                        f" One lot is {premium_per_lot / risk_budget * 100:.1f}% of the "
+                        f"₹{risk_budget:,.0f} chest; the cap is "
+                        f"{MAX_PREMIUM_CHEST_FRACTION * 100:.0f}%."
+                    )
                 raise OptionsRoutingError(
                     f"Risk budget ₹{budget:,.0f} affords 0 lots of {option_symbol} "
                     f"(premium ₹{premium:.2f} x lot {lot_size:g} = ₹{premium_per_lot:,.0f}/lot); "
-                    f"skipping rather than oversizing."
+                    f"skipping rather than oversizing.{chest_note}"
                 )
         else:
             # No budget information supplied (legacy caller): single lot, the
