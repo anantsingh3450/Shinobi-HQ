@@ -593,6 +593,25 @@ class AutonomousTradingBot:
                     self._last_bar_key = bar_key
                     is_tick = False
 
+                # 0a. Did we just wake from a coma? A sleeping laptop takes the
+                # whole risk engine with it: on 2026-07-30 Windows slept the
+                # machine at 10:28 on a critical battery and it stayed down till
+                # 18:03, so an open BANKNIFTY put sat 7.5 hours with no stop, no
+                # trail and no thesis-stop, then squared off after the close for
+                # -4,248 — two thirds of the day's loss. Nothing announced it and
+                # health read 100/100 the second it woke. Say it out loud.
+                try:
+                    self._check_for_unconscious_gap()
+                except Exception as exc:
+                    logger.error(f"Wake-gap check failed: {exc}")
+
+                # 0b. A critical-battery sleep is not a surprise — it is a
+                # countdown. Warn while there is still time to plug in.
+                try:
+                    self._check_battery_runway()
+                except Exception as exc:
+                    logger.error(f"Battery runway check failed: {exc}")
+
                 # 0. Is the market data feed even answering? This runs FIRST and
                 # in its own guard: a dead feed is exactly the condition that
                 # makes the steps below throw, and when they threw, the shared
@@ -1098,9 +1117,18 @@ class AutonomousTradingBot:
 
         return True, "cluster gates passed"
 
+    #: Minimum COMPLETED bars of the current session before the bias engine will
+    #: name a direction. Six 15-minute bars = 90 minutes, so index entries begin
+    #: from ~10:45 instead of inheriting the previous session's trend at 09:46.
+    _BIAS_MIN_SESSION_BARS = 6
+    #: How far price must sit clear of session VWAP, as a fraction of ATR(14),
+    #: before that counts as a direction rather than noise.
+    _BIAS_VWAP_ATR_FRACTION = 0.5
+
     def _compute_underlying_bias(self, symbol: str) -> str | None:
         """Classify the underlying tape as BULLISH / BEARISH / MIXED from real
-        intraday candles (EMA(9)/EMA(21) alignment + price vs session VWAP).
+        intraday candles (EMA(9)/EMA(21) alignment + price clear of session VWAP
+        by half an ATR, and only once today's session has enough bars to read).
         Returns None when no intraday data is available."""
         try:
             from integrations.data.models import HistoricalDataRequest, CandleInterval
@@ -1142,12 +1170,51 @@ class AutonomousTradingBot:
             vwap = sum(c.close for c in session) / len(session) if session else closes[-1]
 
         price = closes[-1]
-        bullish = ema9 > ema21 and price > vwap
-        bearish = ema9 < ema21 and price < vwap
+
+        # --- the tape must actually BE today's tape ------------------------
+        # EMA21 on 15-minute bars needs 21 bars = 5.25 hours. At 09:46 only
+        # THREE of today's bars exist, so ~93% of the window is the previous
+        # sessions: the "bias" was reporting yesterday's trend and calling it
+        # today's. On 2026-07-30 that passed a NIFTY CE at 09:46 which was
+        # stopped 40 minutes later, and by 10:00 the same symbol read MIXED.
+        # Below the floor there is no intraday trend to read, so stand aside
+        # rather than inherit a direction from a session that has ended.
+        if len(session) < self._BIAS_MIN_SESSION_BARS:
+            logger.info(
+                f"Bias engine: only {len(session)} of today's bars for {symbol} "
+                f"(need {self._BIAS_MIN_SESSION_BARS}) — tape not established, standing aside."
+            )
+            return "MIXED"
+
+        # --- the VWAP leg needs a MARGIN, not just a side ------------------
+        # `price > vwap` counted a 6.13-point edge on a 24,275 index (0.025%)
+        # as a bullish tape. That is one tick of noise deciding CE vs PE, and
+        # it flipped within the same 15-minute bar. Require real separation,
+        # scaled to how much this instrument actually moves: half the 14-bar
+        # ATR. An index sitting on its VWAP is precisely a market that has not
+        # chosen, which is what MIXED is for.
+        trs: list[float] = []
+        for prev, cur in zip(candles[-15:-1], candles[-14:]):
+            trs.append(max(
+                cur.high - cur.low,
+                abs(cur.high - prev.close),
+                abs(cur.low - prev.close),
+            ))
+        atr = (sum(trs) / len(trs)) if trs else 0.0
+        margin = self._BIAS_VWAP_ATR_FRACTION * atr
+        clear_above = (price - vwap) >= margin
+        clear_below = (vwap - price) >= margin
+
+        bullish = ema9 > ema21 and clear_above
+        bearish = ema9 < ema21 and clear_below
         if bullish:
             return "BULLISH"
         if bearish:
             return "BEARISH"
+        logger.info(
+            f"Bias engine: {symbol} MIXED — price {price:.2f} vs VWAP {vwap:.2f} "
+            f"(need {margin:.2f} clear, ATR {atr:.2f}), EMA9 {ema9:.2f} vs EMA21 {ema21:.2f}."
+        )
         return "MIXED"
 
     def _build_market_context(self, symbol: str, cache: dict[str, Any] | None = None) -> Any:
@@ -1437,6 +1504,107 @@ class AutonomousTradingBot:
             if any(tag in probe for tag in self._NETWORK_ERROR_TAGS):
                 return "network"
             return "auth"
+
+    #: A loop iteration is ~60s. Anything past this means the process was not
+    #: running the risk engine — almost always the machine slept.
+    _MAX_LOOP_GAP_SECONDS = 300.0
+
+    def _check_for_unconscious_gap(self) -> None:
+        """Detect and announce a period where the loop was not running at all.
+
+        A sleeping or suspended host does not merely pause scanning — it
+        suspends the exit ladder, so every open position sits with no stop, no
+        trail and no thesis-stop until the machine returns. That is the single
+        most dangerous state Hokage can be in, and it is invisible: the loop
+        simply resumes and the watchdog reports full health, because the gap is
+        in the past. Compare wall clocks across iterations and say so.
+        """
+        now = self._now_ist()
+        previous = getattr(self, "_last_loop_wall_clock", None)
+        self._last_loop_wall_clock = now
+        if previous is None:
+            return
+        gap = (now - previous).total_seconds()
+        if gap <= self._MAX_LOOP_GAP_SECONDS:
+            return
+
+        minutes = gap / 60.0
+        held = list(self._active_positions_tracking.keys())
+        logger.critical(
+            f"Loop gap of {minutes:.0f} minutes detected (host suspended?). "
+            f"{len(held)} position(s) were unmanaged: {', '.join(held) if held else 'none'}."
+        )
+        if not self.telegram_bot:
+            return
+        if held:
+            body = (
+                "🚨 *HOKAGE WAS UNCONSCIOUS* 🚨\n"
+                f"The loop did not run for *{minutes:.0f} minutes* — the machine was almost "
+                "certainly asleep.\n"
+                f"*{len(held)} position(s) had NO stop, NO trail and NO thesis-stop for that "
+                "entire window*:\n"
+                + "\n".join(f"• {self.telegram_bot.escape_markdown(s)}" for s in held)
+                + "\n\nKeep the laptop plugged in and awake during market hours, or Hokage "
+                "cannot manage risk on open trades."
+            )
+        else:
+            body = (
+                "⚠️ *HOKAGE WAS UNCONSCIOUS* ⚠️\n"
+                f"The loop did not run for *{minutes:.0f} minutes* — the machine was almost "
+                "certainly asleep. No positions were open, so nothing went unmanaged, but no "
+                "scanning happened either."
+            )
+        self.telegram_bot.send_message(body)
+
+    #: Warn while there is still runway to reach a charger. Windows' own
+    #: critical-battery action fires far lower than this.
+    _BATTERY_WARN_PERCENT = 30.0
+
+    def _check_battery_runway(self) -> None:
+        """Warn once per discharge cycle when the host is running out of power.
+
+        Hokage's risk management only exists while the process runs. On
+        2026-07-30 the battery hit critical at 10:28, Windows slept the machine,
+        and an open position went 7.5 hours unmanaged. The battery level was
+        knowable the whole time — nobody was watching it.
+        """
+        try:
+            import psutil
+            battery = psutil.sensors_battery()
+        except Exception:
+            return
+        if battery is None:
+            return
+
+        if battery.power_plugged:
+            # Reaching a charger re-arms the warning for the next discharge.
+            self._battery_warning_sent = False
+            return
+        if battery.percent > self._BATTERY_WARN_PERCENT:
+            self._battery_warning_sent = False
+            return
+        if getattr(self, "_battery_warning_sent", False):
+            return
+
+        held = list(self._active_positions_tracking.keys())
+        logger.warning(
+            f"Host on battery at {battery.percent:.0f}% with {len(held)} open position(s); "
+            f"a critical-battery sleep would suspend all risk management."
+        )
+        if not self.telegram_bot:
+            return
+        detail = (
+            f"*{len(held)} position(s) are open.* If this machine sleeps they lose their stops "
+            "entirely."
+            if held else
+            "No positions are open right now, but scanning stops when the machine sleeps."
+        )
+        if self.telegram_bot.send_message(
+            "🔌 *PLUG IN — BATTERY LOW* 🔌\n"
+            f"Host battery is at *{battery.percent:.0f}%* and running on battery.\n"
+            f"{detail}"
+        ):
+            self._battery_warning_sent = True
 
     def _check_data_feed_session(self) -> None:
         """Probe the Kite market-data feed and alert once per IST date if blind.
