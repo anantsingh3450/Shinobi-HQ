@@ -77,6 +77,35 @@ class KiteConnectionManager:
             raise RuntimeError(f"Authentication failed: {e}")
 
 
+    def try_reconnect(self) -> bool:
+        """Re-read the stored credentials and re-establish the session.
+
+        The access token is read exactly ONCE, inside connect(). A process that
+        booted with an expired token therefore stays dead for its whole life:
+        connect() fails, _kite is left None, and every later call raises
+        "Venue is not connected." Logging in afterwards rewrites the .env, the
+        environment and the keyring but touches nothing in this object, so
+        Hokage went on refusing every scan while the dashboard and the health
+        score both looked fine. On 2026-08-05 that cost a restart the commander
+        had no way of knowing he needed.
+
+        get_secret() reads os.environ before the keyring and caches nothing, so
+        calling connect() again is genuinely enough to pick up a fresh token.
+
+        Returns True when the session is live afterwards. Never raises: callers
+        are recovery paths, and a failed recovery must not take down the loop
+        that is trying to recover.
+        """
+        try:
+            self.connect()
+            return self._connection_state == ConnectionState.CONNECTED
+        except Exception as exc:
+            import logging as _logging
+            _logging.getLogger("Hokage.KiteConnection").debug(
+                f"Reconnect attempt failed (still no valid session): {exc}"
+            )
+            return False
+
     def disconnect(self) -> ConnectionStatus:
         """Disconnect and clear current session."""
         self._kite = None

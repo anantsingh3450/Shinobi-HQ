@@ -1505,6 +1505,38 @@ class AutonomousTradingBot:
                 return "network"
             return "auth"
 
+    #: Don't hammer Kite's auth endpoint while an outage persists. One attempt
+    #: a minute recovers a mid-session login well inside a single scan cycle.
+    _RECONNECT_MIN_INTERVAL_SECONDS = 60.0
+
+    def _try_broker_reconnect(self) -> bool:
+        """Re-authenticate the broker session in place, at most once a minute.
+
+        The access token is read once at boot, so a login that happens later
+        never reaches the running process. This is the seam that lets it.
+        """
+        import time as _time
+        now = _time.monotonic()
+        last = getattr(self, "_last_reconnect_attempt", None)
+        if last is not None and (now - last) < self._RECONNECT_MIN_INTERVAL_SECONDS:
+            return False
+        self._last_reconnect_attempt = now
+
+        manager = getattr(self.orchestrator, "kite_connection", None)
+        if manager is None or not hasattr(manager, "try_reconnect"):
+            return False
+        if not manager.try_reconnect():
+            return False
+
+        # A live session is not the same as a live feed — prove it with the
+        # quote that failed, so we never announce a recovery we cannot see.
+        try:
+            self.orchestrator.price_source.get_price("NIFTY 50")
+        except Exception as exc:
+            logger.warning(f"Broker session refreshed but the feed is still down: {exc}")
+            return False
+        return True
+
     #: A loop iteration is ~60s. Anything past this means the process was not
     #: running the risk engine — almost always the machine slept.
     _MAX_LOOP_GAP_SECONDS = 300.0
@@ -1620,9 +1652,29 @@ class AutonomousTradingBot:
         except Exception as exc:
             reason = str(exc)
             today = self._now_ist().strftime("%Y-%m-%d")
+            kind = self._diagnose_feed_failure(reason)
+
+            # "unknown" means the standalone probe authenticated fine with the
+            # CURRENT stored token while the feed still refused — which is the
+            # exact signature of a connection manager holding a client built
+            # from a token that has since been replaced. That is what a
+            # mid-session login produces, and it used to require a restart the
+            # commander had no way of knowing he needed. Re-read and retry
+            # before saying a word: a feed that heals itself needs no alarm.
+            if kind == "unknown" and self._try_broker_reconnect():
+                logger.info("Market data feed recovered by re-authenticating the broker session.")
+                self._last_feed_alert_date = None
+                if self.telegram_bot and getattr(self, "_feed_outage_announced", False):
+                    self.telegram_bot.send_message(
+                        "✅ *HOKAGE CAN SEE AGAIN*\n"
+                        "The broker session was refreshed and the market data feed is live. "
+                        "Scanning has resumed — no restart needed."
+                    )
+                self._feed_outage_announced = False
+                return
+
             if getattr(self, "_last_feed_alert_date", None) == today:
                 return
-            kind = self._diagnose_feed_failure(reason)
             logger.critical(f"Market data feed is DOWN ({kind}): {reason}")
             if self.telegram_bot:
                 # Kite's own auth error is "Incorrect `api_key` or
@@ -1654,11 +1706,16 @@ class AutonomousTradingBot:
                 # same mark-before-send trap that swallowed the login prompt.
                 if self.telegram_bot.send_message(body):
                     self._last_feed_alert_date = today
+                    # Remember we told him it broke, so recovery is worth
+                    # announcing. Without this the "can see again" message
+                    # would fire after outages he was never told about.
+                    self._feed_outage_announced = True
             else:
                 self._last_feed_alert_date = today
             return
         # Feed answered: clear the latch so a later outage alerts again today.
         self._last_feed_alert_date = None
+        self._feed_outage_announced = False
         # A heartbeat that can ONLY be published by a quote that actually came
         # back. The watchdog treats this as evidence the system can see; unlike
         # the timer-stamped engine heartbeats, it cannot report health while

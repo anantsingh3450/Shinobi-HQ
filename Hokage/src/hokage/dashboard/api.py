@@ -84,6 +84,32 @@ def extract_text_from_file(file) -> str:
     return "[Unsupported file format]"
 
 
+def refresh_broker_session(orchestrator) -> bool:
+    """Push a freshly saved access token into the RUNNING Kite session.
+
+    Saving a token updates the .env, the environment and the keyring — none of
+    which the live KiteConnectionManager ever re-reads, because it reads the
+    token once inside connect(). Without this call a mid-session login leaves
+    Hokage authenticated with the dead token it booted on, refusing every scan
+    while the dashboard reports success. Call it wherever a token is stored.
+
+    Never raises: a login must still be reported as successful even if the
+    refresh fails, and the bot's own feed probe retries anyway.
+    """
+    try:
+        manager = getattr(orchestrator, "kite_connection", None)
+        if manager is None or not hasattr(manager, "try_reconnect"):
+            return False
+        if manager.try_reconnect():
+            logger.info("Broker session refreshed in place after token update.")
+            return True
+        logger.warning("Token saved but the broker session could not be refreshed.")
+        return False
+    except Exception as exc:
+        logger.error(f"Broker session refresh failed after token update: {exc}")
+        return False
+
+
 def try_manual_trade_execution(message: str, orchestrator) -> str | None:
     """Parses a manual trade execution intent (e.g. 'buy 10 TCS' or 'sell 5 INFY') and executes it.
     
@@ -945,6 +971,14 @@ def create_dashboard_api(
                     lines.append(f"ZERODHA_ACCESS_TOKEN={access_token}")
                 dotenv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
                 
+            # Refresh the MARKET DATA session too. The venue reconnect below is
+            # a different object: orchestrator.kite_connection is what the Kite
+            # data provider reads quotes through, and it holds its own client
+            # built from the token it saw at boot. Reconnecting only the venue
+            # is why a dashboard login could report success while every scan
+            # went on failing with "Venue is not connected."
+            refresh_broker_session(orchestrator)
+
             # Attempt instant venue connection check
             try:
                 venue = orchestrator.registry.get_venue("kite_main")
@@ -2836,7 +2870,10 @@ def create_dashboard_api(
             mgr.set_secret("access_token", final_access_token, broker="zerodha")
             os.environ["ZERODHA_ACCESS_TOKEN"] = final_access_token
             update_env_file(".env", "ZERODHA_ACCESS_TOKEN", final_access_token)
-            
+            # ...and into the live session, or the running process keeps using
+            # the dead token it booted with.
+            refresh_broker_session(orchestrator)
+
             return jsonify({"success": True, "message": "Broker Connected"})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -3958,6 +3995,7 @@ def create_dashboard_api(
             final_access_token = session_data["access_token"]
             
             mgr.set_secret("access_token", final_access_token, broker="zerodha")
+            refresh_broker_session(orchestrator)
             return jsonify({"success": True, "message": "Access token updated successfully."})
         except Exception as e:
             return jsonify({"error": str(e)}), 500

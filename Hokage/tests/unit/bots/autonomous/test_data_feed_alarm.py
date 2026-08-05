@@ -36,7 +36,11 @@ def _stub(price_error: Exception | None = None, send_ok: bool = True) -> SimpleN
         _AUTH_ERROR_TAGS=AutonomousTradingBot._AUTH_ERROR_TAGS,
         _NETWORK_ERROR_TAGS=AutonomousTradingBot._NETWORK_ERROR_TAGS,
         _last_feed_alert_date=None,
+        _feed_outage_announced=False,
         _now_ist=lambda: datetime(2026, 7, 27, 12, 0, 0),
+        # Default to "recovery not possible" so the alerting tests below still
+        # exercise the alarm; the recovery tests override it explicitly.
+        _try_broker_reconnect=lambda: False,
     )
     # Bind the real classifier; tests that need the ambiguous path override it
     # so no test ever reaches out to Kite.
@@ -78,13 +82,41 @@ def test_wrapped_auth_failure_is_still_reported_as_a_login_problem():
 
 
 def test_feed_failure_with_valid_credentials_does_not_blame_the_token():
+    """Only reached once recovery has been tried and failed."""
     bot = _stub(price_error=Exception("Venue is not connected."))
     bot._diagnose_feed_failure = lambda reason: "unknown"
+    bot._try_broker_reconnect = lambda: False
     _PROBE(bot)
 
     body = bot.telegram_bot.send_message.call_args[0][0]
     assert "LOGIN NEEDED" not in body
     assert "not a token problem" in body
+
+
+def test_a_mid_session_login_heals_the_feed_silently():
+    """Live credentials + dead feed is the stale-client signature a mid-session
+    login produces. Reconnect and carry on — a feed that heals itself needs no
+    alarm, and must not burn the day's alert."""
+    bot = _stub(price_error=Exception("Venue is not connected."))
+    bot._diagnose_feed_failure = lambda reason: "unknown"
+    bot._try_broker_reconnect = lambda: True
+    _PROBE(bot)
+
+    bot.telegram_bot.send_message.assert_not_called()
+    assert bot._last_feed_alert_date is None
+
+
+def test_recovery_is_announced_only_if_the_outage_was():
+    """Telling the commander it is fixed is noise if he was never told it broke."""
+    bot = _stub(price_error=Exception("Venue is not connected."))
+    bot._diagnose_feed_failure = lambda reason: "unknown"
+    bot._try_broker_reconnect = lambda: True
+    bot._feed_outage_announced = True
+    _PROBE(bot)
+
+    body = bot.telegram_bot.send_message.call_args[0][0]
+    assert "CAN SEE AGAIN" in body
+    assert bot._feed_outage_announced is False
 
 
 def test_classifier_reads_plain_message_without_calling_kite():

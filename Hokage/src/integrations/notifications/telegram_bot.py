@@ -450,7 +450,25 @@ class TelegramBotUplink:
                             os.environ["ZERODHA_ACCESS_TOKEN"] = final_access_token
                             update_env_file(".env", "ZERODHA_ACCESS_TOKEN", final_access_token)
                             
-                            self.send_message("✅ *Access Granted*. Vault updated. Resuming autonomous trading operations.")
+                            # Push the new token into the RUNNING session. The
+                            # connection manager reads it once at boot, so
+                            # without this the vault is updated and Hokage
+                            # carries on blind on the dead token.
+                            refreshed = False
+                            handler = self.command_handler
+                            orch = getattr(handler, "orchestrator", None) if handler else None
+                            manager = getattr(orch, "kite_connection", None) if orch else None
+                            if manager is not None and hasattr(manager, "try_reconnect"):
+                                try:
+                                    refreshed = manager.try_reconnect()
+                                except Exception as exc:
+                                    logger.error(f"Broker session refresh failed after /token: {exc}")
+                            self.send_message(
+                                "✅ *Access Granted*. Vault updated. "
+                                + ("Live session refreshed — scanning has resumed."
+                                   if refreshed else
+                                   "Restart Hokage to pick up the new session.")
+                            )
                         except Exception as e:
                             # A request_token is single-use: if the browser
                             # already hit the dashboard callback, the token is
