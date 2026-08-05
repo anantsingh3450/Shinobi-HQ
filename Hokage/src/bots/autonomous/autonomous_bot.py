@@ -1217,17 +1217,12 @@ class AutonomousTradingBot:
         ema9 = _ema(closes[-30:], 9)
         ema21 = _ema(closes[-42:], 21)
 
-        # Session VWAP from the current day's candles (volume-weighted; falls
-        # back to None-safe simple mean when the venue reports no volume).
+        # Session bars are still needed for the "enough of TODAY's tape" floor
+        # below. VWAP is deliberately NOT computed: Kite reports volume 0 on NSE
+        # index spot, so it was never volume-weighted, and measurement showed
+        # the leg destroyed the signal's edge rather than filtering it.
         last_day = candles[-1].timestamp.date()
         session = [c for c in candles if c.timestamp.date() == last_day]
-        vol_sum = sum((c.volume or 0.0) for c in session)
-        if vol_sum > 0:
-            vwap = sum(((c.high + c.low + c.close) / 3.0) * (c.volume or 0.0) for c in session) / vol_sum
-        else:
-            vwap = sum(c.close for c in session) / len(session) if session else closes[-1]
-
-        price = closes[-1]
 
         # --- the tape must actually BE today's tape ------------------------
         # EMA21 on 15-minute bars needs 21 bars = 5.25 hours. At 09:46 only
@@ -1244,43 +1239,49 @@ class AutonomousTradingBot:
             )
             return "MIXED"
 
-        # --- the VWAP leg needs a MARGIN, not just a side ------------------
-        # `price > vwap` counted a 6.13-point edge on a 24,275 index (0.025%)
-        # as a bullish tape. That is one tick of noise deciding CE vs PE, and
-        # it flipped within the same 15-minute bar. Require real separation,
-        # scaled to how much this instrument actually moves: half the 14-bar
-        # ATR. An index sitting on its VWAP is precisely a market that has not
-        # chosen, which is what MIXED is for.
-        trs: list[float] = []
-        for prev, cur in zip(candles[-15:-1], candles[-14:]):
-            trs.append(max(
-                cur.high - cur.low,
-                abs(cur.high - prev.close),
-                abs(cur.low - prev.close),
-            ))
-        atr = (sum(trs) / len(trs)) if trs else 0.0
-        margin = self._BIAS_VWAP_ATR_FRACTION * atr
-        clear_above = (price - vwap) >= margin
-        clear_below = (vwap - price) >= margin
-
-        # An EMA9-slope "momentum still building" filter was written here on
-        # 2026-08-05 and REMOVED the same hour after measurement: across 622
-        # signals on NIFTY and BANKNIFTY (2026-06-01 to 2026-08-05) it changed
-        # directional accuracy from 47.7% to 47.8% and from 47.2% to 47.0%,
-        # filtering only ~5 signals in 300. EMA9 is above EMA21 precisely
-        # BECAUSE it has been rising, so the check is very nearly a tautology.
-        # It is not kept: complexity that buys nothing is a liability, and a
-        # gate that looks like a safeguard while doing nothing is worse.
+        # --- direction: PERSISTENCE + EMA structure (measured, not assumed) --
+        # Rebuilt 2026-08-05 from tools/research/signal_lab.py, which scores a
+        # candidate by mean forward move in ATR units and a t-statistic, on real
+        # candles. The old rule (EMA structure + price clear of VWAP) measured
+        # t = +1.34 / -0.10 / +0.37 / +0.19 across symbols and horizons: no edge
+        # at all, ~47% accuracy over 622 signals. Live it produced 24 trades,
+        # 33.3% wins, -15,490.
         #
-        # The measurement that matters is in that same run — see
-        # _OPTION_MIN_REWARD_RISK. This engine reads direction at roughly 47%,
-        # so the payoff geometry, not another filter, is what has to carry it.
-        bullish = ema9 > ema21 and clear_above
-        bearish = ema9 < ema21 and clear_below
+        # What actually measured, at the 60-minute horizon Hokage trades:
+        #   persistence + EMA, no VWAP : NIFTY 59.2% t=+2.23 | BANKNIFTY 54.4% t=+2.04
+        #   persistence alone          : NIFTY 57.8% t=+2.45 | BANKNIFTY 53.9% t=+2.37
+        #   old rule (with VWAP)       : NIFTY 49.6% t=+1.34 | BANKNIFTY 46.4% t=-0.10
+        #
+        # THE VWAP LEG WAS ACTIVELY HARMFUL. Gating persistence with it dropped
+        # t from 2.45 to 1.34 (NIFTY) and 2.37 to 1.43 (BANKNIFTY). The reason
+        # is a silent data defect: Kite reports volume 0 on NSE index spot, so
+        # "session VWAP" was never volume-weighted at all — it degraded to a
+        # plain mean of the day's closes, and the ATR margin I added on
+        # 2026-07-30 was tightening a comparison against a number that carries
+        # no information. It is removed rather than repaired.
+        #
+        # Three consecutive closes the same way is a weak-looking rule that
+        # measures well precisely because it describes what price is DOING
+        # rather than where it has BEEN.
+        closes_seq = closes[-4:]
+        if len(closes_seq) < 4:
+            return "MIXED"
+        steps = [closes_seq[i + 1] - closes_seq[i] for i in range(3)]
+        pushing_up = all(s > 0 for s in steps)
+        pushing_down = all(s < 0 for s in steps)
+
+        bullish = pushing_up and ema9 > ema21
+        bearish = pushing_down and ema9 < ema21
         if bullish:
             return "BULLISH"
         if bearish:
             return "BEARISH"
+        logger.info(
+            f"Bias engine: {symbol} MIXED — no 3-bar push in agreement with EMA structure "
+            f"(EMA9 {ema9:.2f} vs EMA21 {ema21:.2f})."
+        )
+        return "MIXED"
+
         logger.info(
             f"Bias engine: {symbol} MIXED — price {price:.2f} vs VWAP {vwap:.2f} "
             f"(need {margin:.2f} clear, ATR {atr:.2f}), EMA9 {ema9:.2f} vs EMA21 {ema21:.2f}."
@@ -2561,7 +2562,7 @@ class AutonomousTradingBot:
     #: 1.0 means "never risk more than you are trying to make". The tiers are
     #: premium-scaled (12% on a rich option, 40% on a cheap one) so the floor
     #: scales with them automatically and needs no second table.
-    _OPTION_MIN_REWARD_RISK = 1.0
+    _OPTION_MIN_REWARD_RISK = 1.5
 
     def _backstop_pct_for(self, entry_premium: float) -> float:
         """The hard-backstop fraction this position is actually risking."""

@@ -956,7 +956,13 @@ def test_monitor_exits_on_target_hit_seen_only_by_live_quote(mock_orchestrator):
     the book stayed at entry. With mark-to-market the TARGET_HIT rung fires."""
     from integrations.brokers.models import OrderSide
 
-    bot, mock_venue = _frozen_book_option_position(mock_orchestrator, live_premium=160.0)
+    # Premium raised 160 -> 190 on 2026-08-05. Entry is 124, which sits in the
+    # 28% backstop tier, so at the new 1.5:1 minimum reward:risk the target
+    # floor is +42% (176.08) rather than the old flat +25% cap (155). 160 used
+    # to clear the target and no longer does; the behaviour under test — a
+    # target crossed only in the LIVE quote while the book stays frozen at
+    # entry — is unchanged.
+    bot, mock_venue = _frozen_book_option_position(mock_orchestrator, live_premium=190.0)
     # TARGET_HIT computes from the underlying ATR recorded at entry.
     bot._active_positions_tracking["NIFTY2672124150CE"].update({
         "entry_underlying_price": 24150.0,
@@ -966,7 +972,7 @@ def test_monitor_exits_on_target_hit_seen_only_by_live_quote(mock_orchestrator):
     # otherwise the thesis stop reads "NIFTY at 160" and fires first.
     def _quote_for(symbol):
         q = MagicMock()
-        q.price = 160.0 if symbol.endswith(("CE", "PE")) else 24155.0
+        q.price = 190.0 if symbol.endswith(("CE", "PE")) else 24155.0
         q.provider = "test-live-feed"
         q.quoted_at = datetime.now(timezone.utc)
         return q

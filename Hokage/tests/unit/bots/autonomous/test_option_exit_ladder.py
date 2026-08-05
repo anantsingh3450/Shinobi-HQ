@@ -93,13 +93,18 @@ def test_target_hit_adaptive_and_clamped(bot):
         "entry_underlying_atr": 40.0,
     }
     bot._get_validated_live_price = MagicMock(return_value=(24310.0, "live"))
-    # Max clamp is +25%: premium at 250 (=+25%) must always trigger.
-    hit, reason, out = _run(bot, entry=200.0, current=250.1, tracking=dict(tracking))
+    # Rewritten 2026-08-05. The target floor is no longer a flat +6% with a
+    # +25% ceiling; it is the position's OWN backstop times the minimum
+    # reward:risk. Entry 200 sits in the 20% backstop tier, so at 1.5:1 the
+    # floor is +30% (260.0) and the ceiling is +60%. The old numbers asserted a
+    # target Hokage must no longer take: banking +25% while risking 20% needs a
+    # 44% hit rate, and the measured directional read is ~47%.
+    hit, reason, out = _run(bot, entry=200.0, current=320.1, tracking=dict(tracking))
     assert hit and "TARGET_HIT" in reason
-    # Premium below the minimum +6% target can never trigger a target exit.
+    # Premium below the floor can never trigger a target exit.
     hit, reason, out = _run(bot, entry=200.0, current=205.0, tracking=dict(tracking))
     assert not hit
-    assert out["target_price"] >= 212.0  # >= entry * 1.06
+    assert out["target_price"] >= 260.0  # entry * (1 + 0.20 * 1.5)
 
 
 def test_trail_lock_gives_back_at_most_1000_rupees(bot):
