@@ -20,7 +20,11 @@ The `Orchestrator` coordinates the lifecycle, while the `Persistence` layer (SQL
 - `src/integrations/`: Brokers (Kite), Data providers, LLM (Gemini), and Telegram wrappers.
 - `src/shared/`: SQLite database (`sqlite_engine.py`), watchdog, and statistics.
 
-**Boot Path:** The app is typically launched via `Launch Hokage.bat`, which invokes the main entry point (often `src/hokage/orchestrator/pipeline.py` or a top-level runner). The orchestrator spins up the event bus, initializes subsystems (Autonomous Bot, Telegram, Dashboard), and `autonomous_bot.start()` begins the scanning/trading loop.
+**Boot Path:** The app is launched via `Start-Hokage.ps1` (the desktop `Hokage.lnk` shortcut points at it), which runs `start.py`. The orchestrator spins up the event bus, initializes subsystems (Autonomous Bot, Telegram, Dashboard), and `autonomous_bot.start()` begins the scanning/trading loop.
+
+The launcher is not a convenience wrapper — it enforces an ordering the system depends on. `KiteConnectionManager` reads the Zerodha access token exactly once, inside `connect()`. If Hokage boots with an expired token, `connect()` fails, the client is left null, and every later call raises `"Venue is not connected."` for the life of the process; logging in afterwards updates the `.env` and the vault but NOT the running process, so Hokage stays blind while reporting healthy. `Start-Hokage.ps1` therefore detects an expired session, waits for the login to land, and only then restarts. It also guarantees a single instance (two would trade the same paper account) and pins the correct 3.14 interpreter.
+
+The old `Launch Hokage.bat` was deleted on 2026-08-05: it called bare `python` (resolving to a 3.13 install without Hokage's dependencies) and would start a second instance on top of a running one.
 
 ## 3. EXECUTION MODES & CONFIG
 - **Execution Modes:** `PAPER` (default for now), `LIVE` (real Kite execution), `READ_ONLY` (scan without placing orders), `HYBRID`. Mode is selected via `HOKAGE_TEST_MODE` or explicit config passed to the orchestrator/venues.
