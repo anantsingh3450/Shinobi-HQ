@@ -216,10 +216,25 @@ class TelegramBotUplink:
         )
         self.send_message(msg)
 
-    def notify_entry(self, symbol: str, cmp: float, target: float, edge: float) -> None:
-        """Send a real-time entry notification."""
+    def notify_entry(
+        self,
+        symbol: str,
+        cmp: float,
+        target: float,
+        edge: float,
+        strategy: str | None = None,
+    ) -> None:
+        """Send a real-time entry notification.
+
+        `strategy` names which arena competitor won this asset. Four strategies
+        share one account, so without it an alert says a trade happened but not
+        who made it — and the whole point of the tournament is knowing which
+        one to promote. Optional so older//manual call sites keep working.
+        """
+        who = f"• *Strategy*: {self.escape_markdown(strategy)}\n" if strategy else ""
         msg = (
             f"🚀 *ENTERING POSITION: {self.escape_markdown(symbol)}*\n"
+            f"{who}"
             f"• *CMP*: {cmp:.2f}\n"
             f"• *Target*: {target:.2f}\n"
             f"• *ML Edge Score*: {edge:.1f}%\n\n"
@@ -227,11 +242,26 @@ class TelegramBotUplink:
         )
         self.send_message(msg)
 
-    def notify_exit(self, symbol: str, price: float, reason: str) -> None:
-        """Send a real-time exit notification."""
+    def notify_exit(
+        self,
+        symbol: str,
+        price: float,
+        reason: str,
+        strategy: str | None = None,
+        pnl: float | None = None,
+    ) -> None:
+        """Send a real-time exit notification.
+
+        Carries the same strategy attribution as the entry, so a closed trade
+        can be read back to its author without opening the dashboard.
+        """
+        who = f"• *Strategy*: {self.escape_markdown(strategy)}\n" if strategy else ""
+        money = f"• *P&L*: Rs {pnl:+,.2f}\n" if pnl is not None else ""
         msg = (
             f"🛑 *EXITING POSITION: {self.escape_markdown(symbol)}*\n"
+            f"{who}"
             f"• *Exit Price*: {price:.2f}\n"
+            f"{money}"
             f"• *Reason*: {self.escape_markdown(reason)}\n\n"
             "Position closed. Logging autopsy for pattern analysis."
         )

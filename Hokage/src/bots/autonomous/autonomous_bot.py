@@ -393,6 +393,33 @@ class AutonomousTradingBot:
             deployed[strat_id] = deployed.get(strat_id, 0.0) + cost
         return deployed
 
+    def _strategy_display_name(self, strategy_id: str | None) -> str | None:
+        """Human name for a strategy id, e.g. 'TrendPullback'.
+
+        Four strategies share one account, so an alert that says a trade
+        happened without saying WHO made it hides the only thing the tournament
+        exists to measure. Looks in both leagues; falls back to the raw id
+        rather than inventing a name, and returns None when there is nothing to
+        attribute (manual commander trades carry their own label).
+        """
+        if not strategy_id:
+            return None
+        for manager in (
+            getattr(self, "strategy_portfolio", None),
+            getattr(self, "mcx_strategy_portfolio", None),
+        ):
+            if manager is None:
+                continue
+            try:
+                strat = manager.portfolio.get("strategies", {}).get(strategy_id)
+            except Exception:
+                continue
+            if strat and strat.get("name"):
+                return str(strat["name"])
+        if strategy_id.startswith("COMMANDER_MANUAL"):
+            return "Commander (manual)"
+        return strategy_id
+
     def _portfolio_manager_for_strategy(self, strategy_id: str):
         """Route a strategy_id to its OWNING league (index Dojo vs MCX Arena).
 
@@ -2036,6 +2063,8 @@ class AutonomousTradingBot:
                 self.telegram_bot.notify_entry(
                     symbol=tracked_symbol, cmp=tracked_entry_price,
                     target=self._active_positions_tracking[tracked_symbol]["target_price"], edge=100.0,
+                    strategy=self._strategy_display_name(
+                        self._active_positions_tracking[tracked_symbol].get("strategy_id")),
                 )
             except Exception:
                 pass
@@ -2731,7 +2760,11 @@ class AutonomousTradingBot:
                     # post-exit analysis block).
                     if self.telegram_bot and self.telegram_bot.enabled:
                         try:
-                            self.telegram_bot.notify_exit(symbol, price=current_price, reason=exit_reason)
+                            self.telegram_bot.notify_exit(
+                                symbol, price=current_price, reason=exit_reason,
+                                strategy=self._strategy_display_name(tracking.get("strategy_id")),
+                                pnl=live_pnl,
+                            )
                         except Exception as exc:
                             logger.error(f"Failed to send exit notification for {symbol}: {exc}")
 
@@ -3447,6 +3480,8 @@ class AutonomousTradingBot:
                         symbol=tracked_symbol, cmp=tracked_entry_price,
                         target=self._active_positions_tracking[tracked_symbol]["target_price"],
                         edge=win_conf,
+                        strategy=self._strategy_display_name(
+                            self._active_positions_tracking[tracked_symbol].get("strategy_id")),
                     )
                 except Exception:
                     pass
@@ -4710,7 +4745,9 @@ class AutonomousTradingBot:
                         symbol=tracked_symbol,
                         cmp=tracked_entry_price,
                         target=self._active_positions_tracking[tracked_symbol]["target_price"],
-                        edge=float(committee_decision.decision_confidence)
+                        edge=float(committee_decision.decision_confidence),
+                        strategy=self._strategy_display_name(
+                            self._active_positions_tracking[tracked_symbol].get("strategy_id")),
                     )
 
                 eval_results[symbol] = {
