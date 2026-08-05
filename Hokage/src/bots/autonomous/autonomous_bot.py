@@ -1263,6 +1263,18 @@ class AutonomousTradingBot:
         clear_above = (price - vwap) >= margin
         clear_below = (vwap - price) >= margin
 
+        # An EMA9-slope "momentum still building" filter was written here on
+        # 2026-08-05 and REMOVED the same hour after measurement: across 622
+        # signals on NIFTY and BANKNIFTY (2026-06-01 to 2026-08-05) it changed
+        # directional accuracy from 47.7% to 47.8% and from 47.2% to 47.0%,
+        # filtering only ~5 signals in 300. EMA9 is above EMA21 precisely
+        # BECAUSE it has been rising, so the check is very nearly a tautology.
+        # It is not kept: complexity that buys nothing is a liability, and a
+        # gate that looks like a safeguard while doing nothing is worse.
+        #
+        # The measurement that matters is in that same run — see
+        # _OPTION_MIN_REWARD_RISK. This engine reads direction at roughly 47%,
+        # so the payoff geometry, not another filter, is what has to carry it.
         bullish = ema9 > ema21 and clear_above
         bearish = ema9 < ema21 and clear_below
         if bullish:
@@ -1529,6 +1541,14 @@ class AutonomousTradingBot:
     _NETWORK_ERROR_TAGS = (
         "getaddrinfo", "resolve", "timed out", "timeout", "unreachable",
         "max retries", "connection refused", "connection aborted", "connection reset",
+        # Zerodha's own servers failing is THEIR outage, not a dead token.
+        # On 2026-08-05 17:51 Kite returned a 502 Bad Gateway; none of the tags
+        # above matched, the fallback below blamed auth, and the commander was
+        # told to log in while his session was perfectly valid. Sending him to
+        # a login page during a broker outage is the exact misdirection this
+        # classifier exists to prevent.
+        "502", "503", "504", "bad gateway", "service unavailable", "gateway time",
+        "text/html",  # an HTML body from a JSON API is a proxy/error page
     )
 
     def _diagnose_feed_failure(self, reason: str) -> str:
@@ -1561,7 +1581,12 @@ class AutonomousTradingBot:
             probe = str(exc).lower()
             if any(tag in probe for tag in self._NETWORK_ERROR_TAGS):
                 return "network"
-            return "auth"
+            if any(tag in probe for tag in self._AUTH_ERROR_TAGS):
+                return "auth"
+            # Do NOT default to blaming the token. An unrecognised failure is
+            # unknown, and saying so beats sending the commander to re-login
+            # for something a login cannot fix.
+            return "unknown"
 
     #: Don't hammer Kite's auth endpoint while an outage persists. One attempt
     #: a minute recovers a mid-session login well inside a single scan cycle.

@@ -137,7 +137,13 @@ class RangeFadeEntry:
     COUNTER_TREND = True
 
     WINDOW_START_MIN = 30    # 09:30
-    WINDOW_END_MIN = 450     # 16:30 — before the evening wake-up
+    #: Extended 16:30 -> 17:00 on 2026-08-05. Retiring SessionShift (17:00-19:30)
+    #: and EventRider (17:00-18:30) in the consolidation left NOTHING awake
+    #: between 16:30 and 18:00 — and 17:00 onward is exactly when MCX wakes up
+    #: on the US overlap. The commander found Hokage idle at 17:58. RangeFade now
+    #: hands straight over to TrendRider at 17:00: quiet hours fade, active hours
+    #: trend, no gap and no overlap.
+    WINDOW_END_MIN = 480     # 17:00 — hands over to TrendRider
     STRETCH_PCT = 0.30
     MAX_TREND_GAP_PCT = 0.12
 
@@ -186,7 +192,8 @@ class TrendRiderEntry:
 
     module_id = "entry-trendrider-mcx-v1"
 
-    WINDOW_START_MIN = 540   # 18:00 — trend has had time to establish
+    #: Pulled 18:00 -> 17:00 to take RangeFade's handoff (see its WINDOW_END_MIN).
+    WINDOW_START_MIN = 480   # 17:00 — trend has had time to establish
     WINDOW_END_MIN = 810     # 22:30 — Hokage's own MCX last-entry cutoff
     MIN_GAP_PCT = 0.08
     ROC_BARS = 6

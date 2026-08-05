@@ -154,3 +154,22 @@ def test_healthy_feed_is_silent_and_rearms_the_alarm():
     bot.telegram_bot.send_message.assert_not_called()
     # Latch cleared, so an outage later the same day still gets announced.
     assert bot._last_feed_alert_date is None
+
+
+def test_a_broker_outage_is_never_reported_as_a_login_problem():
+    """2026-08-05 17:51: Kite returned 502 Bad Gateway. No tag matched, the
+    fallback blamed auth, and the commander was told to log in while his
+    session was perfectly valid. Sending him to a login page during Zerodha's
+    own outage is the exact misdirection this classifier exists to prevent."""
+    bot = _stub()
+    err = ("Unknown Content-Type (text/html) with response: "
+           "(b'<html><head><title>502 Bad Gateway</title></head></html>')")
+    assert AutonomousTradingBot._diagnose_feed_failure(bot, err) == "network"
+
+
+def test_gateway_errors_all_read_as_network_not_auth():
+    """5xx and HTML error pages are the broker's side, never the token's."""
+    bot = _stub()
+    for err in ("503 Service Unavailable", "504 Gateway Time-out",
+                "Unknown Content-Type (text/html)"):
+        assert AutonomousTradingBot._diagnose_feed_failure(bot, err) == "network", err
