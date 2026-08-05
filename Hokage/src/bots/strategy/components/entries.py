@@ -122,6 +122,17 @@ class MeanReversionEntry:
 
     module_id = "entry-meanreversion-v1"
 
+    #: This strategy bets AGAINST the prevailing move by design, so the entry
+    #: conduct gate's trend-alignment check must not be applied to it. That gate
+    #: only permits longs on a BULLISH tape and shorts on a BEARISH one, and a
+    #: fade fires precisely when price is stretched from VWAP — the condition
+    #: that makes the tape read directional. Measured over six weeks of real
+    #: NIFTY and BANKNIFTY bars: 16 valid signals, 0 allowed through. A trend
+    #: filter in front of a counter-trend strategy refuses it 100% of the time.
+    #: Safe to exempt because MAX_TREND_GAP_PCT below is this module's OWN,
+    #: correctly-oriented trend guard: it refuses to fade a trending tape.
+    COUNTER_TREND = True
+
     #: Stretch from VWAP (in %) that counts as an overreaction worth fading.
     STRETCH_PCT = 0.35
     #: Above this EMA gap the tape is trending — do not fade it.

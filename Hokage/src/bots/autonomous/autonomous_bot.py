@@ -393,6 +393,19 @@ class AutonomousTradingBot:
             deployed[strat_id] = deployed.get(strat_id, 0.0) + cost
         return deployed
 
+    def _is_counter_trend_strategy(self, strategy_id: str | None) -> bool:
+        """True when this strategy's entry module bets AGAINST the prevailing
+        move, and must therefore skip the trend-alignment gate."""
+        if not strategy_id:
+            return False
+        try:
+            from bots.strategy.components.entries import ENTRY_MODULES
+            from bots.strategy.components.mcx_entries import MCX_ENTRY_MODULES
+        except Exception:
+            return False
+        module = ENTRY_MODULES.get(strategy_id) or MCX_ENTRY_MODULES.get(strategy_id)
+        return bool(getattr(module, "COUNTER_TREND", False))
+
     def _strategy_display_name(self, strategy_id: str | None) -> str | None:
         """Human name for a strategy id, e.g. 'TrendPullback'.
 
@@ -997,11 +1010,22 @@ class AutonomousTradingBot:
     _VIX_PERCENTILE_BLOCK = 0.80
     _VIX_LOOKBACK_DAYS = 60
 
-    def _entry_conduct_gate(self, symbol: str, direction: str) -> tuple[bool, str]:
+    def _entry_conduct_gate(
+        self, symbol: str, direction: str, counter_trend: bool = False
+    ) -> tuple[bool, str]:
         """Time-of-day windows, underlying bias alignment, IV premium guard.
 
         Each check runs only when its data exists — a missing feed skips that
         check (logged), it never fabricates a value. Returns (allowed, reason).
+
+        `counter_trend` skips ONLY the bias-alignment check, for strategies
+        whose thesis is to bet against the prevailing move. That check permits
+        longs on a BULLISH tape and shorts on a BEARISH one, so a fade — which
+        fires exactly when price is stretched from VWAP — can never satisfy it.
+        Measured over six weeks of real NIFTY/BANKNIFTY bars: MeanReversion
+        produced 16 valid signals and the gate allowed 0. RangeFade had the same
+        disease and had also never traded. Every other gate still applies: time
+        windows, IV premium, volume, correlation cluster and the chest cap.
         """
         symbol_upper = symbol.upper()
         is_mcx = symbol_upper.replace("_", "").startswith(("CRUDEOIL", "GOLD", "SILVER", "NATURALGAS"))
@@ -1020,15 +1044,22 @@ class AutonomousTradingBot:
                 return False, "Late-session cutoff (15:00 IST): no new entries into the close."
 
         # 2. Bias alignment on the underlying: longs only with a bullish tape,
-        # shorts only with a bearish tape, stand aside when mixed.
-        bias = self._compute_underlying_bias(symbol)
+        # shorts only with a bearish tape, stand aside when mixed. Skipped for
+        # counter-trend strategies, which carry their own (inverted) trend guard
+        # and would otherwise be refused every single time.
+        bias = None if counter_trend else self._compute_underlying_bias(symbol)
+        if counter_trend:
+            logger.info(
+                f"Bias alignment skipped for {symbol}: counter-trend entry judged by its "
+                f"own trend guard."
+            )
         if bias == "MIXED":
             return False, "Bias engine: underlying tape is MIXED — standing aside."
         if bias == "BULLISH" and direction != "long":
             return False, "Bias engine: bearish entry against a BULLISH tape."
         if bias == "BEARISH" and direction != "short":
             return False, "Bias engine: bullish entry against a BEARISH tape."
-        if bias is None:
+        if bias is None and not counter_trend:
             logger.info(f"Bias engine: no intraday data for {symbol}; bias check skipped.")
 
         # 3. IV premium guard: we BUY options; block when India VIX sits in the
@@ -2459,16 +2490,60 @@ class AutonomousTradingBot:
     #: routinely): a +20% winner may retrace to +2% — but never to a loss;
     #: bigger winners keep progressively more of their peak.
     _OPTION_PROFIT_LOCK_STAGES = (
+        (0.15, 0.08),  # peak +15%: floor = entry +1.2% -> closes the dead zone
         (0.20, 0.10),  # peak +20%: floor = entry +2% -> a winner cannot become a loser
         (0.40, 0.50),  # peak +40%: keep at least half the peak gain
         (0.80, 0.65),  # peak +80%: keep close to two-thirds of a runner
     )
+    #: The +15% stage was added 2026-08-05 alongside the reward:risk fix, and is
+    #: REQUIRED by it. Tying the target floor to the backstop moved targets out
+    #: to 12-40%, which opened a dead zone: a trade could peak at +10-15% with no
+    #: target to hit and no lock armed, then round-trip all the way to the stop.
+    #: Shipping the target change without this would have made Hokage strictly
+    #: worse, not better.
+    #:
+    #: Checked against the trade that started this. On 2026-08-05 the NIFTY put
+    #: peaked at +10.0% (143.35 from 130.30) and collapsed to -34% by 15:25. The
+    #: old flat +6.5% target banked +620 — but it caught that spike by luck, not
+    #: by edge, and the same geometry lost 1,301 on SENSEX the same afternoon.
+    #: Note honestly: +10.0% still sits UNDER this new +15% arm, so this stage
+    #: would NOT have saved that particular trade. Arming any lower means
+    #: exiting on noise — the premium oscillation band is 10-15% by measurement.
+    #: The case for the change is expectancy across many trades, not this one.
     #: Adaptive target: fraction of the expected remaining underlying move,
     #: through an assumed ATM delta, clamped to a % band of entry premium.
     _OPTION_TARGET_MOVE_FRACTION = 0.30
     _OPTION_TARGET_ATM_DELTA = 0.45
-    _OPTION_TARGET_MIN_PCT = 0.06
-    _OPTION_TARGET_MAX_PCT = 0.25
+    _OPTION_TARGET_MAX_PCT = 0.60
+
+    #: The target floor is NOT a fixed percentage — it is this multiple of the
+    #: position's OWN hard backstop, so reward is never smaller than the risk
+    #: being taken (commander-approved 2026-08-05).
+    #:
+    #: It used to be a flat 6% while the backstop ranged 12-40%, which is a
+    #: reward:risk of 0.33:1 on a cheap option. Hokage had to be right THREE
+    #: TIMES IN FOUR merely to break even. Measured on 2026-08-05: the NIFTY put
+    #: banked +6.5% at TARGET_HIT while the SENSEX put ran to the -12% backstop
+    #: — a 50% hit rate that still lost money, which is what that geometry
+    #: guarantees over time.
+    #:
+    #: Worse, `expected_move` scales with sqrt(bars_left), so the target SHRANK
+    #: as the session wore on while the stop stayed full size: the 14:15 entry
+    #: had 65 minutes left and collapsed straight onto the old floor. Tying the
+    #: floor to the backstop removes that decay, because the floor no longer
+    #: depends on how much day is left.
+    #:
+    #: 1.0 means "never risk more than you are trying to make". The tiers are
+    #: premium-scaled (12% on a rich option, 40% on a cheap one) so the floor
+    #: scales with them automatically and needs no second table.
+    _OPTION_MIN_REWARD_RISK = 1.0
+
+    def _backstop_pct_for(self, entry_premium: float) -> float:
+        """The hard-backstop fraction this position is actually risking."""
+        for tier_floor, max_loss_pct in self._OPTION_BACKSTOP_TIERS:
+            if entry_premium >= tier_floor:
+                return max_loss_pct
+        return self._OPTION_BACKSTOP_TIERS[-1][1]
 
     @staticmethod
     def _excursion_pcts(
@@ -2561,9 +2636,12 @@ class AutonomousTradingBot:
             raw_target = entry_premium + (
                 self._OPTION_TARGET_MOVE_FRACTION * self._OPTION_TARGET_ATM_DELTA * expected_move
             )
+            # Floor the target at the risk this position is actually taking, so
+            # a win is never structurally smaller than a loss.
+            min_pct = self._backstop_pct_for(entry_premium) * self._OPTION_MIN_REWARD_RISK
             target = min(
-                max(raw_target, entry_premium * (1.0 + self._OPTION_TARGET_MIN_PCT)),
-                entry_premium * (1.0 + self._OPTION_TARGET_MAX_PCT),
+                max(raw_target, entry_premium * (1.0 + min_pct)),
+                entry_premium * (1.0 + max(self._OPTION_TARGET_MAX_PCT, min_pct)),
             )
             tracking["target_price"] = round(target, 2)
             if current_premium >= target:
@@ -3366,7 +3444,10 @@ class AutonomousTradingBot:
             # Entry conduct gate (bias alignment + IV premium guard) is
             # universe-agnostic and already MCX-aware for its NSE-only time
             # windows (skipped for MCX symbols there) — reused as-is.
-            conduct_ok, conduct_reason = self._entry_conduct_gate(symbol, direction)
+            conduct_ok, conduct_reason = self._entry_conduct_gate(
+                symbol, direction,
+                counter_trend=self._is_counter_trend_strategy(selected_strat.get("strategy_id")),
+            )
             if not conduct_ok:
                 logger.info(f"MCX Arena entry blocked for {symbol}: {conduct_reason}")
                 continue
@@ -4480,7 +4561,10 @@ class AutonomousTradingBot:
 
                 # Entry conduct gates (measured-evidence rules): time-of-day
                 # windows, underlying bias alignment, and the IV premium guard.
-                conduct_ok, conduct_reason = self._entry_conduct_gate(symbol, original_entry)
+                conduct_ok, conduct_reason = self._entry_conduct_gate(
+                    symbol, original_entry,
+                    counter_trend=self._is_counter_trend_strategy(selected_strat.get("strategy_id")),
+                )
                 if not conduct_ok:
                     logger.info(f"Entry blocked for {symbol}: {conduct_reason}")
                     eval_results[symbol] = {

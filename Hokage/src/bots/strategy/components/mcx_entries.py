@@ -132,6 +132,10 @@ class RangeFadeEntry:
 
     module_id = "entry-rangefade-mcx-v1"
 
+    #: Counter-trend by design — see MeanReversionEntry.COUNTER_TREND. RangeFade
+    #: had also never traded, for exactly the same reason.
+    COUNTER_TREND = True
+
     WINDOW_START_MIN = 30    # 09:30
     WINDOW_END_MIN = 450     # 16:30 — before the evening wake-up
     STRETCH_PCT = 0.30
