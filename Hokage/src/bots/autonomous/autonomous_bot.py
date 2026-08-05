@@ -1182,6 +1182,19 @@ class AutonomousTradingBot:
     #: How far price must sit clear of session VWAP, as a fraction of ATR(14),
     #: before that counts as a direction rather than noise.
     _BIAS_VWAP_ATR_FRACTION = 0.5
+    #: Which directional rule each asset gets. Chosen by measurement, not by
+    #: taste — see signal_lab. Anything unlisted falls back to "persistence",
+    #: the rule that measured best on the indices.
+    _BIAS_RULE_BY_SYMBOL = {
+        "CRUDEOIL": "mean_reversion",   # t=+3.90 (60m), +5.14 (120m)
+        "GOLDM": "trend_pullback",      # t=+2.43 (120m)
+        "SILVERM": "trend_pullback",    # t=+3.02 (60m)
+    }
+    #: How far from VWAP (in ATR) counts as a stretch worth fading.
+    _BIAS_REVERSION_ATR = 1.5
+    #: How close to VWAP (in ATR) a trend entry must be to count as a pullback
+    #: rather than a chase.
+    _BIAS_PULLBACK_ATR = 0.5
 
     def _compute_underlying_bias(self, symbol: str) -> str | None:
         """Classify the underlying tape as BULLISH / BEARISH / MIXED from real
@@ -1217,12 +1230,29 @@ class AutonomousTradingBot:
         ema9 = _ema(closes[-30:], 9)
         ema21 = _ema(closes[-42:], 21)
 
-        # Session bars are still needed for the "enough of TODAY's tape" floor
-        # below. VWAP is deliberately NOT computed: Kite reports volume 0 on NSE
-        # index spot, so it was never volume-weighted, and measurement showed
-        # the leg destroyed the signal's edge rather than filtering it.
         last_day = candles[-1].timestamp.date()
         session = [c for c in candles if c.timestamp.date() == last_day]
+        price = closes[-1]
+
+        # Session VWAP. Genuinely volume-weighted on MCX futures, which carry
+        # real traded volume — and the MCX rules below lean on it heavily
+        # (vwap_reversion measured t=+5.14 on CRUDEOIL). On NSE index SPOT the
+        # feed reports volume 0, so this degrades to a plain mean of closes and
+        # carries no information; that is exactly why the index rule below is
+        # the one branch that never touches it.
+        vol_sum = sum((c.volume or 0.0) for c in session)
+        if vol_sum > 0:
+            vwap = sum(((c.high + c.low + c.close) / 3.0) * (c.volume or 0.0)
+                       for c in session) / vol_sum
+        else:
+            vwap = sum(c.close for c in session) / len(session) if session else price
+
+        trs: list[float] = []
+        for prev, cur in zip(candles[-15:-1], candles[-14:]):
+            trs.append(max(cur.high - cur.low,
+                           abs(cur.high - prev.close),
+                           abs(cur.low - prev.close)))
+        atr = (sum(trs) / len(trs)) if trs else 0.0
 
         # --- the tape must actually BE today's tape ------------------------
         # EMA21 on 15-minute bars needs 21 bars = 5.25 hours. At 09:46 only
@@ -1263,18 +1293,64 @@ class AutonomousTradingBot:
         # Three consecutive closes the same way is a weak-looking rule that
         # measures well precisely because it describes what price is DOING
         # rather than where it has BEEN.
+        # --- ONE RULE PER ASSET, because one rule does not fit ---------------
+        # Measured 2026-08-05 on real candles (signal_lab, 3 horizons):
+        #
+        #   NIFTY/BANKNIFTY  persistence+EMA  t=+2.23/+2.04   trend_pullback NEGATIVE
+        #   CRUDEOIL         vwap_reversion   t=+3.90/+5.14   persistence    t=-3.27
+        #   GOLDM            trend_pullback   t=+2.43         vwap_reversion NEGATIVE
+        #   SILVERM          trend_pullback   t=+3.02         persistence    noise
+        #
+        # Indices TREND and crude MEAN-REVERTS, and the same rule applied to both
+        # is reliably WRONG on one of them. Hokage ran a single trend-following
+        # bias over every asset, which is why 2026-08-05 lost 13,982 with six of
+        # seven MCX trades red: it was trend-following a mean-reverting market.
+        #
+        # Note VWAP works here and did not on the indices — MCX futures carry
+        # real traded volume while NSE index spot reports zero. Same code, real
+        # input, opposite verdict; the concept was never the problem.
+        rule = self._BIAS_RULE_BY_SYMBOL.get(symbol.upper(), "persistence")
+
+        if rule == "mean_reversion":
+            # Fade a stretch from a REAL volume-weighted VWAP.
+            if not atr:
+                return "MIXED"
+            stretch = (price - vwap) / atr
+            if stretch >= self._BIAS_REVERSION_ATR:
+                return "BEARISH"
+            if stretch <= -self._BIAS_REVERSION_ATR:
+                return "BULLISH"
+            logger.info(
+                f"Bias engine: {symbol} MIXED — only {stretch:+.2f} ATR from VWAP "
+                f"(fade needs {self._BIAS_REVERSION_ATR:.1f})."
+            )
+            return "MIXED"
+
+        if rule == "trend_pullback":
+            # Trend direction, entered while price sits NEAR VWAP rather than
+            # extended away from it — buying the pullback, not the spike.
+            if not atr:
+                return "MIXED"
+            dist = abs(price - vwap) / atr
+            if dist <= self._BIAS_PULLBACK_ATR:
+                if ema9 > ema21:
+                    return "BULLISH"
+                if ema9 < ema21:
+                    return "BEARISH"
+            logger.info(
+                f"Bias engine: {symbol} MIXED — {dist:.2f} ATR from VWAP, too extended "
+                f"to join the trend (needs <= {self._BIAS_PULLBACK_ATR:.1f})."
+            )
+            return "MIXED"
+
+        # Default: persistence + EMA structure (measured best on the indices).
         closes_seq = closes[-4:]
         if len(closes_seq) < 4:
             return "MIXED"
         steps = [closes_seq[i + 1] - closes_seq[i] for i in range(3)]
-        pushing_up = all(s > 0 for s in steps)
-        pushing_down = all(s < 0 for s in steps)
-
-        bullish = pushing_up and ema9 > ema21
-        bearish = pushing_down and ema9 < ema21
-        if bullish:
+        if all(s > 0 for s in steps) and ema9 > ema21:
             return "BULLISH"
-        if bearish:
+        if all(s < 0 for s in steps) and ema9 < ema21:
             return "BEARISH"
         logger.info(
             f"Bias engine: {symbol} MIXED — no 3-bar push in agreement with EMA structure "
@@ -3490,14 +3566,24 @@ class AutonomousTradingBot:
             # Correlation cap: ENERGY (crude/natgas) and PRECIOUS (gold/silver
             # minis) are separate families with independent drivers — same
             # discipline as the index family cap, applied to the right family.
+            # Caps are set from MEASURED correlation of hourly returns
+            # (2026-06-01 to 2026-08-05, 711 aligned bars), not from how the
+            # commodities are grouped in a catalogue:
+            #     GOLDM vs SILVERM    +0.87   -> effectively ONE instrument
+            #     CRUDEOIL vs NATGAS  +0.20   -> barely related
+            #     metals vs crude     -0.26   -> mildly OPPOSED
+            # So PRECIOUS is capped at 1: on 2026-08-05 Hokage held GOLDM and
+            # SILVERM calls simultaneously and they lost -4,325 and -2,917 in
+            # the same 24 minutes, which is one bet paid for twice. ENERGY keeps
+            # 2 because 0.20 is genuine diversification.
             if symbol in MCX_FAMILY_ENERGY:
-                family, label = MCX_FAMILY_ENERGY, "ENERGY"
+                family, label, cap = MCX_FAMILY_ENERGY, "ENERGY", 2
             elif symbol in MCX_FAMILY_PRECIOUS:
-                family, label = MCX_FAMILY_PRECIOUS, "PRECIOUS"
+                family, label, cap = MCX_FAMILY_PRECIOUS, "PRECIOUS(corr 0.87)", 1
             else:
-                family, label = set(), "unclassified"
+                family, label, cap = set(), "unclassified", 2
             cluster_ok, cluster_reason = self._entry_cluster_gate(
-                symbol, direction, entry_price, family=family, max_same_direction=2, family_label=label,
+                symbol, direction, entry_price, family=family, max_same_direction=cap, family_label=label,
             )
             if not cluster_ok:
                 logger.info(f"MCX Arena entry blocked for {symbol}: {cluster_reason}")

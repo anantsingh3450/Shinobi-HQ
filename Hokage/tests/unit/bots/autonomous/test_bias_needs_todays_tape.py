@@ -40,6 +40,9 @@ def _bot(candles):
         orchestrator=SimpleNamespace(price_source=price_source),
         _BIAS_MIN_SESSION_BARS=AutonomousTradingBot._BIAS_MIN_SESSION_BARS,
         _BIAS_VWAP_ATR_FRACTION=AutonomousTradingBot._BIAS_VWAP_ATR_FRACTION,
+        _BIAS_RULE_BY_SYMBOL=AutonomousTradingBot._BIAS_RULE_BY_SYMBOL,
+        _BIAS_REVERSION_ATR=AutonomousTradingBot._BIAS_REVERSION_ATR,
+        _BIAS_PULLBACK_ATR=AutonomousTradingBot._BIAS_PULLBACK_ATR,
     )
     return bot
 
@@ -83,13 +86,15 @@ def test_the_floor_is_six_bars_ninety_minutes():
     assert _BIAS(below, "NIFTY") == "MIXED"
 
 
-def test_price_sitting_on_vwap_is_not_a_direction():
-    """A market on its VWAP has not chosen; that is what MIXED is for."""
+def test_index_rule_ignores_vwap_entirely():
+    """Rewritten 2026-08-05. These two tests pinned the VWAP-margin leg of the
+    index bias. That leg is gone: NSE index spot reports volume 0, so its "VWAP"
+    was a plain mean of closes, and measurement showed gating persistence with it
+    dropped t from 2.45 to 1.34. The index rule is now persistence + EMA and
+    never reads VWAP, so a flat tape sitting on its mean must read MIXED for a
+    different reason — no 3-bar push — not because of a margin test."""
     candles = _series(session_bars=12, rising=True)
-    # Flatten today's bars so price lands essentially on VWAP, keeping a wide
-    # high/low range so ATR — and therefore the required margin — stays large.
-    today = candles[-12:]
-    for c in today:
+    for c in candles[-12:]:
         c.close = 24500.0
         c.open = 24500.0
         c.high = 24560.0
@@ -97,17 +102,53 @@ def test_price_sitting_on_vwap_is_not_a_direction():
     assert _BIAS(_bot(candles), "NIFTY") == "MIXED"
 
 
-def test_noise_sized_vwap_edge_is_rejected():
-    """0.025% of the index counted as bullish before this fix."""
-    candles = _series(session_bars=12, rising=True)
-    for c in candles[-12:]:
-        c.close = 24269.0
-        c.open = 24269.0
-        c.high = 24299.0   # ATR ~60 -> margin ~30 points required
-        c.low = 24239.0
-    # Nudge the last close a mere 6 points above the flat VWAP.
-    candles[-1].close = 24275.13
-    assert _BIAS(_bot(candles), "NIFTY") == "MIXED"
+def _flat_series(base: float, session_bars: int, prior_days: int = 2):
+    """A quiet tape at a given price level. Built at ONE price scale so ATR is
+    not polluted by a jump between the prior sessions and today — the mistake
+    that made the first version of the test below assert nonsense."""
+    candles = []
+    day0 = date(2026, 7, 28)
+    for d in range(prior_days):
+        for b in range(25):
+            ts = datetime(day0.year, day0.month, day0.day + d, 4, 0,
+                          tzinfo=timezone.utc) + timedelta(minutes=15 * b)
+            candles.append(_candle(ts, base, high=base + 2.0, low=base - 2.0))
+    today = day0 + timedelta(days=prior_days)
+    for b in range(session_bars):
+        ts = datetime(today.year, today.month, today.day, 4, 0,
+                      tzinfo=timezone.utc) + timedelta(minutes=15 * b)
+        candles.append(_candle(ts, base, high=base + 2.0, low=base - 2.0))
+    return candles
+
+
+def test_crudeoil_fades_a_stretch_instead_of_chasing_it():
+    """CRUDEOIL measured mean-reverting: vwap_reversion t=+3.90 (60m), +5.14
+    (120m), while persistence measured t=-3.27. Opposite rule, same engine."""
+    candles = _flat_series(7000.0, session_bars=12)
+    stretched = candles[-1]
+    stretched.close = 7010.0          # ~5 ATR above a 7000 VWAP
+    stretched.high = 7011.0
+    assert _BIAS(_bot(candles), "CRUDEOIL") == "BEARISH"
+
+    candles = _flat_series(7000.0, session_bars=12)
+    stretched = candles[-1]
+    stretched.close = 6990.0
+    stretched.low = 6989.0
+    assert _BIAS(_bot(candles), "CRUDEOIL") == "BULLISH"
+
+
+def test_crudeoil_near_vwap_stands_aside():
+    candles = _flat_series(7000.0, session_bars=12)
+    assert _BIAS(_bot(candles), "CRUDEOIL") == "MIXED"
+
+
+def test_unlisted_symbol_falls_back_to_the_index_rule():
+    assert "NIFTY" not in AutonomousTradingBot._BIAS_RULE_BY_SYMBOL
+    assert AutonomousTradingBot._BIAS_RULE_BY_SYMBOL["CRUDEOIL"] == "mean_reversion"
+    assert AutonomousTradingBot._BIAS_RULE_BY_SYMBOL["GOLDM"] == "trend_pullback"
+    assert AutonomousTradingBot._BIAS_RULE_BY_SYMBOL["SILVERM"] == "trend_pullback"
+
+
 
 
 def test_margin_requirement_is_half_an_atr():

@@ -56,6 +56,13 @@ _SPOT = {
     "SENSEX": ("BSE", "SENSEX"),
 }
 
+#: MCX has no spot instrument — the futures contract IS the tradable series, and
+#: MCX options are options ON that future, so it is also the correct reference.
+#: Unlike NSE index spot (volume 0, which silently degraded VWAP to a plain mean
+#: of closes and destroyed the old bias engine's edge), these carry REAL traded
+#: volume, so the volume-dependent candidates can finally be judged here.
+_MCX_FUTURES = ("CRUDEOIL", "NATURALGAS", "GOLDM", "SILVERM")
+
 
 # ----------------------------------------------------------------- indicators
 def ema(values: list[float], period: int) -> float:
@@ -246,9 +253,26 @@ def load_bars(symbol: str, start: str, end: str) -> list[dict]:
     kite = KiteConnect(api_key=secrets.get_secret("api_key", broker="zerodha"))
     kite.set_access_token(secrets.get_secret("access_token", broker="zerodha"))
 
-    exchange, tradingsymbol = _SPOT[symbol]
-    token = next(i["instrument_token"] for i in kite.instruments(exchange)
-                 if i["tradingsymbol"] == tradingsymbol)
+    if symbol in _SPOT:
+        exchange, tradingsymbol = _SPOT[symbol]
+        token = next(i["instrument_token"] for i in kite.instruments(exchange)
+                     if i["tradingsymbol"] == tradingsymbol)
+    elif symbol in _MCX_FUTURES:
+        # Front-month future: the contract with the nearest expiry still ahead
+        # of us. Anything already expired has a dead, unrepresentative tape.
+        from datetime import date
+        today = date.today()
+        futures = [
+            i for i in kite.instruments("MCX")
+            if i["name"] == symbol and i["instrument_type"] == "FUT"
+            and (i["expiry"].date() if hasattr(i["expiry"], "date") else i["expiry"]) >= today
+        ]
+        if not futures:
+            raise ValueError(f"no live {symbol} futures contract")
+        front = min(futures, key=lambda i: i["expiry"])
+        token = front["instrument_token"]
+    else:
+        raise ValueError(f"unknown symbol {symbol}")
     return kite.historical_data(token, start, end, "15minute")
 
 
