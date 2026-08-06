@@ -105,34 +105,27 @@ def test_fade_module_still_refuses_a_trending_tape():
     assert RangeFadeEntry.MAX_TREND_GAP_PCT > 0
 
 
-# --- the profit-lock stage that the target change REQUIRES -----------------
+# --- profit protection after PROFIT_LOCK was retired -----------------------
 
-def test_first_lock_stage_arms_below_every_target_floor():
-    """Tying targets to the backstop opened a dead zone: peak +10-15% with no
-    target to hit and no lock armed, round-tripping to the stop. Shipping the
-    target change without this stage would have made Hokage strictly worse."""
-    stages = AutonomousTradingBot._OPTION_PROFIT_LOCK_STAGES
-    first_arm = stages[0][0]
-    cheapest_floor = max(pct for _, pct in AutonomousTradingBot._OPTION_BACKSTOP_TIERS)
-    assert first_arm < cheapest_floor
+def test_trail_arms_before_any_profit_gap_can_open():
+    """THE GUARD that replaces the retired PROFIT_LOCK stages.
 
+    Those stages were proved unreachable at a 10% trail and removed. They are
+    only unreachable BECAUSE the trail arms early: at 10% of peak it arms at
+    +11.1% gain, ahead of the +15% where the earliest stage used to.
 
-def test_lock_stages_stay_ordered_and_ratchet_upward():
-    """My first attempt at the new stage locked 33% of peak while the +20%
-    stage locks 10% — a LATER stage keeping LESS than an earlier one, which
-    silently raised the +20% floor and broke an existing test. Bigger winners
-    must always keep at least as much as smaller ones."""
-    stages = AutonomousTradingBot._OPTION_PROFIT_LOCK_STAGES
-    arms = [a for a, _ in stages]
-    locks = [l for _, l in stages]
-    assert arms == sorted(arms), "stages must arm in ascending order of peak gain"
-    assert locks == sorted(locks), "a later stage must never lock less than an earlier one"
-    for arm, lock in stages:
-        assert 0.0 < lock <= 1.0
-        # A lock must leave the floor above entry, never below it.
-        assert arm * lock > 0.0
+    Loosen the trail enough and that stops being true — at 25% the trail would
+    not arm until +33.3% gain, leaving winners between +15% and +33% with no
+    protective floor at all, silently. This test fails at that point and says
+    so, instead of letting the gap open unnoticed.
+    """
+    f = AutonomousTradingBot._OPTION_TRAIL_LOCK_FRACTION
+    arms_at_gain = 1.0 / (1.0 - f) - 1.0
+    assert arms_at_gain <= 0.15, (
+        f"trail now arms at +{arms_at_gain:.1%}, past the +15% where profit "
+        f"protection used to begin — winners in that band are unprotected"
+    )
 
 
-def test_first_stage_sits_above_the_measured_noise_band():
-    """Premiums oscillate 10-15% routinely; arming inside that exits on noise."""
-    assert AutonomousTradingBot._OPTION_PROFIT_LOCK_STAGES[0][0] >= 0.15
+def test_retired_stages_are_actually_gone():
+    assert not hasattr(AutonomousTradingBot, "_OPTION_PROFIT_LOCK_STAGES")

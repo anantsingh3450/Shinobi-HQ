@@ -2634,33 +2634,32 @@ class AutonomousTradingBot:
     #: loose enough that ordinary option noise does not end a trade, far looser
     #: than the 2.69% that ended the best trade of 2026-08-06.
     _OPTION_TRAIL_LOCK_FRACTION = 0.10
-    #: PROFIT_LOCK stages: (peak gain that arms the stage, fraction of the
-    #: peak gain locked in). Once the premium's PEAK is up `arm` over entry,
-    #: the exit floor ratchets to entry + lock*peak_gain and only rises.
-    #: Staged deliberately WIDE for option noise (premiums oscillate 10-15%
-    #: routinely): a +20% winner may retrace to +2% — but never to a loss;
-    #: bigger winners keep progressively more of their peak.
-    _OPTION_PROFIT_LOCK_STAGES = (
-        (0.15, 0.08),  # peak +15%: floor = entry +1.2% -> closes the dead zone
-        (0.20, 0.10),  # peak +20%: floor = entry +2% -> a winner cannot become a loser
-        (0.40, 0.50),  # peak +40%: keep at least half the peak gain
-        (0.80, 0.65),  # peak +80%: keep close to two-thirds of a runner
-    )
-    #: The +15% stage was added 2026-08-05 alongside the reward:risk fix, and is
-    #: REQUIRED by it. Tying the target floor to the backstop moved targets out
-    #: to 12-40%, which opened a dead zone: a trade could peak at +10-15% with no
-    #: target to hit and no lock armed, then round-trip all the way to the stop.
-    #: Shipping the target change without this would have made Hokage strictly
-    #: worse, not better.
+    #: PROFIT_LOCK was retired 2026-08-06 (commander-approved) after being
+    #: PROVED unreachable, not merely rare. Its stages were
+    #: ((0.15, 0.08), (0.20, 0.10), (0.40, 0.50), (0.80, 0.65)).
     #:
-    #: Checked against the trade that started this. On 2026-08-05 the NIFTY put
-    #: peaked at +10.0% (143.35 from 130.30) and collapsed to -34% by 15:25. The
-    #: old flat +6.5% target banked +620 — but it caught that spike by luck, not
-    #: by edge, and the same geometry lost 1,301 on SENSEX the same afternoon.
-    #: Note honestly: +10.0% still sits UNDER this new +15% arm, so this stage
-    #: would NOT have saved that particular trade. Arming any lower means
-    #: exiting on noise — the premium oscillation band is 10-15% by measurement.
-    #: The case for the change is expectancy across many trades, not this one.
+    #: A stage could out-floor the trail only while gain < 0.1/(0.9 - lock),
+    #: but every stage armed strictly AFTER that point:
+    #:     lock 0.08 -> could bind below 12.2% gain, armed at 15%
+    #:     lock 0.10 -> could bind below 12.5% gain, armed at 20%
+    #:     lock 0.50 -> could bind below 25.0% gain, armed at 40%
+    #:     lock 0.65 -> could bind below 40.0% gain, armed at 80%
+    #: Swept across 286 grid points where a stage was armed, it produced the
+    #: binding floor ZERO times. Each one woke up exactly too late to matter.
+    #:
+    #: The 2026-07-16 directive it implemented — "in profit must not become a
+    #: loss, but leave room for option volatility" — is now carried by
+    #: TRAIL_LOCK, which honours it strictly better: it arms at +11.1% where the
+    #: earliest stage armed at +15%, and it is continuous rather than stepped.
+    #: The directive is the requirement; those stages were only one expression
+    #: of it.
+    #:
+    #: Removed rather than left in place because a rung that looks like a
+    #: safeguard while never binding is how this system read 100/100 health
+    #: through nine blind days. False safeguards are worse than absent ones.
+    #: See test_trail_arms_before_any_profit_gap_can_open for the guard that
+    #: fires if the trail is ever loosened enough to reopen that band.
+
     #: Adaptive target: fraction of the expected remaining underlying move,
     #: through an assumed ATM delta, clamped to a % band of entry premium.
     _OPTION_TARGET_MOVE_FRACTION = 0.30
@@ -2801,13 +2800,11 @@ class AutonomousTradingBot:
                     f"target {target:.2f} (entry {entry_premium:.2f})"
                 ), tracking
 
-        # Rung 4 — PROFIT PROTECTION: ratcheting floors that keep a winner
-        # from round-tripping into a loser. Two floor sources, tightest wins:
-        #   a) TRAIL_LOCK — once peak open profit >= the lock amount, never
-        #      give back more than that amount from peak (rupee-based).
-        #   b) PROFIT_LOCK stages — %-based breakeven ratchet + partial locks
-        #      (commander directive 2026-07-16: "in profit must not become a
-        #      loss, but leave room for option volatility").
+        # Rung 4 — PROFIT PROTECTION: a ratcheting floor that keeps a winner
+        # from round-tripping into a loser (commander directive 2026-07-16:
+        # "in profit must not become a loss, but leave room for option
+        # volatility"). TRAIL_LOCK is the single source; the PROFIT_LOCK stages
+        # that used to sit beside it were proved unreachable and retired.
         # The floor only ever rises; it is stored in tracking["stop_price"]
         # so the dashboard shows the live protective level.
         floor_candidates: list[tuple[float, str]] = []
@@ -2824,15 +2821,6 @@ class AutonomousTradingBot:
                     f"TRAIL_LOCK: gave back {self._OPTION_TRAIL_LOCK_FRACTION:.0%} of peak "
                     f"(₹{(peak_premium - trail_floor) * quantity:,.0f}) from peak {peak_premium:.2f}",
                 ))
-        if entry_premium > 0:
-            peak_gain = (peak_premium - entry_premium) / entry_premium
-            for arm_gain, lock_fraction in self._OPTION_PROFIT_LOCK_STAGES:
-                if peak_gain >= arm_gain:
-                    floor_candidates.append((
-                        entry_premium + lock_fraction * (peak_premium - entry_premium),
-                        f"PROFIT_LOCK(+{arm_gain:.0%} armed): keeping {lock_fraction:.0%} of peak gain "
-                        f"(peak {peak_premium:.2f}, entry {entry_premium:.2f})",
-                    ))
         if floor_candidates:
             floor_premium, floor_label = max(floor_candidates, key=lambda fc: fc[0])
             prev_floor = float(tracking.get("stop_price") or 0.0)

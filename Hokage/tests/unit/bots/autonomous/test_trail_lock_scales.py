@@ -98,5 +98,5 @@ def test_dashboard_reads_constants_that_actually_exist():
     ladder constant the dashboard exposes."""
     for attr in ("_OPTION_TRAIL_LOCK_FRACTION", "_OPTION_MIN_REWARD_RISK",
                  "_OPTION_TARGET_MAX_PCT", "_OPTION_THESIS_ATR_MULT",
-                 "_OPTION_BACKSTOP_TIERS", "_OPTION_PROFIT_LOCK_STAGES"):
+                 "_OPTION_BACKSTOP_TIERS"):
         assert hasattr(Bot, attr), f"dashboard exposes {attr}; it must exist"
