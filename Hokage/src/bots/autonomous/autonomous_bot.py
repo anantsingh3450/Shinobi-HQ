@@ -2601,9 +2601,39 @@ class AutonomousTradingBot:
     #: Underlying thesis stop: adverse move >= this multiple of entry-time ATR
     #: on the UNDERLYING invalidates the directional premise.
     _OPTION_THESIS_ATR_MULT = 1.25
-    #: TRAIL_LOCK arms once open profit reaches this many rupees per position,
-    #: then never gives back more than the same amount from peak.
-    _OPTION_TRAIL_LOCK_RUPEES = 1000.0
+    #: TRAIL_LOCK arms once open profit reaches this FRACTION OF THE POSITION's
+    #: premium notional, then never gives back more than the same fraction from
+    #: peak. Commander-approved 2026-08-06, replacing a flat Rs 1,000.
+    #:
+    #: The flat figure was the same class of bug as the flat 6% target fixed the
+    #: day before: one number applied to positions spanning a 4x size range, so
+    #: it meant completely different things depending on what was being traded.
+    #: Measured on 2026-08-06's actual fills, Rs 1,000 of giveback was:
+    #:     SILVERM  Rs 37,168 position -> 2.69%      <- 4x tighter...
+    #:     CRUDEOIL Rs 31,490 position -> 3.18%
+    #:     GOLDM    Rs 26,200 position -> 3.82%
+    #:     NATGAS   Rs 14,250 position -> 7.02%
+    #:     NIFTY    Rs  8,616 position -> 11.61%     <- ...than here
+    #:
+    #: That day ALL THREE winners exited on TRAIL_LOCK and all four losers on
+    #: the thesis stop — the trail was the binding constraint on every winner.
+    #: SILVERM ran 6,900 -> 7,650 (+10.9%) and was banked at 7,433 (+7.7%)
+    #: because a 2.69% wobble tripped it.
+    #:
+    #: Measured off the PEAK, not entry. Off entry the giveback stays constant
+    #: in rupees, so it grows proportionally tighter the further a winner runs —
+    #: which cuts exactly the trades worth holding. Off peak it widens with the
+    #: position, which is what a trailing stop is for.
+    #:
+    #: It arms only once `peak * (1 - fraction)` clears entry, so an armed trail
+    #: can never put the floor below entry: a winner cannot become a loser
+    #: through this rung. Below that the trail stays out of the way entirely and
+    #: the tiered backstop is the only floor.
+    #:
+    #: 10% sits at the bottom of the measured 10-15% premium oscillation band —
+    #: loose enough that ordinary option noise does not end a trade, far looser
+    #: than the 2.69% that ended the best trade of 2026-08-06.
+    _OPTION_TRAIL_LOCK_FRACTION = 0.10
     #: PROFIT_LOCK stages: (peak gain that arms the stage, fraction of the
     #: peak gain locked in). Once the premium's PEAK is up `arm` over entry,
     #: the exit floor ratchets to entry + lock*peak_gain and only rises.
@@ -2781,12 +2811,18 @@ class AutonomousTradingBot:
         # The floor only ever rises; it is stored in tracking["stop_price"]
         # so the dashboard shows the live protective level.
         floor_candidates: list[tuple[float, str]] = []
-        if quantity > 0:
-            peak_profit_rupees = (peak_premium - entry_premium) * quantity
-            if peak_profit_rupees >= self._OPTION_TRAIL_LOCK_RUPEES:
+        if quantity > 0 and entry_premium > 0:
+            # Scaled to the position, not a flat rupee figure: the same giveback
+            # must mean the same thing on a Rs 37k silver lot and a Rs 8.6k
+            # NIFTY lot. Measured off PEAK so it widens as the winner runs, and
+            # armed only once that floor clears entry — so an armed trail can
+            # never turn a winner into a loser.
+            trail_floor = peak_premium * (1.0 - self._OPTION_TRAIL_LOCK_FRACTION)
+            if trail_floor >= entry_premium:
                 floor_candidates.append((
-                    peak_premium - (self._OPTION_TRAIL_LOCK_RUPEES / quantity),
-                    f"TRAIL_LOCK: gave back ₹{self._OPTION_TRAIL_LOCK_RUPEES:,.0f} from peak {peak_premium:.2f}",
+                    trail_floor,
+                    f"TRAIL_LOCK: gave back {self._OPTION_TRAIL_LOCK_FRACTION:.0%} of peak "
+                    f"(₹{(peak_premium - trail_floor) * quantity:,.0f}) from peak {peak_premium:.2f}",
                 ))
         if entry_premium > 0:
             peak_gain = (peak_premium - entry_premium) / entry_premium

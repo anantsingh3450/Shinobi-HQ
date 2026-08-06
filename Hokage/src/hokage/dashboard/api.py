@@ -2094,8 +2094,9 @@ def create_dashboard_api(
                     for t, p in _Bot._OPTION_BACKSTOP_TIERS
                 ],
                 "thesis_stop_atr_mult": _Bot._OPTION_THESIS_ATR_MULT,
-                "trail_lock_rupees": _Bot._OPTION_TRAIL_LOCK_RUPEES,
-                "target_clamp_pct": [_Bot._OPTION_TARGET_MIN_PCT, _Bot._OPTION_TARGET_MAX_PCT],
+                "trail_lock_pct_of_entry": _Bot._OPTION_TRAIL_LOCK_FRACTION,
+                "min_reward_risk": _Bot._OPTION_MIN_REWARD_RISK,
+                "target_max_pct": _Bot._OPTION_TARGET_MAX_PCT,
             }
         except Exception as exc:
             payload["exit_ladder_error"] = str(exc)
@@ -2278,8 +2279,9 @@ def create_dashboard_api(
                 ],
                 "backstop_tiers": [{"entry_premium_at_least": t, "max_loss_pct": p} for t, p in _Bot._OPTION_BACKSTOP_TIERS],
                 "thesis_stop_atr_mult": _Bot._OPTION_THESIS_ATR_MULT,
-                "trail_lock_rupees": _Bot._OPTION_TRAIL_LOCK_RUPEES,
-                "target_clamp_pct": [_Bot._OPTION_TARGET_MIN_PCT, _Bot._OPTION_TARGET_MAX_PCT],
+                "trail_lock_pct_of_entry": _Bot._OPTION_TRAIL_LOCK_FRACTION,
+                "min_reward_risk": _Bot._OPTION_MIN_REWARD_RISK,
+                "target_max_pct": _Bot._OPTION_TARGET_MAX_PCT,
             }
         except Exception as exc:
             payload["exit_ladder_error"] = str(exc)

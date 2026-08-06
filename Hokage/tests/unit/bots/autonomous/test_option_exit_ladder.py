@@ -107,65 +107,71 @@ def test_target_hit_adaptive_and_clamped(bot):
     assert out["target_price"] >= 260.0  # entry * (1 + 0.20 * 1.5)
 
 
-def test_trail_lock_gives_back_at_most_1000_rupees(bot):
-    # qty 75: peak profit (240-200)*75 = 3000 >= 1000 arms the lock.
-    # Floor = 240 - 1000/75 = 226.67. Current 226 breaches it.
-    tracking = {"entry_price": 200.0, "peak_price": 240.0}
-    hit, reason, _ = _run(bot, entry=200.0, current=226.0, tracking=tracking, qty=75.0)
-    assert hit and "TRAIL_LOCK" in reason
+def test_trail_lock_exits_at_ten_percent_off_peak(bot):
+    """Rewritten 2026-08-06. These five tests were built on a flat Rs 1,000
+    giveback and used `qty` as the lever that kept TRAIL_LOCK dark — a lever
+    that no longer exists, because the trail is now a fraction of PEAK premium
+    and quantity does not enter into it.
+
+    They now assert the effective protective FLOOR and the invariant that
+    matters, rather than which rung's label happened to produce it. That is the
+    honest test: the commander's directive was "in profit must not become a
+    loss, but leave room for option volatility", and a floor satisfies or
+    violates that regardless of its name.
+    """
+    # Peak 240 -> floor 216.0. Quantity is irrelevant now; 75 and 5 must agree.
+    for qty in (75.0, 5.0):
+        tracking = {"entry_price": 200.0, "peak_price": 240.0}
+        hit, reason, out = _run(bot, entry=200.0, current=215.0, tracking=tracking, qty=qty)
+        assert hit and "TRAIL_LOCK" in reason
+        assert out["stop_price"] == pytest.approx(216.0)
 
     # Above the floor: still riding.
     tracking = {"entry_price": 200.0, "peak_price": 240.0}
-    hit, _, _ = _run(bot, entry=200.0, current=230.0, tracking=tracking, qty=75.0)
+    hit, _, _ = _run(bot, entry=200.0, current=220.0, tracking=tracking, qty=75.0)
     assert not hit
 
 
-def test_profit_lock_breakeven_ratchet_arms_at_20pct(bot):
-    # qty 20 keeps TRAIL_LOCK dark (peak profit 44*20=880 < 1000): this is the
-    # %-based PROFIT_LOCK alone. Peak +22% arms stage 1: floor = entry + 10%
-    # of the 44-point peak gain = 204.4 — a winner can no longer lose.
-    tracking = {"entry_price": 200.0, "peak_price": 244.0}
-    hit, reason, out = _run(bot, entry=200.0, current=204.0, tracking=tracking, qty=20.0)
-    assert hit and "PROFIT_LOCK" in reason
-    assert out["stop_price"] == pytest.approx(204.4)
-
-    # Above the floor: still riding (room for option noise).
-    tracking = {"entry_price": 200.0, "peak_price": 244.0}
-    hit, _, _ = _run(bot, entry=200.0, current=206.0, tracking=tracking, qty=20.0)
+def test_trail_stays_dark_until_its_floor_clears_entry(bot):
+    """Below that the trail must not exist at all, or it would place a floor
+    UNDER entry and turn a winner into a loser."""
+    # Peak +5%: 210 * 0.90 = 189, below the 200 entry -> not armed.
+    tracking = {"entry_price": 200.0, "peak_price": 210.0}
+    hit, _, out = _run(bot, entry=200.0, current=205.0, tracking=tracking, qty=75.0)
     assert not hit
+    assert out.get("stop_price") is None or out["stop_price"] >= 200.0
 
 
-def test_profit_lock_keeps_half_the_gain_at_40pct(bot):
-    # Peak +45% arms stage 2: floor = entry + 50% of the 90-point peak gain
-    # = 245. qty 10 keeps the rupee TRAIL_LOCK dark (900 < 1000).
+def test_the_protective_floor_only_ever_ratchets_up(bot):
     tracking = {"entry_price": 200.0, "peak_price": 290.0}
-    hit, reason, _ = _run(bot, entry=200.0, current=244.0, tracking=tracking, qty=10.0)
-    assert hit and "PROFIT_LOCK" in reason
-
-    tracking = {"entry_price": 200.0, "peak_price": 290.0}
-    hit, _, _ = _run(bot, entry=200.0, current=246.0, tracking=tracking, qty=10.0)
+    hit, _, tracking = _run(bot, entry=200.0, current=270.0, tracking=tracking, qty=10.0)
     assert not hit
+    first_floor = tracking["stop_price"]
+    assert first_floor == pytest.approx(261.0)          # 290 * 0.90
+
+    # A lower tick must never lower the stored floor, and breaching it exits.
+    hit, reason, _ = _run(bot, entry=200.0, current=260.0, tracking=tracking, qty=10.0)
+    assert hit
+    assert tracking["stop_price"] >= first_floor
 
 
-def test_profit_lock_floor_only_ratchets_up(bot):
-    # First tick stores the floor; a second tick must never lower it, and a
-    # breach of the stored floor exits even if peak context were lost.
-    tracking = {"entry_price": 200.0, "peak_price": 290.0}
-    hit, _, tracking = _run(bot, entry=200.0, current=250.0, tracking=tracking, qty=10.0)
-    assert not hit
-    assert tracking["stop_price"] == pytest.approx(245.0)
-
-    hit, reason, _ = _run(bot, entry=200.0, current=244.0, tracking=tracking, qty=10.0)
-    assert hit and "PROFIT_LOCK" in reason
-
-
-def test_armed_winner_cannot_round_trip_to_a_loss(bot):
-    # Premium ran +20.5% then collapsed toward entry: the breakeven ratchet
-    # exits near entry — the old ladder would have ridden this to the -25%
-    # hard backstop (a +20% winner becoming a -25% loser).
+def test_an_armed_winner_can_never_round_trip_to_a_loss(bot):
+    """The invariant the whole rung exists for. A premium that ran +20.5% and
+    collapsed toward entry must exit at or above entry, never ride to the
+    backstop."""
     tracking = {"entry_price": 200.0, "peak_price": 241.0}
-    hit, reason, _ = _run(bot, entry=200.0, current=199.0, tracking=tracking, qty=5.0)
-    assert hit and "PROFIT_LOCK" in reason
+    hit, reason, out = _run(bot, entry=200.0, current=199.0, tracking=tracking, qty=5.0)
+    assert hit
+    assert out["stop_price"] >= 200.0
+
+
+def test_bigger_winners_keep_progressively_more(bot):
+    """A runner must not be handed back the same rupees as a small winner."""
+    small = _run(bot, entry=200.0, current=210.0,
+                 tracking={"entry_price": 200.0, "peak_price": 240.0}, qty=10.0)[2]["stop_price"]
+    large = _run(bot, entry=200.0, current=210.0,
+                 tracking={"entry_price": 200.0, "peak_price": 400.0}, qty=10.0)[2]["stop_price"]
+    assert large > small
 
 
 def test_mcx_option_squares_off_at_2315_not_1520(bot):
