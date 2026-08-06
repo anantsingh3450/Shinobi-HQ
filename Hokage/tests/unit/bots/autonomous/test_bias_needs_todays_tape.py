@@ -145,8 +145,21 @@ def test_crudeoil_near_vwap_stands_aside():
 def test_unlisted_symbol_falls_back_to_the_index_rule():
     assert "NIFTY" not in AutonomousTradingBot._BIAS_RULE_BY_SYMBOL
     assert AutonomousTradingBot._BIAS_RULE_BY_SYMBOL["CRUDEOIL"] == "mean_reversion"
-    assert AutonomousTradingBot._BIAS_RULE_BY_SYMBOL["GOLDM"] == "trend_pullback"
     assert AutonomousTradingBot._BIAS_RULE_BY_SYMBOL["SILVERM"] == "trend_pullback"
+
+
+def test_naturalgas_uses_trend_pullback_not_the_index_default():
+    """It was never in the table, so it inherited persistence — which measures
+    as noise on it (t=+1.06 at 60m). Trend-pullback measures t=+2.97 at 120m."""
+    assert AutonomousTradingBot._BIAS_RULE_BY_SYMBOL["NATURALGAS"] == "trend_pullback"
+
+
+def test_goldm_is_deliberately_absent_from_the_rule_table():
+    """CORRECTION 2026-08-06. GOLDM shipped as trend_pullback on a t=+2.43 that
+    does not reproduce: re-measured on front-month futures it is NEGATIVE at
+    both horizons (t=-0.16 at 60m, -0.07 at 120m), while the persistence default
+    measures t=+2.25 and +2.91. Absence here is the fix, not an oversight."""
+    assert "GOLDM" not in AutonomousTradingBot._BIAS_RULE_BY_SYMBOL
 
 
 

@@ -14,6 +14,17 @@
 # updates the .env and the vault but NOT the running process, so Hokage stays
 # blind while looking perfectly healthy. On 2026-08-05 that cost a restart the
 # commander had no way of knowing he needed. Order matters: log in, THEN restart.
+#
+# -Unattended is for the weekday scheduled task: ensure exactly one Hokage is
+# running, then exit. No browser, no waiting for a human. Safe now ONLY because
+# the reconnect fix shipped the same day — a process that boots on the expired
+# overnight token picks the new one up within a minute of the commander logging
+# in, without a restart. Before that fix an unattended start would have produced
+# a bot that looked healthy and was blind all day.
+
+param(
+    [switch]$Unattended
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -81,6 +92,30 @@ function Wait-Dashboard {
         Start-Sleep -Seconds 3
     }
     return $false
+}
+
+if ($Unattended) {
+    if (Test-Dashboard) {
+        Write-Step 'Hokage already running; nothing to do.' 'Green'
+        exit 0
+    }
+    if (Get-Process python -ErrorAction SilentlyContinue) {
+        Write-Step 'Stray python process with no dashboard - clearing.' 'Yellow'
+        Stop-Hokage
+    }
+    [void](Start-Hokage)
+    if (Wait-Dashboard) {
+        $state = Get-BrokerState
+        Write-Step "Hokage up. Broker session: $state" 'Green'
+        if ($state -ne 'LIVE') {
+            # Deliberately NOT an error. The commander logs in when he logs in,
+            # and the running process now picks the token up on its own.
+            Write-Step 'Awaiting login; the feed will heal itself once it lands.' 'DarkGray'
+        }
+        exit 0
+    }
+    Write-Step 'Hokage failed to come up. Check the newest *_err.log.' 'Red'
+    exit 1
 }
 
 Clear-Host

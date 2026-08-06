@@ -1185,10 +1185,29 @@ class AutonomousTradingBot:
     #: Which directional rule each asset gets. Chosen by measurement, not by
     #: taste — see signal_lab. Anything unlisted falls back to "persistence",
     #: the rule that measured best on the indices.
+    #: Re-measured 2026-08-06 on the front-month MCX futures. Two corrections,
+    #: both from numbers that did NOT reproduce or were never checked:
+    #:
+    #: GOLDM was shipped as trend_pullback citing t=+2.43. It does not
+    #: reproduce. Trend-pullback on GOLDM measures NEGATIVE at both horizons
+    #: (t=-0.16 at 60m, t=-0.07 at 120m) while persistence+EMA measures
+    #: t=+2.25 and +2.91. GOLDM is therefore removed from this table and falls
+    #: back to the persistence default, which is what the data supports.
+    #:
+    #: NATURALGAS was never in the table at all, so it inherited the index
+    #: persistence rule — which measures as noise on it (t=+1.06 at 60m,
+    #: +0.36 at 120m). Trend-pullback measures t=+2.97 at 120m. Added.
+    #:
+    #: Reproduced and unchanged: CRUDEOIL mean-reversion (t=+2.55/+3.90/+5.13,
+    #: strengthening with horizon on n~1,200) and SILVERM trend-pullback
+    #: (t=+3.02 at 60m, +4.49 at 120m). Note CRUDEOIL is the mirror image of
+    #: the index rule: persistence measures NEGATIVE there (t=-2.26/-3.27/
+    #: -2.05), so one shared direction engine could never have served both.
     _BIAS_RULE_BY_SYMBOL = {
-        "CRUDEOIL": "mean_reversion",   # t=+3.90 (60m), +5.14 (120m)
-        "GOLDM": "trend_pullback",      # t=+2.43 (120m)
-        "SILVERM": "trend_pullback",    # t=+3.02 (60m)
+        "CRUDEOIL": "mean_reversion",   # t=+3.90 (60m), +5.13 (120m)
+        "NATURALGAS": "trend_pullback", # t=+2.97 (120m)
+        "SILVERM": "trend_pullback",    # t=+3.02 (60m), +4.49 (120m)
+        # GOLDM: deliberately absent -> persistence (t=+2.25 60m, +2.91 120m)
     }
     #: How far from VWAP (in ATR) counts as a stretch worth fading.
     _BIAS_REVERSION_ATR = 1.5
