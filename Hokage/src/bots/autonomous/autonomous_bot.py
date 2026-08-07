@@ -2695,6 +2695,41 @@ class AutonomousTradingBot:
                 return max_loss_pct
         return self._OPTION_BACKSTOP_TIERS[-1][1]
 
+    def _risk_pct_for(
+        self,
+        entry_premium: float,
+        entry_und_price: float | None,
+        entry_und_atr: float | None,
+    ) -> float:
+        """Fraction of premium this position ACTUALLY risks, as a decimal.
+
+        The risk is whichever stop fires FIRST, and measurement says that is
+        almost never the premium backstop. Across the 11 trades from 2026-08-06
+        and 08-07 the rungs that ended them were: THESIS_STOP 6, TRAIL 4,
+        BACKSTOP 1, TARGET **0**.
+
+        Targets had been floored at 1.5x the BACKSTOP, which put them at +18% to
+        +60% of premium while trades were actually ending at plus or minus 5-9%.
+        The target was therefore unreachable — it never fired once — so winners
+        were left to the trail at ~+6.6% while losers ran to the thesis stop at
+        ~-9.0%: an effective 0.74:1 needing a 58% hit rate against an actual
+        36%. That geometry is the whole two-day loss.
+
+        The thesis stop is an UNDERLYING move (1.25 x ATR), so it converts to a
+        premium cost through the ATM delta. Checked against real fills: it
+        predicts ~4.1% for NATURALGAS where thesis exits landed at 2.9-5.3%.
+
+        Falls back to the backstop when ATR is unavailable — never guesses.
+        """
+        backstop_pct = self._backstop_pct_for(entry_premium)
+        if not entry_und_atr or entry_premium <= 0:
+            return backstop_pct
+        thesis_underlying_move = self._OPTION_THESIS_ATR_MULT * float(entry_und_atr)
+        thesis_premium_loss = thesis_underlying_move * self._OPTION_TARGET_ATM_DELTA
+        thesis_pct = thesis_premium_loss / entry_premium
+        # Whichever stop bites first is the real risk being taken.
+        return max(0.0, min(backstop_pct, thesis_pct))
+
     @staticmethod
     def _excursion_pcts(
         entry_price: float,
@@ -2786,9 +2821,10 @@ class AutonomousTradingBot:
             raw_target = entry_premium + (
                 self._OPTION_TARGET_MOVE_FRACTION * self._OPTION_TARGET_ATM_DELTA * expected_move
             )
-            # Floor the target at the risk this position is actually taking, so
-            # a win is never structurally smaller than a loss.
-            min_pct = self._backstop_pct_for(entry_premium) * self._OPTION_MIN_REWARD_RISK
+            # Floor the target at the risk this position is ACTUALLY taking.
+            min_pct = self._risk_pct_for(
+                entry_premium, entry_und_price, entry_und_atr
+            ) * self._OPTION_MIN_REWARD_RISK
             target = min(
                 max(raw_target, entry_premium * (1.0 + min_pct)),
                 entry_premium * (1.0 + max(self._OPTION_TARGET_MAX_PCT, min_pct)),

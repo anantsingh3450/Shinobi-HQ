@@ -54,16 +54,21 @@ def test_reward_risk_is_at_least_one_to_one():
 
 
 def test_the_exact_trade_that_prompted_this_would_now_target_more():
-    """NIFTY 2026-08-05: entry 130.30, old target 138.72 (+6.5%), stop -28%."""
-    bot = _Bot()
-    entry = 130.30
-    old_target = 138.72
-    stop_pct = bot._backstop_pct_for(entry)
-    new_floor = entry * (1.0 + stop_pct * bot._OPTION_MIN_REWARD_RISK)
+    """NIFTY 2026-08-05: entry 130.30, old target 138.72 (+6.5%).
+
+    Updated 2026-08-07 to use the real risk path. The floor is 1.5x whichever
+    stop bites FIRST, not 1.5x the backstop — keying it off the backstop was
+    itself corrected two days later when measurement showed the target never
+    fired once in 11 trades.
+    """
+    bot = AutonomousTradingBot.__new__(AutonomousTradingBot)
+    entry, old_target, atr = 130.30, 138.72, 27.06
+    risk_pct = bot._risk_pct_for(entry, None, atr)
+    new_floor = entry * (1.0 + risk_pct * AutonomousTradingBot._OPTION_MIN_REWARD_RISK)
 
     assert new_floor > old_target
-    # Reward now at least matches the 28% being risked on this premium tier.
-    assert (new_floor - entry) / entry >= stop_pct
+    # Reward still at least 1.5x the risk actually being taken.
+    assert (new_floor - entry) / entry >= risk_pct
 
 
 def test_ceiling_can_never_sit_below_the_floor():
@@ -129,3 +134,41 @@ def test_trail_arms_before_any_profit_gap_can_open():
 
 def test_retired_stages_are_actually_gone():
     assert not hasattr(AutonomousTradingBot, "_OPTION_PROFIT_LOCK_STAGES")
+
+
+# --- target calibrated to the stop that ACTUALLY fires (2026-08-07) ---------
+
+def test_risk_is_whichever_stop_bites_first():
+    """Across 11 trades the ending rungs were THESIS 6, TRAIL 4, BACKSTOP 1,
+    TARGET 0. Keying targets off the backstop put them at +18% to +60% while
+    trades ended at plus or minus 5-9%, so the target never fired once."""
+    bot = AutonomousTradingBot.__new__(AutonomousTradingBot)
+    # NATURALGAS-shaped: tiny premium, so the 40% backstop is far away but the
+    # thesis stop is close. The thesis stop must win.
+    risk = bot._risk_pct_for(10.40, None, 0.76)
+    assert risk < bot._backstop_pct_for(10.40)
+    assert risk == pytest.approx(1.25 * 0.76 * 0.45 / 10.40)
+
+
+def test_backstop_still_caps_the_risk_when_the_thesis_stop_is_wider():
+    """A huge ATR must not let the notional risk exceed the hard backstop —
+    the backstop is a real ceiling on loss, not a suggestion."""
+    bot = AutonomousTradingBot.__new__(AutonomousTradingBot)
+    risk = bot._risk_pct_for(474.45, None, 5000.0)
+    assert risk == pytest.approx(bot._backstop_pct_for(474.45))
+
+
+def test_missing_atr_falls_back_to_the_backstop_rather_than_guessing():
+    bot = AutonomousTradingBot.__new__(AutonomousTradingBot)
+    assert bot._risk_pct_for(130.30, None, None) == bot._backstop_pct_for(130.30)
+    assert bot._risk_pct_for(130.30, None, 0.0) == bot._backstop_pct_for(130.30)
+
+
+def test_cheap_option_targets_now_land_below_the_trail_arm():
+    """The failure mode being fixed: the trail arms at +11.1% and used to
+    front-run a +60% target on every single winner."""
+    bot = AutonomousTradingBot.__new__(AutonomousTradingBot)
+    trail_arm = 1.0 / (1.0 - AutonomousTradingBot._OPTION_TRAIL_LOCK_FRACTION) - 1.0
+    for premium, atr in ((10.40, 0.76), (3034.0, 246.64)):
+        target_pct = bot._risk_pct_for(premium, None, atr) * AutonomousTradingBot._OPTION_MIN_REWARD_RISK
+        assert target_pct < trail_arm, f"target +{target_pct:.1%} still behind the trail"

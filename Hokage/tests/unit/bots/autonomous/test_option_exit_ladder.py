@@ -93,18 +93,26 @@ def test_target_hit_adaptive_and_clamped(bot):
         "entry_underlying_atr": 40.0,
     }
     bot._get_validated_live_price = MagicMock(return_value=(24310.0, "live"))
-    # Rewritten 2026-08-05. The target floor is no longer a flat +6% with a
-    # +25% ceiling; it is the position's OWN backstop times the minimum
-    # reward:risk. Entry 200 sits in the 20% backstop tier, so at 1.5:1 the
-    # floor is +30% (260.0) and the ceiling is +60%. The old numbers asserted a
-    # target Hokage must no longer take: banking +25% while risking 20% needs a
-    # 44% hit rate, and the measured directional read is ~47%.
+    # Rewritten again 2026-08-07. The floor is 1.5x the risk ACTUALLY taken,
+    # which is whichever stop bites first — and measurement says that is almost
+    # never the backstop. Across 11 trades the ending rungs were THESIS 6,
+    # TRAIL 4, BACKSTOP 1, TARGET **0**: keying the floor off the backstop put
+    # targets at +18% to +60% while trades ended at plus or minus 5-9%, so the
+    # target never fired at all and the trail banked every winner short.
+    #
+    # Here entry 200 with ATR 40: the thesis stop is 1.25 x 40 = 50 underlying
+    # points, ~22.5 of premium through the 0.45 ATM delta = 11.25% — well
+    # inside the 20% backstop. So risk is 11.25%, and the floor is 1.5x that
+    # = +16.875%, i.e. 233.75.
     hit, reason, out = _run(bot, entry=200.0, current=320.1, tracking=dict(tracking))
     assert hit and "TARGET_HIT" in reason
     # Premium below the floor can never trigger a target exit.
     hit, reason, out = _run(bot, entry=200.0, current=205.0, tracking=dict(tracking))
     assert not hit
-    assert out["target_price"] >= 260.0  # entry * (1 + 0.20 * 1.5)
+    assert out["target_price"] == pytest.approx(233.75)   # 200 * (1 + 0.1125*1.5)
+    # And it must sit below where the trail arms (+11.1% of entry -> 222.2 floor
+    # only once peak clears that), or the trail front-runs the target again.
+    assert out["target_price"] > 200.0
 
 
 def test_trail_lock_exits_at_ten_percent_off_peak(bot):
