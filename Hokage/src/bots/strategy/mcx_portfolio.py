@@ -34,6 +34,24 @@ MCX_STRATEGY_STARTING_CAPITAL = 200_000.0
 #: liquid, already fit the chest).
 MCX_UNIVERSE = ["CRUDEOIL", "NATURALGAS", "GOLDM", "SILVERM"]
 
+#: CRUDEOIL IS DELIBERATELY DARK (commander decision, 2026-08-12).
+#:
+#: It stays in the universe — quotes, contract specs and routing all remain
+#: correct — but NO strategy is scoped to it, so the league never bets on it.
+#: This is a decision, not an oversight, and it must not be "fixed" by scoping
+#: some existing module onto crude.
+#:
+#: TrendRider was its only competitor and measured NEGATIVE there (60m n=724,
+#: edge -0.283, t=-1.64), so it was archived. Nothing else has measured edge on
+#: crude: signal_lab found mean-reversion strong on it (60m t=+3.90, 120m
+#: t=+5.13), but that is a SIGNAL with no EntryModule implementing it, and the
+#: entry module is what actually chooses CALL vs PUT.
+#:
+#: To light crude back up, the order is: build a mean-reversion EntryModule,
+#: measure it with tools/research/entry_module_lab.py, and only then scope it.
+#: Trading an asset whose chooser has never been measured is precisely what
+#: produced 25 trades at 33% direction accuracy for -17,520.
+
 #: Correlation families for the commodity cluster gate (same discipline as
 #: the index arena's 2026-07-17 fix: NIFTY/BANKNIFTY/SENSEX move ~90%
 #: together and a same-direction cluster is one bet, not three). ENERGY and
