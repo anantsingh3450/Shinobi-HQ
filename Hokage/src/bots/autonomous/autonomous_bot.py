@@ -393,6 +393,34 @@ class AutonomousTradingBot:
             deployed[strat_id] = deployed.get(strat_id, 0.0) + cost
         return deployed
 
+    @staticmethod
+    def _strategy_supports(strat: dict[str, Any], symbol: str) -> bool:
+        """Whether this strategy is allowed to compete for this symbol.
+
+        Edge is measured PER ASSET and it does not travel. Measured 2026-08-11
+        with tools/research/entry_module_lab.py, the same module is a winner on
+        one commodity and a loser on another:
+
+            SessionShift  GOLDM t=+3.17 / SILVERM t=+2.71  but NATURALGAS t=-2.14
+            RangeFade     NATURALGAS t=+2.33               but GOLDM/SILVERM negative
+
+        They are near mirror images, so a league where every strategy judges
+        every asset must run each of them on ground where it measurably loses.
+        `supported_assets` already existed on every strategy record but the
+        entry scan never read it — it appeared once, in an unrelated similarity
+        check. This is the seam that makes it mean something.
+
+        FAILS OPEN. A missing or empty list means "no restriction recorded", so
+        a strategy is never silently muted by an absent field; only a list that
+        exists and excludes the symbol keeps a strategy out. Every strategy
+        today lists its full universe, so enforcing this changes nothing until
+        a scope is deliberately narrowed.
+        """
+        assets = strat.get("supported_assets")
+        if not assets:
+            return True
+        return symbol.upper() in {str(a).upper() for a in assets}
+
     def _is_counter_trend_strategy(self, strategy_id: str | None) -> bool:
         """True when this strategy's entry module bets AGAINST the prevailing
         move, and must therefore skip the trend-alignment gate."""
@@ -3597,6 +3625,11 @@ class AutonomousTradingBot:
             for sid, strat in self.mcx_strategy_portfolio.portfolio.get("strategies", {}).items():
                 if strat.get("status") == "ARCHIVED":
                     continue
+                if not self._strategy_supports(strat, symbol):
+                    module_verdicts.append(
+                        f"EntrySignal: {strat.get('name', sid)}: not scoped to {symbol}."
+                    )
+                    continue
                 module = MCX_ENTRY_MODULES.get(sid)
                 if module is None:
                     continue
@@ -4676,6 +4709,11 @@ class AutonomousTradingBot:
                 _winner = None  # (confidence, strategy_dict, signal)
                 for _sid, _strat in self.strategy_portfolio.portfolio.get("strategies", {}).items():
                     if _strat.get("status") == "ARCHIVED":
+                        continue
+                    if not self._strategy_supports(_strat, symbol):
+                        _module_verdicts.append(
+                            f"EntrySignal: {_strat.get('name', _sid)}: not scoped to {symbol}."
+                        )
                         continue
                     _module = ENTRY_MODULES.get(_sid)
                     if _module is None:

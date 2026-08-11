@@ -497,6 +497,17 @@ def _run_entry_scan(mock_orchestrator, tmp_path, place_order_side_effect=None):
             )
             mock_get_profile.return_value = mock_profile
 
+            # Per-symbol scoping (2026-08-12): the league now skips any strategy
+            # whose supported_assets excludes the symbol, because measured edge
+            # does not travel between assets. This fixture drives the synthetic
+            # symbol TCS, which no seeded strategy is scoped to — correctly, in
+            # production terms, since TCS is not even options-routed. Declare it
+            # in scope so these tests keep exercising what they are actually
+            # about: scan and entry mechanics, not scoping.
+            for _seeded in bot.strategy_portfolio.portfolio["strategies"].values():
+                if "TCS" not in _seeded.get("supported_assets", []):
+                    _seeded.setdefault("supported_assets", []).append("TCS")
+
             bot._scan_and_enter_opportunities()
 
     return bot, mock_venue
