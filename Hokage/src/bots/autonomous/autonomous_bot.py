@@ -35,7 +35,9 @@ from bots.autonomous.models import (
 )
 
 # Import new Market Intelligence Layer components
+from bots.autonomous import bias_rules
 from bots.autonomous.cache import IntelligenceCache
+from shared import power
 from bots.autonomous.research_intel import MarketScanner, NewsIntelligenceEngine, GeopoliticalIntelligenceEngine
 from bots.autonomous.memory import MemoryManager
 from bots.autonomous.analogs import HistoricalAnalogEngine
@@ -561,6 +563,14 @@ class AutonomousTradingBot:
         self._stop_event.set()
         self._thread.join(timeout=10.0)
         self._thread = None
+
+        # Hand the host's power management back. An unclean exit gets the same
+        # result for free — the request dies with the process — so this is
+        # tidiness, not a load-bearing guarantee.
+        try:
+            power.release_system_awake()
+        except Exception as exc:
+            logger.debug(f"Releasing the host sleep guard failed: {exc}")
         logger.info("Autonomous trading loop stopped.")
 
     def is_active(self) -> bool:
@@ -673,8 +683,28 @@ class AutonomousTradingBot:
                 except Exception as exc:
                     logger.error(f"Wake-gap check failed: {exc}")
 
+                # 0a-bis. Do not merely REPORT the coma — prevent it. Both of
+                # 2026-08-12's gaps were the Windows idle timer firing on
+                # schedule (uptime 5h08m and 5h02m against an 18000s setting),
+                # because a headless Hokage looks exactly like an unused
+                # laptop. Re-asserted every iteration on purpose: the request
+                # is per-thread and dies with the thread that set it.
+                try:
+                    power.hold_system_awake(announce=True)
+                except Exception as exc:
+                    logger.error(f"Host sleep guard failed: {exc}")
+
+                # 0a-ter. Can every strategy that will compete today actually
+                # afford to fill? Once per boot; see audit_strategy_chests.
+                try:
+                    self._announce_broke_strategies()
+                except Exception as exc:
+                    logger.error(f"Strategy chest audit failed: {exc}")
+
                 # 0b. A critical-battery sleep is not a surprise — it is a
-                # countdown. Warn while there is still time to plug in.
+                # countdown. Warn while there is still time to plug in. The
+                # guard above does NOT cover this: ES_SYSTEM_REQUIRED stops the
+                # idle timer, not a machine running out of power.
                 try:
                     self._check_battery_runway()
                 except Exception as exc:
@@ -1087,7 +1117,12 @@ class AutonomousTradingBot:
             return False, "Bias engine: bearish entry against a BULLISH tape."
         if bias == "BEARISH" and direction != "short":
             return False, "Bias engine: bullish entry against a BEARISH tape."
-        if bias is None and not counter_trend:
+        if bias is None and not counter_trend and symbol.upper() not in bias_rules.VETO_DISABLED_SYMBOLS:
+            # Only say "no data" when that is actually why. A symbol whose veto
+            # has been measured down also returns None, and it logs its own
+            # reason inside _compute_underlying_bias; claiming a data outage
+            # here would send anyone reading the log hunting a feed fault that
+            # does not exist.
             logger.info(f"Bias engine: no intraday data for {symbol}; bias check skipped.")
 
         # 3. IV premium guard: we BUY options; block when India VIX sits in the
@@ -1203,51 +1238,36 @@ class AutonomousTradingBot:
 
         return True, "cluster gates passed"
 
-    #: Minimum COMPLETED bars of the current session before the bias engine will
-    #: name a direction. Six 15-minute bars = 90 minutes, so index entries begin
-    #: from ~10:45 instead of inheriting the previous session's trend at 09:46.
-    _BIAS_MIN_SESSION_BARS = 6
-    #: How far price must sit clear of session VWAP, as a fraction of ATR(14),
-    #: before that counts as a direction rather than noise.
-    _BIAS_VWAP_ATR_FRACTION = 0.5
-    #: Which directional rule each asset gets. Chosen by measurement, not by
-    #: taste — see signal_lab. Anything unlisted falls back to "persistence",
-    #: the rule that measured best on the indices.
-    #: Re-measured 2026-08-06 on the front-month MCX futures. Two corrections,
-    #: both from numbers that did NOT reproduce or were never checked:
-    #:
-    #: GOLDM was shipped as trend_pullback citing t=+2.43. It does not
-    #: reproduce. Trend-pullback on GOLDM measures NEGATIVE at both horizons
-    #: (t=-0.16 at 60m, t=-0.07 at 120m) while persistence+EMA measures
-    #: t=+2.25 and +2.91. GOLDM is therefore removed from this table and falls
-    #: back to the persistence default, which is what the data supports.
-    #:
-    #: NATURALGAS was never in the table at all, so it inherited the index
-    #: persistence rule — which measures as noise on it (t=+1.06 at 60m,
-    #: +0.36 at 120m). Trend-pullback measures t=+2.97 at 120m. Added.
-    #:
-    #: Reproduced and unchanged: CRUDEOIL mean-reversion (t=+2.55/+3.90/+5.13,
-    #: strengthening with horizon on n~1,200) and SILVERM trend-pullback
-    #: (t=+3.02 at 60m, +4.49 at 120m). Note CRUDEOIL is the mirror image of
-    #: the index rule: persistence measures NEGATIVE there (t=-2.26/-3.27/
-    #: -2.05), so one shared direction engine could never have served both.
-    _BIAS_RULE_BY_SYMBOL = {
-        "CRUDEOIL": "mean_reversion",   # t=+3.90 (60m), +5.13 (120m)
-        "NATURALGAS": "trend_pullback", # t=+2.97 (120m)
-        "SILVERM": "trend_pullback",    # t=+3.02 (60m), +4.49 (120m)
-        # GOLDM: deliberately absent -> persistence (t=+2.25 60m, +2.91 120m)
-    }
-    #: How far from VWAP (in ATR) counts as a stretch worth fading.
-    _BIAS_REVERSION_ATR = 1.5
-    #: How close to VWAP (in ATR) a trend entry must be to count as a pullback
-    #: rather than a chase.
-    _BIAS_PULLBACK_ATR = 0.5
+    #: The veto's thresholds and per-asset rule table now live as module-level
+    #: values in `bots.autonomous.bias_rules`, so `tools/research/veto_lab.py`
+    #: can score the exact branch production executes instead of a copy that
+    #: drifts. These aliases preserve the historical class-attribute names for
+    #: every existing caller and test — read the module for the measurements
+    #: behind each entry.
+    _BIAS_MIN_SESSION_BARS = bias_rules.MIN_SESSION_BARS
+    _BIAS_VWAP_ATR_FRACTION = bias_rules.VWAP_ATR_FRACTION
+    _BIAS_RULE_BY_SYMBOL = bias_rules.RULE_BY_SYMBOL
+    _BIAS_REVERSION_ATR = bias_rules.REVERSION_ATR
+    _BIAS_PULLBACK_ATR = bias_rules.PULLBACK_ATR
 
     def _compute_underlying_bias(self, symbol: str) -> str | None:
         """Classify the underlying tape as BULLISH / BEARISH / MIXED from real
-        intraday candles (EMA(9)/EMA(21) alignment + price clear of session VWAP
-        by half an ATR, and only once today's session has enough bars to read).
-        Returns None when no intraday data is available."""
+        intraday candles, using the per-asset rule in `bias_rules`.
+
+        Returns None when the veto has no opinion — either because no intraday
+        data is available, or because the veto has been MEASURED to subtract
+        from the entry module it gates on this symbol.
+        """
+        if symbol.upper() in bias_rules.VETO_DISABLED_SYMBOLS:
+            # Not a bypass: a measured verdict. veto_lab.py scored the entry
+            # module with and without this gate on real candles and the gate
+            # made it worse, so direction is left to the component that was
+            # measured choosing it. See bias_rules.VETO_DISABLED_SYMBOLS.
+            logger.info(
+                f"Bias engine: veto stood down on {symbol} — measured to subtract "
+                f"from the entry module here; direction left to the module."
+            )
+            return None
         try:
             from integrations.data.models import HistoricalDataRequest, CandleInterval
             instrument = self.orchestrator.price_source.resolve_instrument(symbol)
@@ -1301,115 +1321,25 @@ class AutonomousTradingBot:
                            abs(cur.low - prev.close)))
         atr = (sum(trs) / len(trs)) if trs else 0.0
 
-        # --- the tape must actually BE today's tape ------------------------
-        # EMA21 on 15-minute bars needs 21 bars = 5.25 hours. At 09:46 only
-        # THREE of today's bars exist, so ~93% of the window is the previous
-        # sessions: the "bias" was reporting yesterday's trend and calling it
-        # today's. On 2026-07-30 that passed a NIFTY CE at 09:46 which was
-        # stopped 40 minutes later, and by 10:00 the same symbol read MIXED.
-        # Below the floor there is no intraday trend to read, so stand aside
-        # rather than inherit a direction from a session that has ended.
-        if len(session) < self._BIAS_MIN_SESSION_BARS:
-            logger.info(
-                f"Bias engine: only {len(session)} of today's bars for {symbol} "
-                f"(need {self._BIAS_MIN_SESSION_BARS}) — tape not established, standing aside."
-            )
-            return "MIXED"
-
-        # --- direction: PERSISTENCE + EMA structure (measured, not assumed) --
-        # Rebuilt 2026-08-05 from tools/research/signal_lab.py, which scores a
-        # candidate by mean forward move in ATR units and a t-statistic, on real
-        # candles. The old rule (EMA structure + price clear of VWAP) measured
-        # t = +1.34 / -0.10 / +0.37 / +0.19 across symbols and horizons: no edge
-        # at all, ~47% accuracy over 622 signals. Live it produced 24 trades,
-        # 33.3% wins, -15,490.
-        #
-        # What actually measured, at the 60-minute horizon Hokage trades:
-        #   persistence + EMA, no VWAP : NIFTY 59.2% t=+2.23 | BANKNIFTY 54.4% t=+2.04
-        #   persistence alone          : NIFTY 57.8% t=+2.45 | BANKNIFTY 53.9% t=+2.37
-        #   old rule (with VWAP)       : NIFTY 49.6% t=+1.34 | BANKNIFTY 46.4% t=-0.10
-        #
-        # THE VWAP LEG WAS ACTIVELY HARMFUL. Gating persistence with it dropped
-        # t from 2.45 to 1.34 (NIFTY) and 2.37 to 1.43 (BANKNIFTY). The reason
-        # is a silent data defect: Kite reports volume 0 on NSE index spot, so
-        # "session VWAP" was never volume-weighted at all — it degraded to a
-        # plain mean of the day's closes, and the ATR margin I added on
-        # 2026-07-30 was tightening a comparison against a number that carries
-        # no information. It is removed rather than repaired.
-        #
-        # Three consecutive closes the same way is a weak-looking rule that
-        # measures well precisely because it describes what price is DOING
-        # rather than where it has BEEN.
-        # --- ONE RULE PER ASSET, because one rule does not fit ---------------
-        # Measured 2026-08-05 on real candles (signal_lab, 3 horizons):
-        #
-        #   NIFTY/BANKNIFTY  persistence+EMA  t=+2.23/+2.04   trend_pullback NEGATIVE
-        #   CRUDEOIL         vwap_reversion   t=+3.90/+5.14   persistence    t=-3.27
-        #   GOLDM            trend_pullback   t=+2.43         vwap_reversion NEGATIVE
-        #   SILVERM          trend_pullback   t=+3.02         persistence    noise
-        #
-        # Indices TREND and crude MEAN-REVERTS, and the same rule applied to both
-        # is reliably WRONG on one of them. Hokage ran a single trend-following
-        # bias over every asset, which is why 2026-08-05 lost 13,982 with six of
-        # seven MCX trades red: it was trend-following a mean-reverting market.
-        #
-        # Note VWAP works here and did not on the indices — MCX futures carry
-        # real traded volume while NSE index spot reports zero. Same code, real
-        # input, opposite verdict; the concept was never the problem.
-        rule = self._BIAS_RULE_BY_SYMBOL.get(symbol.upper(), "persistence")
-
-        if rule == "mean_reversion":
-            # Fade a stretch from a REAL volume-weighted VWAP.
-            if not atr:
-                return "MIXED"
-            stretch = (price - vwap) / atr
-            if stretch >= self._BIAS_REVERSION_ATR:
-                return "BEARISH"
-            if stretch <= -self._BIAS_REVERSION_ATR:
-                return "BULLISH"
-            logger.info(
-                f"Bias engine: {symbol} MIXED — only {stretch:+.2f} ATR from VWAP "
-                f"(fade needs {self._BIAS_REVERSION_ATR:.1f})."
-            )
-            return "MIXED"
-
-        if rule == "trend_pullback":
-            # Trend direction, entered while price sits NEAR VWAP rather than
-            # extended away from it — buying the pullback, not the spike.
-            if not atr:
-                return "MIXED"
-            dist = abs(price - vwap) / atr
-            if dist <= self._BIAS_PULLBACK_ATR:
-                if ema9 > ema21:
-                    return "BULLISH"
-                if ema9 < ema21:
-                    return "BEARISH"
-            logger.info(
-                f"Bias engine: {symbol} MIXED — {dist:.2f} ATR from VWAP, too extended "
-                f"to join the trend (needs <= {self._BIAS_PULLBACK_ATR:.1f})."
-            )
-            return "MIXED"
-
-        # Default: persistence + EMA structure (measured best on the indices).
-        closes_seq = closes[-4:]
-        if len(closes_seq) < 4:
-            return "MIXED"
-        steps = [closes_seq[i + 1] - closes_seq[i] for i in range(3)]
-        if all(s > 0 for s in steps) and ema9 > ema21:
-            return "BULLISH"
-        if all(s < 0 for s in steps) and ema9 < ema21:
-            return "BEARISH"
-        logger.info(
-            f"Bias engine: {symbol} MIXED — no 3-bar push in agreement with EMA structure "
-            f"(EMA9 {ema9:.2f} vs EMA21 {ema21:.2f})."
+        # The verdict itself is `bias_rules.classify_tape` — the same function
+        # tools/research/veto_lab.py scores. Everything above this line is
+        # fetching and deriving; everything below it is reporting. Keeping the
+        # decision in one pure, importable place is what makes the veto
+        # measurable at all, and an unmeasured veto is how a module with
+        # t=+3.17 came to be blocked 15 times in one session.
+        verdict, reason = bias_rules.classify_tape(
+            symbol=symbol,
+            price=price,
+            vwap=vwap,
+            atr=atr,
+            ema9=ema9,
+            ema21=ema21,
+            recent_closes=closes[-4:],
+            session_bar_count=len(session),
         )
-        return "MIXED"
-
-        logger.info(
-            f"Bias engine: {symbol} MIXED — price {price:.2f} vs VWAP {vwap:.2f} "
-            f"(need {margin:.2f} clear, ATR {atr:.2f}), EMA9 {ema9:.2f} vs EMA21 {ema21:.2f}."
-        )
-        return "MIXED"
+        if verdict == "MIXED":
+            logger.info(f"Bias engine: {reason}")
+        return verdict
 
     def _build_market_context(self, symbol: str, cache: dict[str, Any] | None = None) -> Any:
         """Build the live tape snapshot every entry module reads.
@@ -1743,6 +1673,76 @@ class AutonomousTradingBot:
             logger.warning(f"Broker session refreshed but the feed is still down: {exc}")
             return False
         return True
+
+    def audit_strategy_chests(self) -> list[str]:
+        """Name every strategy that can compete but cannot afford to fill.
+
+        THE FAILURE THIS EXISTS TO CATCH (2026-08-12): SessionShift was
+        re-scoped to GOLDM/SILVERM on measured edge but its `capital.starting`
+        was left at 0 from an earlier consolidation, leaving a chest of -1,280.
+        It then won SIXTEEN auctions in one session and filled NONE — the
+        router rejected every one with "Risk budget -422 affords 0 lots". From
+        the outside the arena looked healthy: a strategy was competing, and
+        winning. Nothing anywhere said the money was missing.
+
+        A broke strategy is worse than an archived one. It still enters the
+        tournament, still beats live rivals on confidence, and then converts
+        its win into a stand-aside — so it does not merely fail itself, it
+        denies the asset to whichever strategy would have traded it.
+
+        Returns the human-readable findings so callers can announce them.
+        """
+        findings: list[str] = []
+        leagues = (
+            ("Index Dojo", getattr(self, "strategy_portfolio", None)),
+            ("MCX Arena", getattr(self, "mcx_strategy_portfolio", None)),
+        )
+        for league, manager in leagues:
+            portfolio = getattr(manager, "portfolio", None) or {}
+            for strat in (portfolio.get("strategies") or {}).values():
+                if strat.get("status") == "ARCHIVED":
+                    continue  # cannot trade by design; an idle chest is fine
+                capital = strat.get("capital") or {}
+                try:
+                    chest = float(capital.get("starting", 0.0)) + float(capital.get("realized_pnl", 0.0))
+                except (TypeError, ValueError):
+                    chest = 0.0
+                if chest > 0:
+                    continue
+                scope = ", ".join(strat.get("supported_assets") or []) or "all assets"
+                findings.append(
+                    f"{league}: {strat.get('name', strat.get('strategy_id', '?'))} "
+                    f"({strat.get('status')}) has a chest of {chest:,.0f} and is scoped to "
+                    f"{scope}. It will win auctions and fill nothing."
+                )
+        return findings
+
+    def _announce_broke_strategies(self) -> None:
+        """Run the chest audit once per boot and say so loudly if it bites."""
+        if getattr(self, "_chest_audit_done", False):
+            return
+        self._chest_audit_done = True
+        try:
+            findings = self.audit_strategy_chests()
+        except Exception as exc:
+            logger.error(f"Strategy chest audit failed: {exc}")
+            return
+        if not findings:
+            logger.info("Strategy chest audit: every competing strategy can afford to trade.")
+            return
+        for line in findings:
+            logger.critical(f"BROKE STRATEGY — {line}")
+        if not self.telegram_bot:
+            return
+        try:
+            self.telegram_bot.send_message(
+                "STRATEGY CANNOT TRADE\n\n"
+                + "\n\n".join(findings)
+                + "\n\nIt will still compete and win, then fail at the router. "
+                  "Fix the chest or archive it."
+            )
+        except Exception as exc:
+            logger.debug(f"Could not send the chest audit alert: {exc}")
 
     #: A loop iteration is ~60s. Anything past this means the process was not
     #: running the risk engine — almost always the machine slept.

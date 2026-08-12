@@ -52,6 +52,28 @@ MCX_UNIVERSE = ["CRUDEOIL", "NATURALGAS", "GOLDM", "SILVERM"]
 #: Trading an asset whose chooser has never been measured is precisely what
 #: produced 25 trades at 33% direction accuracy for -17,520.
 
+#: CAPITAL IS NOT AUTOMATIC WHEN SCOPE CHANGES (2026-08-12).
+#:
+#: When this arena consolidated 4x100,000 into 2x200,000 on 2026-07-31,
+#: SessionShift was retired and its `capital.starting` set to 0. On 2026-08-11
+#: it was brought back and scoped to GOLDM/SILVERM on measured edge — and the
+#: capital was NOT restored with it. Its chest read -1,280.
+#:
+#: The result on 2026-08-12: SessionShift won 16 auctions and filled none. Once
+#: past the entry gates the router reported "Risk budget -422 affords 0 lots of
+#: SILVERM26AUG240000CE ... one lot is -2528.7% of the -1,280 chest". The arena
+#: looked like it was working — a strategy was competing and winning — while
+#: being structurally unable to place an order.
+#:
+#: 200,000 was moved from ARCHIVED TrendRider (which cannot trade and was
+#: sitting on an idle chest) to SessionShift on 2026-08-12. Arena total is
+#: unchanged at 400,000; no synthetic cash was created.
+#:
+#: RULE THIS BUYS: re-scoping a strategy is only half the change. Whenever a
+#: strategy's status or `supported_assets` moves, check `capital.starting` in
+#: the same edit. A strategy with a zero or negative chest does not fail
+#: loudly — it competes, wins, and silently never fills.
+
 #: Correlation families for the commodity cluster gate (same discipline as
 #: the index arena's 2026-07-17 fix: NIFTY/BANKNIFTY/SENSEX move ~90%
 #: together and a same-direction cluster is one bet, not three). ENERGY and
