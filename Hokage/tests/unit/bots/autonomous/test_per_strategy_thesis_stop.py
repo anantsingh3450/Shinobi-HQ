@@ -79,14 +79,37 @@ def test_a_missing_symbol_never_grants_the_widened_stop(bot):
     assert bot._thesis_atr_mult_for("strat-sessionshift-mcx-v1", "") == 1.25
 
 
-def test_the_dashboard_publishes_the_asset_table_too(bot):
-    """Reporting only the strategy-wide table would tell the commander every
-    SessionShift position runs 1.25 ATR when gold runs 3.0."""
+def test_the_dashboard_publishes_EVERY_widened_stop(bot):
+    """Reporting only the strategy-wide table tells the commander every
+    SessionShift position runs 1.25 ATR when gold runs 3.0.
+
+    The first version of this test asserted the substring
+    "thesis_stop_atr_mult_by_strategy" appeared in api.py — which passed while
+    the asset table was still missing, because the strategy table's key is a
+    prefix of the asset table's. Assert on the SHAPE the endpoint builds
+    instead, and on every value actually reaching it.
+    """
     from hokage.dashboard import api
 
-    assert hasattr(Bot, "_THESIS_ATR_MULT_BY_STRATEGY_ASSET")
     source = Path(api.__file__).read_text(encoding="utf-8")
-    assert "thesis_stop_atr_mult_by_strategy" in source
+    assert "thesis_stop_atr_mult_by_strategy_asset" in source, (
+        "the per-asset stops are not published anywhere"
+    )
+
+    rows = [
+        {"strategy_id": sid, "asset": asset, "atr_mult": mult}
+        for (sid, asset), mult in sorted(Bot._THESIS_ATR_MULT_BY_STRATEGY_ASSET.items())
+    ]
+    import json
+
+    json.dumps(rows)  # tuple keys are not serialisable; the row form must be
+    assert {"strategy_id": "strat-sessionshift-mcx-v1", "asset": "GOLDM",
+            "atr_mult": 3.0} in rows
+
+    # Both endpoints that publish an exit ladder must carry it, not just one.
+    assert source.count("thesis_stop_atr_mult_by_strategy_asset") == source.count(
+        "\"thesis_stop_atr_mult\":"
+    )
 
 
 def test_the_modules_the_tight_stop_HELPS_were_left_alone(bot):
