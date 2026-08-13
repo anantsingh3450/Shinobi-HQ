@@ -12,12 +12,14 @@ two mean-reversion modules land on opposite sides of it:
     MacroBreakout BANKNIFTY 1.25 is OPTIMAL   (+0.389 t=+2.02 vs +0.309 unstopped)
     SessionShift GOLDM      1.25 AMPUTATES    (+0.142 t=+1.53 vs +0.327 t=+3.13)
 
-These tests cover the MECHANISM, which ships ahead of any value change: stop
-distance is a risk constant and needs explicit commander approval. The table is
-empty, so today every strategy still resolves to 1.25 and behaviour is
-unchanged.
+Commander-approved 2026-08-13: SessionShift to 3.0 ATR, MeanReversion to 2.5.
+RangeFade and MacroBreakout stay at 1.25 because the tight stop measured
+OPTIMAL for them — a blanket "the stops are too tight" change would have made
+those two worse, which is the entire reason the table is per-strategy.
 """
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
@@ -29,20 +31,138 @@ def bot():
     return object.__new__(Bot)
 
 
-def test_the_override_table_ships_EMPTY_so_nothing_changes_yet():
-    """Shipping the mechanism must not move a single stop. Values are a
-    separate, approved decision."""
-    assert Bot._THESIS_ATR_MULT_BY_STRATEGY == {}
+def test_the_approved_values_are_exactly_what_was_measured(bot):
+    """Commander-approved 2026-08-13. MeanReversion widens on every index;
+    SessionShift widens ONLY on gold."""
+    for index in ("NIFTY", "BANKNIFTY", "SENSEX"):
+        assert bot._thesis_atr_mult_for("strat-meanreversion-sideways-v1", index) == 2.5
+    assert bot._thesis_atr_mult_for("strat-sessionshift-mcx-v1", "GOLDM") == 3.0
 
 
-def test_every_strategy_resolves_to_the_default_today(bot):
-    for strategy_id in (
-        "strat-sessionshift-mcx-v1",
-        "strat-rangefade-mcx-v1",
-        "strat-macrobreakout-v1",
-        "strat-meanreversion-v1",
-    ):
-        assert bot._thesis_atr_mult_for(strategy_id) == 1.25
+def test_silver_did_NOT_inherit_golds_stop(bot):
+    """The measurement that made this table per-asset.
+
+    stop_lab, measuring the stop with a TIME exit, said SessionShift was better
+    at 3.0 on both its assets. Production also floors the target at 1.5x the
+    risk the stop creates, and measured TOGETHER the assets separate:
+
+        GOLDM    1.25 +0.069  ->  3.0 +0.355
+        SILVERM  1.25 +0.007  ->  3.0 -0.061   (negative at 2.0 and 2.5 too)
+
+    One value per strategy would have shipped a measured-NEGATIVE stop onto
+    silver on the strength of gold's numbers — "edge does not travel between
+    assets" reappearing in a new place.
+    """
+    assert bot._thesis_atr_mult_for("strat-sessionshift-mcx-v1", "SILVERM") == 1.25
+    assert ("strat-sessionshift-mcx-v1", "SILVERM") not in Bot._THESIS_ATR_MULT_BY_STRATEGY_ASSET
+    assert "strat-sessionshift-mcx-v1" not in Bot._THESIS_ATR_MULT_BY_STRATEGY
+
+
+def test_asset_scope_beats_strategy_scope(bot, monkeypatch):
+    monkeypatch.setattr(Bot, "_THESIS_ATR_MULT_BY_STRATEGY", {"s": 2.0})
+    monkeypatch.setattr(Bot, "_THESIS_ATR_MULT_BY_STRATEGY_ASSET", {("s", "GOLDM"): 3.0})
+    assert bot._thesis_atr_mult_for("s", "GOLDM") == 3.0
+    assert bot._thesis_atr_mult_for("s", "SILVERM") == 2.0
+    assert bot._thesis_atr_mult_for("s") == 2.0
+
+
+def test_asset_matching_is_case_insensitive(bot):
+    assert bot._thesis_atr_mult_for("strat-sessionshift-mcx-v1", "goldm") == 3.0
+    assert bot._thesis_atr_mult_for("strat-sessionshift-mcx-v1", "GoldM") == 3.0
+
+
+def test_a_missing_symbol_never_grants_the_widened_stop(bot):
+    """If the underlying is unknown the position must get the DEFAULT stop, not
+    an asset-scoped widening it may not qualify for. Fail safe, always tighter
+    when in doubt."""
+    assert bot._thesis_atr_mult_for("strat-sessionshift-mcx-v1", None) == 1.25
+    assert bot._thesis_atr_mult_for("strat-sessionshift-mcx-v1", "") == 1.25
+
+
+def test_the_dashboard_publishes_the_asset_table_too(bot):
+    """Reporting only the strategy-wide table would tell the commander every
+    SessionShift position runs 1.25 ATR when gold runs 3.0."""
+    from hokage.dashboard import api
+
+    assert hasattr(Bot, "_THESIS_ATR_MULT_BY_STRATEGY_ASSET")
+    source = Path(api.__file__).read_text(encoding="utf-8")
+    assert "thesis_stop_atr_mult_by_strategy" in source
+
+
+def test_the_modules_the_tight_stop_HELPS_were_left_alone(bot):
+    """RangeFade measured +0.455 t=+2.95 at 1.25 against +0.415 unstopped, and
+    MacroBreakout +0.389 t=+2.02 against +0.309. Widening these would make them
+    WORSE. A blanket 'stops are too tight' change would have done exactly that,
+    which is the whole reason the table is per-strategy.
+    """
+    assert bot._thesis_atr_mult_for("strat-rangefade-mcx-v1") == 1.25
+    assert bot._thesis_atr_mult_for("strat-macrobreakout-commodities-v1") == 1.25
+    assert "strat-rangefade-mcx-v1" not in Bot._THESIS_ATR_MULT_BY_STRATEGY
+    assert "strat-macrobreakout-commodities-v1" not in Bot._THESIS_ATR_MULT_BY_STRATEGY
+
+
+def test_every_key_matches_a_REAL_strategy_id_in_the_live_portfolios():
+    """A typo here fails silently and invisibly — the strategy simply keeps the
+    1.25 default and nobody is told the approved change never took effect.
+    Pin the ids against the actual brain state.
+    """
+    import json
+    from pathlib import Path
+
+    # tests/unit/bots/autonomous/<this file> -> parents[4] is the repo root.
+    root = Path(__file__).resolve().parents[4]
+    base = root / "hokage_brain" / "portfolio"
+    if not base.exists():  # pragma: no cover - fresh checkout without state
+        pytest.skip("no brain state in this checkout")
+
+    known: set[str] = set()
+    for name in ("strategy_portfolio.json", "mcx_strategy_portfolio.json"):
+        path = base / name
+        if path.exists():
+            known |= set(json.loads(path.read_text(encoding="utf-8-sig"))["strategies"])
+
+    ids = set(Bot._THESIS_ATR_MULT_BY_STRATEGY) | {
+        sid for sid, _ in Bot._THESIS_ATR_MULT_BY_STRATEGY_ASSET
+    }
+    for strategy_id in ids:
+        assert strategy_id in known, f"{strategy_id} matches no registered strategy"
+
+
+def test_every_scoped_asset_is_one_the_strategy_actually_trades():
+    """A widened stop on an asset the strategy is not scoped to is dead config
+    that springs to life the moment scope changes."""
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[4]
+    base = root / "hokage_brain" / "portfolio"
+    if not base.exists():  # pragma: no cover - fresh checkout without state
+        pytest.skip("no brain state in this checkout")
+
+    scope: dict[str, set[str]] = {}
+    for name in ("strategy_portfolio.json", "mcx_strategy_portfolio.json"):
+        path = base / name
+        if path.exists():
+            for sid, s in json.loads(path.read_text(encoding="utf-8-sig"))["strategies"].items():
+                scope[sid] = {a.upper() for a in (s.get("supported_assets") or [])}
+
+    for (strategy_id, symbol) in Bot._THESIS_ATR_MULT_BY_STRATEGY_ASSET:
+        assert symbol in scope.get(strategy_id, set()), (
+            f"{strategy_id} carries a stop for {symbol} but is not scoped to it"
+        )
+
+
+def test_archived_strategies_are_not_carrying_widened_stops():
+    """Archived modules cannot trade, so an entry for one is dead config that
+    will quietly come back to life if it is ever un-archived."""
+    ids = set(Bot._THESIS_ATR_MULT_BY_STRATEGY) | {
+        sid for sid, _ in Bot._THESIS_ATR_MULT_BY_STRATEGY_ASSET
+    }
+    for strategy_id in ids:
+        assert "trendrider" not in strategy_id
+        assert "trendpullback" not in strategy_id
+        assert "malfoy" not in strategy_id
+        assert "eventrider" not in strategy_id
 
 
 def test_an_unlisted_strategy_keeps_its_stop_rather_than_losing_it(bot):

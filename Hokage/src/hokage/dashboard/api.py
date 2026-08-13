@@ -2093,7 +2093,12 @@ def create_dashboard_api(
                     {"entry_premium_at_least": t, "max_loss_pct": p}
                     for t, p in _Bot._OPTION_BACKSTOP_TIERS
                 ],
+                # Reported as default + overrides since 2026-08-13: the thesis
+                # stop is per-strategy now, and publishing only the default
+                # would tell the commander every position runs 1.25 ATR when
+                # some run 2.5 or 3.0.
                 "thesis_stop_atr_mult": _Bot._OPTION_THESIS_ATR_MULT,
+                "thesis_stop_atr_mult_by_strategy": dict(_Bot._THESIS_ATR_MULT_BY_STRATEGY),
                 "trail_lock_pct_of_entry": _Bot._OPTION_TRAIL_LOCK_FRACTION,
                 "min_reward_risk": _Bot._OPTION_MIN_REWARD_RISK,
                 "target_max_pct": _Bot._OPTION_TARGET_MAX_PCT,
@@ -2278,7 +2283,12 @@ def create_dashboard_api(
                     "TRAIL_LOCK",
                 ],
                 "backstop_tiers": [{"entry_premium_at_least": t, "max_loss_pct": p} for t, p in _Bot._OPTION_BACKSTOP_TIERS],
+                # Reported as default + overrides since 2026-08-13: the thesis
+                # stop is per-strategy now, and publishing only the default
+                # would tell the commander every position runs 1.25 ATR when
+                # some run 2.5 or 3.0.
                 "thesis_stop_atr_mult": _Bot._OPTION_THESIS_ATR_MULT,
+                "thesis_stop_atr_mult_by_strategy": dict(_Bot._THESIS_ATR_MULT_BY_STRATEGY),
                 "trail_lock_pct_of_entry": _Bot._OPTION_TRAIL_LOCK_FRACTION,
                 "min_reward_risk": _Bot._OPTION_MIN_REWARD_RISK,
                 "target_max_pct": _Bot._OPTION_TARGET_MAX_PCT,

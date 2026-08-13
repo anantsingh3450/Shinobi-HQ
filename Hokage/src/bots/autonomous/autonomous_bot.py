@@ -2633,11 +2633,10 @@ class AutonomousTradingBot:
 
     #: Per-strategy thesis-stop distance, in ATR of the underlying.
     #:
-    #: EMPTY ON PURPOSE — every strategy currently resolves to the 1.25 default,
-    #: so this table changes NOTHING until a value is added. The mechanism ships
-    #: ahead of the values because stop distance is a risk constant and needs
-    #: explicit commander approval, exactly like `supported_assets` shipped as
-    #: an enforced-but-unused gate before any scope was narrowed.
+    #: COMMANDER-APPROVED 2026-08-13, on the stop_lab measurements below. Only
+    #: the two modules the tight stop was measurably HURTING are listed;
+    #: RangeFade and MacroBreakout are deliberately absent because 1.25 tested
+    #: optimal for them, and an entry here would make them worse.
     #:
     #: WHY IT MUST BE PER-STRATEGY (measured 2026-08-13,
     #: tools/research/stop_lab.py, 60-minute horizon, real candles). One stop
@@ -2667,17 +2666,77 @@ class AutonomousTradingBot:
     #: 2. At 2.5-3.0 ATR the stop fires on under 10% of trades, so it stops
     #:    being the real protection and TIERED_PREMIUM_BACKSTOP becomes the
     #:    floor that matters. Widening this is therefore a bigger change than
-    #:    it looks: it moves which rung actually protects the account.
-    _THESIS_ATR_MULT_BY_STRATEGY: dict[str, float] = {}
+    #:    it looks: it moves which rung actually protects the account. That
+    #:    handover is deliberate and accepted, not overlooked — the premium
+    #:    backstop is a HARD cap on rupees lost, which the thesis stop never
+    #:    was, so the account's worst case per trade does not widen with these
+    #:    numbers even though the underlying leash does.
+    #:
+    #: FIRST THING TO CHECK IF RESULTS GET WORSE: these numbers say the wider
+    #: stop is better ON THE UNDERLYING. If live paper shows SessionShift
+    #: losing MORE per trade while its direction accuracy holds up, the cause
+    #: is theta on the longer holds, not the direction call — and the answer is
+    #: to shorten the horizon, not to re-tighten the stop blindly.
+    #: Applies to every asset the strategy trades.
+    #:
+    #: MeanReversion at 2.5 measured better on all three indices under the FULL
+    #: geometry (stop + the 1.5x target it implies, 120min):
+    #:   NIFTY     +0.183 -> +0.216      BANKNIFTY +0.247 -> +0.296
+    #:   SENSEX    +0.123 -> +0.257
+    #: NIFTY alone peaks at 2.0 (+0.224) but the gap to 2.5 is 0.008 ATR, far
+    #: inside the noise of n=39; one value for the module is the honest read.
+    _THESIS_ATR_MULT_BY_STRATEGY: dict[str, float] = {
+        "strat-meanreversion-sideways-v1": 2.5,
+        # NOT LISTED, ON PURPOSE — 1.25 measured OPTIMAL for these two, so an
+        # entry here would make them worse:
+        #   strat-rangefade-mcx-v1             +0.227 at 1.25 vs +0.163 at 2.0
+        #   strat-macrobreakout-commodities-v1 +0.389 t=+2.02 at 1.25
+    }
 
-    def _thesis_atr_mult_for(self, strategy_id: str | None) -> float:
-        """Thesis-stop distance for this strategy, in ATR of the underlying.
+    #: Per (strategy, ASSET), and it beats the table above.
+    #:
+    #: WHY THIS SECOND TABLE EXISTS. stop_lab measured the stop with a TIME
+    #: exit and reported SessionShift better at 3.0 on BOTH its assets. But
+    #: production also floors the target at 1.5x the risk the stop creates
+    #: (see _risk_pct_for), so widening the stop widens the target with it.
+    #: Measured TOGETHER, the two assets separate completely:
+    #:
+    #:   SessionShift GOLDM    1.25 +0.069 -> 3.0 +0.355   apply
+    #:   SessionShift SILVERM  1.25 +0.007 -> 3.0 -0.061   DO NOT
+    #:
+    #: Silver is negative at 2.0, 2.5 AND 3.0. Applying one value per strategy
+    #: would have shipped a measured-negative stop onto SILVERM on the strength
+    #: of gold's numbers — the same "edge does not travel between assets"
+    #: failure that per-symbol scoping was built to stop, in a new place.
+    #:
+    #: LEAD WORTH CHASING: SessionShift on SILVERM is +0.007 under full
+    #: geometry — indistinguishable from zero at ANY stop width, while GOLDM is
+    #: strongly positive. Its place in the lineup deserves review; that is a
+    #: scoping decision for the commander, not a constant to tune.
+    _THESIS_ATR_MULT_BY_STRATEGY_ASSET: dict[tuple[str, str], float] = {
+        ("strat-sessionshift-mcx-v1", "GOLDM"): 3.0,
+        # ("strat-sessionshift-mcx-v1", "SILVERM") deliberately absent -> 1.25
+    }
 
-        Falls back to the shared default for anything unlisted, so a strategy
-        can never lose its stop by being absent from the table.
+    def _thesis_atr_mult_for(
+        self, strategy_id: str | None, symbol: str | None = None
+    ) -> float:
+        """Thesis-stop distance for this strategy on this asset, in ATR.
+
+        Resolution order: (strategy, asset) -> strategy -> shared default.
+        Falls back at every step, so a strategy can never lose its stop by
+        being absent from a table. Fails SAFE, unlike `supported_assets`
+        which fails OPEN — an unknown scope must not mute a strategy, but an
+        unknown stop distance must never leave a position unprotected.
         """
         if not strategy_id:
             return self._OPTION_THESIS_ATR_MULT
+        if symbol:
+            scoped = self._THESIS_ATR_MULT_BY_STRATEGY_ASSET.get(
+                (strategy_id, symbol.upper())
+            )
+            if scoped is not None:
+                return scoped
         return self._THESIS_ATR_MULT_BY_STRATEGY.get(
             strategy_id, self._OPTION_THESIS_ATR_MULT
         )
@@ -2781,6 +2840,7 @@ class AutonomousTradingBot:
         entry_und_price: float | None,
         entry_und_atr: float | None,
         strategy_id: str | None = None,
+        symbol: str | None = None,
     ) -> float:
         """Fraction of premium this position ACTUALLY risks, as a decimal.
 
@@ -2812,7 +2872,7 @@ class AutonomousTradingBot:
         backstop_pct = self._backstop_pct_for(entry_premium)
         if not entry_und_atr or entry_premium <= 0:
             return backstop_pct
-        thesis_underlying_move = self._thesis_atr_mult_for(strategy_id) * float(entry_und_atr)
+        thesis_underlying_move = self._thesis_atr_mult_for(strategy_id, symbol) * float(entry_und_atr)
         thesis_premium_loss = thesis_underlying_move * self._OPTION_TARGET_ATM_DELTA
         thesis_pct = thesis_premium_loss / entry_premium
         # Whichever stop bites first is the real risk being taken.
@@ -2892,7 +2952,7 @@ class AutonomousTradingBot:
             und_price, _ = self._get_validated_live_price(underlying)
             if und_price is not None:
                 adverse = (entry_und_price - und_price) if symbol.endswith("CE") else (und_price - entry_und_price)
-                atr_mult = self._thesis_atr_mult_for(tracking.get("strategy_id"))
+                atr_mult = self._thesis_atr_mult_for(tracking.get("strategy_id"), underlying)
                 if adverse >= atr_mult * float(entry_und_atr):
                     return True, (
                         f"Underlying Thesis Stop: {underlying} moved {adverse:.2f} against "
@@ -2915,7 +2975,7 @@ class AutonomousTradingBot:
             # honest for a strategy running a non-default stop.
             min_pct = self._risk_pct_for(
                 entry_premium, entry_und_price, entry_und_atr,
-                tracking.get("strategy_id"),
+                tracking.get("strategy_id"), tracking.get("underlying"),
             ) * self._OPTION_MIN_REWARD_RISK
             target = min(
                 max(raw_target, entry_premium * (1.0 + min_pct)),
