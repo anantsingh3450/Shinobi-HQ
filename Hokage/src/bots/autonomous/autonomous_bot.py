@@ -35,7 +35,7 @@ from bots.autonomous.models import (
 )
 
 # Import new Market Intelligence Layer components
-from bots.autonomous import bias_rules
+from bots.autonomous import bias_rules, capital_regime
 from bots.autonomous.cache import IntelligenceCache
 from shared import power
 from bots.autonomous.research_intel import MarketScanner, NewsIntelligenceEngine, GeopoliticalIntelligenceEngine
@@ -719,6 +719,16 @@ class AutonomousTradingBot:
                     self._check_data_feed_session()
                 except Exception as exc:
                     logger.error(f"Data feed health check failed: {exc}")
+
+                # 0c. What can this account size actually TRADE? Runs after the
+                # feed check on purpose — it needs real quotes, and it stays
+                # silent until it gets them. Announcing "you can trade nothing"
+                # off a dead feed would be a false alarm of exactly the kind
+                # the blind-system work existed to kill. Once per boot.
+                try:
+                    self._announce_capital_regime()
+                except Exception as exc:
+                    logger.error(f"Capital regime check failed: {exc}")
 
                 # 1. Active Exit Monitors across all active venues (Runs on both is_tick=True and is_tick=False)
                 self._monitor_and_exit_positions(is_tick=is_tick)
@@ -1716,6 +1726,140 @@ class AutonomousTradingBot:
                     f"{scope}. It will win auctions and fill nothing."
                 )
         return findings
+
+    def price_universe_lots(self, symbols: list[str]) -> dict[str, float]:
+        """Rupee cost of ONE lot of the ATM call for each symbol.
+
+        Only symbols that actually quote are returned. An asset we could not
+        PRICE is not the same as an asset we cannot AFFORD, and conflating them
+        would turn a feed hiccup into a "you can trade nothing" alarm — exactly
+        the class of false alarm the blind-system work existed to kill.
+        """
+        costs: dict[str, float] = {}
+        source = getattr(self.orchestrator, "price_source", None)
+        resolver = getattr(source, "resolve_option_contract", None)
+        if resolver is None:
+            return costs
+        for symbol in symbols:
+            try:
+                spot = source.get_price(symbol)
+                contract = resolver(symbol, "CE", spot)
+                if not contract or float(contract.get("lot_size", 0)) <= 0:
+                    continue
+                premium = float(source.get_quote(contract["tradingsymbol"]).price)
+                if premium <= 0:
+                    continue
+                costs[symbol.upper()] = premium * float(contract["lot_size"])
+            except Exception as exc:
+                logger.debug(f"Could not price a lot of {symbol}: {exc}")
+        return costs
+
+    def _announce_capital_regime(self) -> None:
+        """Say, once per boot, what this account size can actually trade.
+
+        PHASE 0 — REPORTING ONLY. Nothing here refuses an order; the router
+        still enforces the cap. The point is that Hokage should KNOW he is
+        priced out of an asset and say so at 08:45, instead of discovering it
+        one rejected trade at a time.
+
+        Measured 2026-08-15: a 20,000 account cannot hold a single lot of
+        anything in this universe. The cheapest, NATURALGAS at 7,688, needs
+        23,295 to sit inside the 33% cap.
+        """
+        if getattr(self, "_capital_regime_announced", False):
+            return
+
+        from bots.execution.options_router import MAX_PREMIUM_CHEST_FRACTION
+        from bots.strategy.mcx_portfolio import MCX_UNIVERSE
+
+        index_universe = ["NIFTY", "BANKNIFTY", "SENSEX"]
+        costs = self.price_universe_lots(index_universe + list(MCX_UNIVERSE))
+        if not costs:
+            # No quotes at all means the feed is not up yet, NOT that the
+            # account is broke. Stay silent and retry on a later iteration.
+            logger.debug("Capital regime: no lot could be priced yet; will retry.")
+            return
+
+        self._capital_regime_announced = True
+        lines: list[str] = []
+        starved: list[str] = []
+
+        for league, account_id, universe in (
+            ("Index Dojo", "paper", index_universe),
+            ("MCX Arena", "paper_mcx", list(MCX_UNIVERSE)),
+        ):
+            equity = self._account_equity(account_id)
+            if equity is None:
+                continue
+            profile = capital_regime.profile_for(equity)
+            scoped = {s: c for s, c in costs.items() if s in {u.upper() for u in universe}}
+            affordable, priced_out = capital_regime.affordable_assets(
+                equity, scoped, MAX_PREMIUM_CHEST_FRACTION
+            )
+            head = f"{league}: {equity:,.0f} -> {profile.name} regime"
+            if affordable:
+                head += f" | can trade {', '.join(affordable)}"
+            if priced_out:
+                head += f" | PRICED OUT of {', '.join(priced_out)}"
+            lines.append(head)
+            if not affordable and scoped:
+                starved.append(league)
+
+        if not lines:
+            return
+        for line in lines:
+            logger.info(f"Capital regime — {line}")
+
+        if starved:
+            cheapest = min(costs.items(), key=lambda kv: kv[1])
+            needed = capital_regime.minimum_account_for(
+                cheapest[1], MAX_PREMIUM_CHEST_FRACTION
+            )
+            alarm = (
+                f"{' and '.join(starved)} cannot afford ONE lot of anything in "
+                f"scope. Cheapest is {cheapest[0]} at {cheapest[1]:,.0f}, which "
+                f"needs {needed:,.0f} to sit inside the "
+                f"{MAX_PREMIUM_CHEST_FRACTION:.0%} cap. Every entry will be "
+                f"refused at the router."
+            )
+            logger.critical(f"CAPITAL STARVED — {alarm}")
+            if self.telegram_bot:
+                try:
+                    self.telegram_bot.send_message(f"CAPITAL STARVED\n\n{alarm}")
+                except Exception as exc:
+                    logger.debug(f"Could not send the capital-regime alert: {exc}")
+
+    def _account_equity(self, account_id: str) -> float | None:
+        """Cash for one paper account, or None when it cannot be read.
+
+        None means UNKNOWN and callers must stay silent — guessing an equity
+        would produce a confident, wrong regime.
+        """
+        try:
+            accounts = self.orchestrator.portfolio_bot.accounts
+        except Exception:
+            accounts = None
+        if isinstance(accounts, dict):
+            account = accounts.get(account_id)
+            cash = getattr(account, "cash", None)
+            if isinstance(cash, (int, float)):
+                return float(cash)
+        try:
+            from shared.persistence.sqlite_stores import SqliteStores  # noqa: F401
+        except Exception:
+            pass
+        try:
+            import sqlite3
+
+            db = self._resolver.resolve_brain_root() / "hokage.db"
+            with sqlite3.connect(db) as conn:
+                row = conn.execute(
+                    "select cash from portfolio where account_id = ?", (account_id,)
+                ).fetchone()
+            return float(row[0]) if row else None
+        except Exception as exc:
+            logger.debug(f"Could not read equity for {account_id}: {exc}")
+            return None
 
     def _announce_broke_strategies(self) -> None:
         """Run the chest audit once per boot and say so loudly if it bites."""
