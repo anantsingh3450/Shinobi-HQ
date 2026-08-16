@@ -147,7 +147,8 @@ def _trader_exit(c: TradeContext) -> list[str]:
                      f"₹{rupees(c.exit_price, paise=True)} "
                      f"({_pct(c.exit_price - c.premium, c.premium)}).")
     if c.pnl is not None:
-        lines.append(f"P&L ₹{rupees(c.pnl)}.")
+        # Sign OUTSIDE the currency symbol, matching the alert: "-₹1,685".
+        lines.append(f"P&L {'+' if c.pnl >= 0 else '-'}₹{rupees(abs(c.pnl))}.")
     return lines
 
 

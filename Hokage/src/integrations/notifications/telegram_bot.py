@@ -248,6 +248,7 @@ class TelegramBotUplink:
             f"{self._plain_terms(context)}"
             f"\n`{self.escape_markdown(symbol)}`"
         )
+        self._remember(context)
         self.send_message(msg)
 
     def notify_exit(
@@ -280,7 +281,94 @@ class TelegramBotUplink:
             f"{self._plain_terms(context)}"
             f"\n`{self.escape_markdown(symbol)}`"
         )
+        self._remember(context)
         self.send_message(msg)
+
+    #: How many recent trades stay answerable by "why". Small on purpose — the
+    #: question is almost always about the last one or two.
+    _WHY_JOURNAL_SIZE = 20
+
+    @property
+    def _journal(self) -> list:
+        """Recent TradeContexts, newest last. Created on first use so the
+        constructor signature stays untouched."""
+        if not hasattr(self, "_trade_journal"):
+            self._trade_journal: list = []
+        return self._trade_journal
+
+    def _remember(self, context: Any | None) -> None:
+        """Keep a trade so `why` can answer about it later. Never raises."""
+        if context is None:
+            return
+        try:
+            journal = self._journal
+            journal.append(context)
+            del journal[: max(0, len(journal) - self._WHY_JOURNAL_SIZE)]
+        except Exception:
+            pass
+
+    def handle_why(self, text: str) -> str | None:
+        """Answer "why" about a recent trade, from RECORDED FACTS only.
+
+        Returns None when the text is not a why-question, so normal routing
+        continues.
+
+            why                  the last trade, trader register
+            why simple           the last trade, explained to a non-trader
+            why silver / gold    the last trade on that underlying
+
+        THE POINT OF DOING THIS BEFORE THE LLM: "why" currently falls through
+        to the conversation engine's keyword cascade and then to a bare LLM
+        call with no data attached — which is where confidently invented
+        numbers come from. This answers from the same TradeContext that
+        produced the alert, or admits it does not know. It never guesses.
+        """
+        low = (text or "").strip().lower().rstrip("?").strip()
+        if not low.startswith("why") and low not in ("explain", "explain simply"):
+            return None
+
+        from bots.autonomous.trade_explainer import LEARNER, TRADER, explain
+
+        wants_simple = any(w in low for w in ("simple", "simply", "plain", "eli5", "basic"))
+        audience = LEARNER if wants_simple else TRADER
+
+        journal = list(self._journal)
+        if not journal:
+            return ("I have no trade recorded to explain yet. Ask me again after "
+                    "the next entry or exit and I'll walk you through it.")
+
+        # "why silver" / "why goldm" / "why the nifty one"
+        remainder = low.replace("why", "", 1)
+        for word in ("simple", "simply", "plain", "eli5", "basic", "the", "did", "you",
+                     "that", "one", "trade", "about"):
+            remainder = remainder.replace(word, " ")
+        remainder = remainder.strip()
+
+        chosen = journal[-1]
+        if remainder:
+            from shared.instrument import parse
+
+            for ctx in reversed(journal):
+                inst = parse(getattr(ctx, "tradingsymbol", ""))
+                haystack = f"{inst.root} {inst.display_name}".lower()
+                if any(tok and tok in haystack for tok in remainder.split()):
+                    chosen = ctx
+                    break
+            else:
+                return (f"I have nothing recorded matching '{remainder.strip()}'. "
+                        f"The most recent trade I can explain is "
+                        f"{self._instrument_line(getattr(chosen, 'tradingsymbol', ''))}.")
+
+        try:
+            body = explain(chosen, audience)
+        except Exception as exc:
+            logger.error(f"Explaining a trade failed: {exc}")
+            return "I could not put that trade into words just now."
+
+        head = self._instrument_line(getattr(chosen, "tradingsymbol", ""))
+        tail = ("" if wants_simple else
+                "\n\n_Reply `why simple` for the same thing without the jargon._")
+        return f"*{self.escape_markdown(head)}*\n\n{body}{tail}"
 
     @staticmethod
     def _instrument_line(symbol: str) -> str:
@@ -597,12 +685,22 @@ class TelegramBotUplink:
                         # banknifty put" and executes it immediately.
                         logger.info(f"Received conversational query via Telegram: {text}")
                         try:
-                            trade_reply = self._try_natural_trade(text)
-                            if trade_reply is not None:
+                            # "why" is answered from the RECORDED TradeContext
+                            # before anything else sees it. Left to the normal
+                            # route it reaches the keyword cascade and then a
+                            # bare LLM call with no data attached — which is
+                            # exactly where invented numbers come from.
+                            why_reply = self.handle_why(text)
+                            trade_reply = (
+                                None if why_reply is not None
+                                else self._try_natural_trade(text)
+                            )
+                            if why_reply is not None:
+                                self.send_message(why_reply)
+                            elif trade_reply is not None:
                                 self.send_message(trade_reply)
                             else:
-                                response = self._conversational_reply(text)
-                                self.send_message(response)
+                                self.send_message(self._conversational_reply(text))
                         except Exception as e:
                             logger.error(f"Failed to generate response for Telegram: {e}")
                             self.send_message("❌ Commander, I hit an error processing that. Try again?")
