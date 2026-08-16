@@ -214,4 +214,9 @@ class TestMarkdownEscaping:
         body = sent[0]
         assert r"CRUDE\_OIL moved 40.00" in body
         # The template's own emphasis must survive escaping of the values.
-        assert "*Exit Price*" in body
+        assert "*Exit price*" in body
+        # 2026-08-16: the alert now NAMES the instrument instead of printing the
+        # raw tradingsymbol, and the raw symbol moves to a code span at the end
+        # so it stays copy-pasteable into Kite. Escaping is unaffected.
+        assert "Crude Oil · 7,750 CALL · 26 Jul expiry" in body
+        assert "`CRUDEOIL26JUL7750CE`" in body

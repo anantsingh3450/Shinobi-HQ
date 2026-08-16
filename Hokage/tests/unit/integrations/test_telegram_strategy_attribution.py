@@ -36,7 +36,10 @@ def test_exit_alert_names_the_strategy_and_the_money():
                    reason="TIERED_PREMIUM_BACKSTOP", strategy="MeanReversion", pnl=-1301.0)
     body = up.send_message.call_args[0][0]
     assert "MeanReversion" in body
-    assert "-1,301.00" in body
+    # 2026-08-16: money now carries a currency symbol, with the SIGN OUTSIDE it
+    # ("-₹1,301.00", not "₹-1,301.00"). The loss must still be unmistakable.
+    assert "-₹1,301.00" in body
+    assert "Sensex · 78,300 PUT · 13 Aug expiry" in body
 
 
 def test_alerts_still_work_without_attribution():

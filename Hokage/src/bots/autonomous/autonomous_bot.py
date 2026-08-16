@@ -1727,6 +1727,52 @@ class AutonomousTradingBot:
                 )
         return findings
 
+    def _trade_context(
+        self,
+        symbol: str,
+        tracking: dict[str, Any] | None,
+        *,
+        side: str,
+        premium: float | None = None,
+        target: float | None = None,
+        edge: float | None = None,
+        exit_price: float | None = None,
+        exit_reason: str | None = None,
+        pnl: float | None = None,
+        strategy_reason: str | None = None,
+    ) -> Any:
+        """Assemble the facts needed to explain one trade in either register.
+
+        Returns None on any failure. An explanation is a nicety; losing the
+        alert that a real trade happened is not acceptable, so nothing here is
+        allowed to propagate.
+        """
+        try:
+            from bots.autonomous.trade_explainer import TradeContext
+
+            track = tracking or {}
+            strategy_id = track.get("strategy_id")
+            underlying = track.get("underlying") or ""
+            return TradeContext(
+                tradingsymbol=symbol,
+                side=side,
+                strategy=self._strategy_display_name(strategy_id),
+                strategy_reason=strategy_reason,
+                premium=premium if premium is not None else track.get("entry_price"),
+                lot_size=track.get("lot_size"),
+                target=target if target is not None else track.get("target_price"),
+                underlying_price=track.get("entry_underlying_price"),
+                underlying_atr=track.get("entry_underlying_atr"),
+                stop_atr_mult=self._thesis_atr_mult_for(strategy_id, underlying),
+                edge_score=edge,
+                exit_price=exit_price,
+                exit_reason=exit_reason,
+                pnl=pnl,
+            )
+        except Exception as exc:
+            logger.debug(f"Could not build a trade context for {symbol}: {exc}")
+            return None
+
     def price_universe_lots(self, symbols: list[str]) -> dict[str, float]:
         """Rupee cost of ONE lot of the ATM call for each symbol.
 
@@ -3319,6 +3365,11 @@ class AutonomousTradingBot:
                                 symbol, price=current_price, reason=exit_reason,
                                 strategy=self._strategy_display_name(tracking.get("strategy_id")),
                                 pnl=live_pnl,
+                                context=self._trade_context(
+                                    symbol, tracking, side="exit",
+                                    exit_price=current_price,
+                                    exit_reason=exit_reason, pnl=live_pnl,
+                                ),
                             )
                         except Exception as exc:
                             logger.error(f"Failed to send exit notification for {symbol}: {exc}")
@@ -4049,12 +4100,17 @@ class AutonomousTradingBot:
 
             if self.telegram_bot and self.telegram_bot.enabled:
                 try:
+                    _track = self._active_positions_tracking[tracked_symbol]
                     self.telegram_bot.notify_entry(
                         symbol=tracked_symbol, cmp=tracked_entry_price,
-                        target=self._active_positions_tracking[tracked_symbol]["target_price"],
+                        target=_track["target_price"],
                         edge=win_conf,
-                        strategy=self._strategy_display_name(
-                            self._active_positions_tracking[tracked_symbol].get("strategy_id")),
+                        strategy=self._strategy_display_name(_track.get("strategy_id")),
+                        context=self._trade_context(
+                            tracked_symbol, _track, side="entry",
+                            premium=tracked_entry_price,
+                            target=_track["target_price"], edge=win_conf,
+                        ),
                     )
                 except Exception:
                     pass

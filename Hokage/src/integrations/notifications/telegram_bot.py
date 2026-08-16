@@ -223,8 +223,15 @@ class TelegramBotUplink:
         target: float,
         edge: float,
         strategy: str | None = None,
+        context: Any | None = None,
     ) -> None:
         """Send a real-time entry notification.
+
+        `context` is an optional TradeContext. When supplied, a plain-English
+        paragraph is appended explaining the trade to someone who does not
+        trade. When absent the alert is still correctly NAMED — the instrument
+        header does not depend on it — so every call site benefits without
+        having to pass one.
 
         `strategy` names which arena competitor won this asset. Four strategies
         share one account, so without it an alert says a trade happened but not
@@ -233,12 +240,13 @@ class TelegramBotUplink:
         """
         who = f"• *Strategy*: {self.escape_markdown(strategy)}\n" if strategy else ""
         msg = (
-            f"🚀 *ENTERING POSITION: {self.escape_markdown(symbol)}*\n"
+            f"🚀 *ENTRY · {self.escape_markdown(self._instrument_line(symbol))}*\n"
             f"{who}"
-            f"• *CMP*: {cmp:.2f}\n"
-            f"• *Target*: {target:.2f}\n"
-            f"• *ML Edge Score*: {edge:.1f}%\n\n"
-            "Entering the probability field. Outcome is unknown; risk is defined."
+            f"• *Premium paid*: ₹{cmp:,.2f}\n"
+            f"• *Target*: ₹{target:,.2f}\n"
+            f"• *Edge*: {edge:.1f}%\n"
+            f"{self._plain_terms(context)}"
+            f"\n`{self.escape_markdown(symbol)}`"
         )
         self.send_message(msg)
 
@@ -249,23 +257,64 @@ class TelegramBotUplink:
         reason: str,
         strategy: str | None = None,
         pnl: float | None = None,
+        context: Any | None = None,
     ) -> None:
         """Send a real-time exit notification.
 
         Carries the same strategy attribution as the entry, so a closed trade
         can be read back to its author without opening the dashboard.
+        `context` behaves exactly as in notify_entry.
         """
         who = f"• *Strategy*: {self.escape_markdown(strategy)}\n" if strategy else ""
-        money = f"• *P&L*: Rs {pnl:+,.2f}\n" if pnl is not None else ""
+        # Sign OUTSIDE the currency symbol: "+₹2,720.00", never "₹+2,720.00".
+        money = ""
+        if pnl is not None:
+            money = f"• *P&L*: {'+' if pnl >= 0 else '-'}₹{abs(pnl):,.2f}\n"
+        mark = "🟢" if (pnl or 0) > 0 else ("🔴" if pnl is not None else "🛑")
         msg = (
-            f"🛑 *EXITING POSITION: {self.escape_markdown(symbol)}*\n"
+            f"{mark} *EXIT · {self.escape_markdown(self._instrument_line(symbol))}*\n"
             f"{who}"
-            f"• *Exit Price*: {price:.2f}\n"
+            f"• *Exit price*: ₹{price:,.2f}\n"
             f"{money}"
-            f"• *Reason*: {self.escape_markdown(reason)}\n\n"
-            "Position closed. Logging autopsy for pattern analysis."
+            f"• *Reason*: {self.escape_markdown(reason)}\n"
+            f"{self._plain_terms(context)}"
+            f"\n`{self.escape_markdown(symbol)}`"
         )
         self.send_message(msg)
+
+    @staticmethod
+    def _instrument_line(symbol: str) -> str:
+        """`SILVERM26AUG237000CE` -> `Silver Mini · 2,37,000 CALL · 26 Aug expiry`.
+
+        A live alert once read "SILVERM26AUG237000CE / CMP: 4638.00". SILVERM is
+        Silver MINI and nothing said so; the strike and expiry were welded into
+        one token; and 4,638 is the PREMIUM while silver itself was near
+        2,37,000 — inviting the reader to mistake one for the other. Anything
+        that does not parse falls back to the raw symbol.
+        """
+        try:
+            from shared.instrument import parse
+
+            return parse(symbol).headline()
+        except Exception:
+            return symbol
+
+    @staticmethod
+    def _plain_terms(context: Any | None) -> str:
+        """The learner-register paragraph, or nothing at all.
+
+        Never allowed to break an alert: any failure here returns empty rather
+        than losing the notification that a real trade happened.
+        """
+        if context is None:
+            return ""
+        try:
+            from bots.autonomous.trade_explainer import LEARNER, explain
+
+            text = explain(context, LEARNER).strip()
+            return f"\n📖 *In plain terms*\n{text}\n" if text else ""
+        except Exception:
+            return ""
 
     def _validate_broker_session(self) -> bool:
         """Return True only if the stored Zerodha access token passes a REAL
