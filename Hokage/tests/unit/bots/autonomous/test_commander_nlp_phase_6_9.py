@@ -71,28 +71,70 @@ def test_explainability_aggregator(mock_orchestrator, mock_cache):
     assert "[CONVICTION]" in report["unified_narrative"]
 
 
-def test_commander_conversation_engine(mock_orchestrator, mock_cache):
+def test_questions_are_answered_from_real_state_not_canned_text(mock_orchestrator, mock_cache):
+    """The 16-branch keyword cascade was deleted 2026-08-16.
+
+    It was canned when a branch matched ("how's SessionShift's performance"
+    contains "performance", so it returned a fixed portfolio blurb) and it fed
+    the model NO data when every branch missed. Questions now go to
+    GroundedChat, which answers from the ledger — and with no API key
+    configured, as in this test environment, it degrades to real facts rather
+    than to a canned paragraph or a guess.
+    """
     engine = CommanderConversationEngine(mock_orchestrator, mock_cache)
-    
-    # Test portfolio query
-    res_port = engine.respond("Explain today's portfolio")
-    assert "portfolio" in res_port.lower()
-    
-    # Test market query
-    res_mkt = engine.respond("/intel")
-    assert "regime" in res_mkt.lower()
-    
-    # Test risk query
-    res_risk = engine.respond("Explain today's risks")
-    assert "risk" in res_risk.lower()
-    
-    # Test performance query
-    res_perf = engine.respond("Explain today's P&L")
-    assert "p&l" in res_perf.lower() or "win rate" in res_perf.lower()
-    
-    # Test symbol decision query
-    res_sym = engine.respond("Why did we buy TCS?")
-    assert "tcs" in res_sym.lower()
+
+    for question in ("Explain today's portfolio", "Explain today's risks",
+                     "Explain today's P&L", "how are we doing?"):
+        reply = engine.respond(question)
+        assert "Live state read at" in reply, "answer is not grounded in real state"
+        assert "Index Dojo" in reply and "MCX Arena" in reply
+
+
+def test_the_stale_equity_branch_is_gone(mock_orchestrator, mock_cache):
+    """One branch matched "why did" plus hardcoded EQUITY tickers — tcs, infy,
+    reliance, ongc, hal, bel, sbin, lt — none of which Hokage has traded since
+    the universe became index options and MCX commodities. It swallowed "why
+    did you buy silver" too."""
+    engine = CommanderConversationEngine(mock_orchestrator, mock_cache)
+    reply = engine.respond("Why did we buy TCS?")
+    # No canned per-symbol explainer any more; it is answered from state.
+    assert "Live state read at" in reply
+
+
+def test_the_humor_dial_deliberately_survives(mock_orchestrator, mock_cache, tmp_path):
+    """"be funnier" is not a question about state — it WRITES a setting, so it
+    must be handled before anything tries to answer it, and must never be
+    routed to a model that would merely TALK about being funnier."""
+    mock_orchestrator.resolver.resolve_brain_root.return_value = tmp_path
+    engine = CommanderConversationEngine(mock_orchestrator, mock_cache)
+
+    from bots.autonomous.persona import PersonaEngine
+
+    before = PersonaEngine(tmp_path).get_humor_level()
+    reply = engine.respond("be funnier")
+    assert "humor" in reply.lower()
+    assert PersonaEngine(tmp_path).get_humor_level() > before
+
+    reply = engine.respond("tone it down")
+    assert "humor" in reply.lower()
+
+    engine.respond("set humor to 3")
+    assert PersonaEngine(tmp_path).get_humor_level() == 3
+
+    # Asking ABOUT the level must report it, not change it.
+    engine.respond("how funny are you?")
+    assert PersonaEngine(tmp_path).get_humor_level() == 3
+
+
+def test_a_normal_question_does_not_touch_the_humor_dial(mock_orchestrator, mock_cache, tmp_path):
+    mock_orchestrator.resolver.resolve_brain_root.return_value = tmp_path
+    engine = CommanderConversationEngine(mock_orchestrator, mock_cache)
+
+    from bots.autonomous.persona import PersonaEngine
+
+    engine.respond("set humor to 5")
+    engine.respond("what is open right now?")
+    assert PersonaEngine(tmp_path).get_humor_level() == 5
 
 
 def test_nl_command_router_extensions():
