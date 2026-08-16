@@ -732,14 +732,23 @@ def create_dashboard_api(
             mapped_cmd = nl_router.parse_query(message)
 
             if mapped_cmd == "unmapped":
-                # Free-text: answer naturally through the same conversation
-                # engine the main chat uses, so tone/humor and plain-language
-                # style are consistent everywhere (no separate SARCASTIC path,
-                # no robotic "I couldn't map your request" prefix).
-                from bots.autonomous.conversation import CommanderConversationEngine
-                from bots.autonomous.cache import IntelligenceCache
-                engine = CommanderConversationEngine(orchestrator, IntelligenceCache(resolver.resolve_brain_root()))
-                response_text = engine.respond(message)
+                # Free-text: answer from Hokage's REAL state. GroundedChat hands
+                # the model read-only tools plus a live-state digest, so figures
+                # come from the ledger rather than from imagination, and a model
+                # outage degrades to plain facts instead of a guess. The older
+                # keyword engine stays as the fallback beneath it.
+                response_text = ""
+                try:
+                    from bots.autonomous.grounded_chat import GroundedChat
+
+                    response_text = GroundedChat().ask(message).text
+                except Exception as exc_grounded:
+                    logger.error(f"Grounded chat failed on dashboard: {exc_grounded}")
+                if not response_text.strip():
+                    from bots.autonomous.conversation import CommanderConversationEngine
+                    from bots.autonomous.cache import IntelligenceCache
+                    engine = CommanderConversationEngine(orchestrator, IntelligenceCache(resolver.resolve_brain_root()))
+                    response_text = engine.respond(message)
 
                 # Conversational Halt Protocol Interceptor
                 if "[SYSTEM_ACTION: HALT]" in response_text:

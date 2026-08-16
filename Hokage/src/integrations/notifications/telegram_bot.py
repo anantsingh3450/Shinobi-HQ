@@ -506,6 +506,21 @@ class TelegramBotUplink:
         plain-language explainers) when a trading bot is attached; otherwise
         falls back to the raw LLM processor.
         """
+        # GROUNDED FIRST. The model is handed read-only tools and a live-state
+        # digest, so it answers from Hokage's actual ledger instead of from
+        # imagination. The old route reached a bare
+        # generate_response(query, system_instruction="") with no data attached
+        # whenever the keyword cascade missed — the source of the phantom
+        # narratives in the logs.
+        try:
+            from bots.autonomous.grounded_chat import GroundedChat
+
+            answer = GroundedChat().ask(text)
+            if answer.text.strip():
+                return answer.text
+        except Exception as exc:
+            logger.error(f"Grounded chat failed on Telegram: {exc}")
+
         handler = self.command_handler
         orch = getattr(handler, "orchestrator", None) if handler is not None else None
         if orch is not None:
