@@ -317,8 +317,26 @@ def main() -> int:
         "measurements": measurements,
     }
 
-    report = build_report(current, previous_snapshots(2, exclude=today))
+    history = previous_snapshots(2, exclude=today)
+    report = build_report(current, history)
     text = render(current, report)
+
+    # Phase 2: run the evolution policy over the same snapshots and say what it
+    # would do. Nothing is applied while evolution.AUTONOMOUS_ENABLED is False —
+    # the first cycle is observed, not acted on.
+    try:
+        from bots.autonomous import evolution
+
+        decisions = evolution.plan([current] + history)
+        verdict = evolution.summarise(decisions)
+        if verdict:
+            text += "\n\n" + "-" * 60 + "\nEVOLUTION POLICY\n" + verdict
+            if not evolution.AUTONOMOUS_ENABLED:
+                text += ("\n\n(Autonomy is not armed yet. This is a report of what "
+                         "Hokage WOULD do; the lineup is unchanged.)")
+    except Exception as exc:
+        text += f"\n\n(evolution policy failed to run: {exc})"
+
     print("\n" + text + "\n")
 
     if not dry_run:
