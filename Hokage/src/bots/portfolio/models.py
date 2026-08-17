@@ -46,6 +46,20 @@ class Position:
     playbook_id: str | None = None
     volatility_regime: str | None = None
     failure_reason: str | None = None
+    #: WHICH ARENA STRATEGY OPENED THIS POSITION.
+    #:
+    #: Added 2026-08-17. Until then, which strategy made a trade was never
+    #: persisted anywhere: `trades.strategy_name` was the literal string
+    #: "AutonomousExit" for all 101 rows (it records the exit MECHANISM),
+    #: `trade_attributions` had zero rows ever, and `decision_journal` carried
+    #: conviction and P&L but no strategy. Attribution existed only in the
+    #: bot's in-memory tracking dict and in aggregate form in the portfolio
+    #: JSON — where it is polluted across the pre/post-scoping eras.
+    #:
+    #: That made per-strategy performance impossible to reconstruct from the
+    #: ledger, which blocks tiered autonomy: a loop that archives a strategy
+    #: for measuring badly must be able to prove which trades were its.
+    strategy_id: str | None = None
 
     def update_price(self, price: float) -> None:
         """Update current price and recalculate unrealized PnL."""
@@ -82,6 +96,7 @@ class Position:
             "playbook_id": self.playbook_id,
             "volatility_regime": self.volatility_regime,
             "failure_reason": self.failure_reason,
+            "strategy_id": self.strategy_id,
         }
 
     @classmethod
@@ -103,6 +118,7 @@ class Position:
             playbook_id=data.get("playbook_id"),
             volatility_regime=data.get("volatility_regime"),
             failure_reason=data.get("failure_reason"),
+            strategy_id=data.get("strategy_id"),
         )
 
 
@@ -204,6 +220,7 @@ class Account:
                     playbook_id=pos.playbook_id,
                     volatility_regime=pos.volatility_regime,
                     failure_reason=pos.failure_reason,
+                    strategy_id=pos.strategy_id,
                 )
                 updated_pos.update_price(trade.entry_price)
                 self.positions[pos.position_id] = updated_pos
@@ -222,6 +239,10 @@ class Account:
                 playbook_id=getattr(trade, "playbook_id", None),
                 volatility_regime=getattr(trade, "volatility_regime", None),
                 failure_reason=getattr(trade, "failure_reason", None),
+                # The venue puts the OrderRequest's strategy_id on the trade as
+                # strategy_name. Carried here so attribution survives into the
+                # ledger rather than living only in the bot's memory.
+                strategy_id=getattr(trade, "strategy_name", None),
             )
             new_pos.update_price(trade.entry_price)
             self.positions[trade.trade_id] = new_pos

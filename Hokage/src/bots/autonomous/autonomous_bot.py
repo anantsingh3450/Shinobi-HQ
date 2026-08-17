@@ -3280,6 +3280,20 @@ class AutonomousTradingBot:
             symbol = pos.instrument.symbol
             tracking = self._active_positions_tracking.get(symbol)
 
+            # Stamp WHICH STRATEGY owns this position onto the position itself,
+            # every pass. The tracking dict is the authoritative source but it
+            # is in-memory only; `save_account` persists whatever the position
+            # carries. Re-stamping each loop is deliberately self-healing: a
+            # position that existed before this shipped, or whose attribution
+            # was lost, gets it back on the next iteration rather than staying
+            # anonymous forever. Never overwrite a known id with None.
+            _owner = (tracking or {}).get("strategy_id")
+            if _owner and getattr(pos, "strategy_id", None) != _owner:
+                try:
+                    pos.strategy_id = _owner
+                except Exception:
+                    pass  # some venue position types are immutable; not fatal
+
             # LIVE price for the exit ladder. pos.current_price comes from the
             # paper account book, which nothing marks to market — it stays at
             # the ENTRY price forever. On 2026-07-16 the ladder spent a whole
@@ -3471,15 +3485,32 @@ class AutonomousTradingBot:
                     # contract (CRUDEOIL26JUL7750CE) minted a fresh stats domain for
                     # every strike/expiry, so confidence could never accumulate and
                     # strategies were never comparable on the same axis.
-                    stored_strategy_id = entry_meta.get("strategy_id", "strat-autotrend-equities-v1")
-                    outcome_asset = entry_meta.get("underlying") or symbol
-                    self._portfolio_manager_for_strategy(stored_strategy_id).record_trade_outcome(
-                        strategy_id=stored_strategy_id,
-                        asset=outcome_asset,
-                        is_win=is_win,
-                        pnl=live_pnl,
-                        market_regime=regime_str
+                    # NO PHANTOM DEFAULT. This used to fall back to
+                    # "strat-autotrend-equities-v1", an id that exists in
+                    # NEITHER portfolio — the same dead id that silently
+                    # disabled the ImprovementBot's evolution path for months.
+                    # Attributing a real outcome to a strategy that does not
+                    # exist is worse than recording nothing: it writes stats
+                    # for a ghost and hides that attribution was lost.
+                    stored_strategy_id = (
+                        entry_meta.get("strategy_id")
+                        or getattr(pos, "strategy_id", None)
                     )
+                    if not stored_strategy_id:
+                        logger.warning(
+                            f"No strategy attribution for {symbol}; recording the "
+                            f"outcome WITHOUT crediting any strategy rather than "
+                            f"guessing one."
+                        )
+                    outcome_asset = entry_meta.get("underlying") or symbol
+                    if stored_strategy_id:
+                        self._portfolio_manager_for_strategy(stored_strategy_id).record_trade_outcome(
+                            strategy_id=stored_strategy_id,
+                            asset=outcome_asset,
+                            is_win=is_win,
+                            pnl=live_pnl,
+                            market_regime=regime_str
+                        )
 
                     # Arm the same-day re-entry cooldown for this underlying:
                     # re-entries are allowed, immediate revenge re-entry is not.

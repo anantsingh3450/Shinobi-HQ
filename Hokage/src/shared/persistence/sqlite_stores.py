@@ -177,18 +177,22 @@ class SqlitePortfolioStore:
                     playbook_id = getattr(pos, "playbook_id", None)
                     failure_reason = getattr(pos, "failure_reason", None)
                     volatility_regime = getattr(pos, "volatility_regime", None)
+                    # Which arena strategy opened this position. Before 2026-08-17
+                    # this was persisted nowhere, so per-strategy performance could
+                    # not be reconstructed from the ledger at all.
+                    strategy_id = getattr(pos, "strategy_id", None)
                     conn.execute("""
                         INSERT INTO positions (
                             position_id, account_id, market, direction, quantity, entry_price, current_price,
                             unrealized_pnl, realized_pnl, status, opened_at, closed_at,
-                            playbook_id, failure_reason, volatility_regime
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                            playbook_id, failure_reason, volatility_regime, strategy_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """, (
                         pid, account.account_id, pos.market, pos.direction.value, pos.quantity,
                         pos.entry_price, pos.current_price, pos.unrealized_pnl, pos.realized_pnl,
                         pos.status.value, pos.opened_at.isoformat(),
                         pos.closed_at.isoformat() if pos.closed_at else None,
-                        playbook_id, failure_reason, volatility_regime
+                        playbook_id, failure_reason, volatility_regime, strategy_id
                     ))
             logger.info(f"Persisted account {account.account_id} and {len(account.positions)} positions to SQLite.")
         except Exception as exc:
@@ -234,6 +238,9 @@ class SqlitePortfolioStore:
                     playbook_id=prow["playbook_id"] if "playbook_id" in prow.keys() else None,
                     failure_reason=prow["failure_reason"] if "failure_reason" in prow.keys() else None,
                     volatility_regime=prow["volatility_regime"] if "volatility_regime" in prow.keys() else None,
+                    # Absent on rows written before schema v8; None is correct
+                    # there rather than a guess.
+                    strategy_id=prow["strategy_id"] if "strategy_id" in prow.keys() else None,
                 )
 
             return Account(

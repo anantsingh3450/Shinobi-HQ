@@ -145,6 +145,7 @@ class SqliteStorageEngine:
                 playbook_id TEXT,
                 failure_reason TEXT,
                 volatility_regime TEXT,
+                strategy_id TEXT,
                 FOREIGN KEY (account_id) REFERENCES portfolio(account_id) ON DELETE CASCADE
             );
         """)
@@ -636,6 +637,30 @@ class SqliteStorageEngine:
                 conn.execute(
                     "INSERT OR REPLACE INTO schema_version (version, migrated_at) VALUES (?, ?);",
                     (7, datetime.now(timezone.utc).isoformat())
+                )
+            if current_version < 8:
+                # WHICH STRATEGY OPENED A POSITION.
+                #
+                # Until 2026-08-17 this was persisted NOWHERE:
+                # trades.strategy_name held the literal "AutonomousExit" for
+                # every row (it records the exit mechanism), trade_attributions
+                # had never been written to at all, and decision_journal carried
+                # conviction and P&L but no strategy. Per-strategy performance
+                # therefore could not be reconstructed from the ledger, which
+                # blocks tiered autonomy — a loop that archives a strategy for
+                # measuring badly must be able to prove which trades were its.
+                #
+                # Rows written before this migration stay NULL. That is honest:
+                # attribution for them was genuinely lost and backfilling it
+                # from aggregates would be fabrication.
+                logger.info("Applying Schema Version 8: per-trade strategy attribution.")
+                try:
+                    conn.execute("ALTER TABLE positions ADD COLUMN strategy_id TEXT;")
+                except sqlite3.OperationalError:
+                    pass  # column already exists
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_version (version, migrated_at) VALUES (?, ?);",
+                    (8, datetime.now(timezone.utc).isoformat())
                 )
             conn.commit()
             return False
