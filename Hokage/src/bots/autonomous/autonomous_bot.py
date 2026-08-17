@@ -3232,14 +3232,41 @@ class AutonomousTradingBot:
                 if not is_paper_venue:
                     active_venues.append(venue)
 
-        # Query all positions and map symbol to the venue where it belongs
-        positions_with_venue = []
+        # Query all positions and map symbol to the venue where it belongs.
+        #
+        # DEDUPLICATED BY SYMBOL, and that is load-bearing. SIX paper venues are
+        # registered (paper_main, paper_mcx, paper_alpaca, paper_coindcx,
+        # paper_oanda, paper_zerodha) and several share the same underlying
+        # account, so a single position is reported once PER VENUE. Without this,
+        # every exit fires N times: the first fills and the rest are refused by
+        # the reduce-only guard, logging "position remains open" about a position
+        # that just closed.
+        #
+        # Observed live 2026-08-17: BANKNIFTY (on the shared `paper` account,
+        # visible to five venues) took 5 exit attempts — 1 fill, 4 rejections —
+        # while GOLDM (alone on paper_mcx) took exactly 1. No money was ever at
+        # risk because reduce_only held, but the noise would mask a GENUINE
+        # repeat-exit condition, which is the failure that produced 207 phantom
+        # positions in July.
+        #
+        # Deduping by symbol is correct rather than merely convenient:
+        # `_active_positions_tracking` is keyed by symbol alone, so the system
+        # cannot represent two positions in the same symbol anyway. Where a
+        # symbol is seen more than once, prefer the venue the entry was actually
+        # placed on so the exit goes back to the same book.
+        by_symbol: dict[str, tuple[Any, Any]] = {}
         for venue in active_venues:
             try:
-                for pos in venue.get_positions():
-                    positions_with_venue.append((pos, venue))
+                venue_positions = venue.get_positions()
             except Exception as exc:
                 logger.error(f"Failed to fetch positions for venue {venue.venue_id}: {exc}")
+                continue
+            for pos in venue_positions:
+                symbol = pos.instrument.symbol
+                entry_venue = (self._active_positions_tracking.get(symbol) or {}).get("venue_id")
+                if symbol not in by_symbol or venue.venue_id == entry_venue:
+                    by_symbol[symbol] = (pos, venue)
+        positions_with_venue = list(by_symbol.values())
 
         risk_state = self.cache.read_intelligence("risk_state.json") or {}
         vix_impact_delta = risk_state.get("vix_impact_delta", 0.0)
