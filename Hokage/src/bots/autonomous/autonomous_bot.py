@@ -4238,6 +4238,30 @@ class AutonomousTradingBot:
             except Exception:
                 cash_for_premium = None
             chest_budget = self._strategy_available_capital(selected_strat["strategy_id"])
+
+            # DAILY CHURN CAP. The MCX path called record_trade() but never
+            # is_entry_allowed(), so it COUNTED entries against the cap and
+            # then ignored the count: the index league was capped at 3 entries
+            # per symbol and 5 unique symbols a day, the commodity league at
+            # nothing. Found 2026-08-18, when SessionShift entered SILVERM
+            # three times in one evening and lost twice in a row, the second
+            # trade lasting two minutes. The cap's own docstring is the reason
+            # it exists: "churn on one symbol is revenge trading, not data
+            # collection." Checked BEFORE the order is built, so a blocked
+            # entry costs no routing work and leaves no half-state behind.
+            _playbook_id = f"MCX_{selected_strat['name']}"
+            _allowed, _cap_reason = self.strategy_engine.is_entry_allowed(
+                _playbook_id, symbol, now_ist.strftime("%Y-%m-%d")
+            )
+            if not _allowed:
+                logger.warning(f"MCX Arena: entry for {symbol} blocked. {_cap_reason}")
+                bus.publish("OPPORTUNITY_REJECTED", {
+                    "symbol": symbol,
+                    "reason": f"DailyCap: {_cap_reason}",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+                continue
+
             try:
                 opt_router = OptionsRouter(price_source=self.orchestrator.price_source)
                 req = opt_router.route_to_options(
@@ -4274,7 +4298,7 @@ class AutonomousTradingBot:
             tracked_entry_price = float(req_meta.get("premium_at_entry", entry_price))
             entry_und_atr = self._get_atr_for_symbol(symbol)
 
-            self.strategy_engine.record_trade(f"MCX_{selected_strat['name']}", symbol, now_ist.strftime("%Y-%m-%d"))
+            self.strategy_engine.record_trade(_playbook_id, symbol, now_ist.strftime("%Y-%m-%d"))
 
             self._active_positions_tracking[tracked_symbol] = {
                 "entry_price": tracked_entry_price,
