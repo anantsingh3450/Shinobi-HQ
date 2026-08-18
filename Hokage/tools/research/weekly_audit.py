@@ -87,8 +87,15 @@ def _stats(edges: list[float], hits: int) -> dict[str, float] | None:
     return {"n": n, "accuracy": hits / n * 100.0, "edge_atr": mean, "t": t}
 
 
-def measure(symbol: str, bars: list[dict], modules: dict) -> dict[str, dict]:
-    """Every module's edge on this asset. Mirrors entry_module_lab exactly."""
+def accumulate(symbol: str, bars: list[dict], modules: dict) -> dict[str, dict]:
+    """Raw forward edges per module on this asset, before any statistics.
+
+    Split out from measure() so the same signals can be POOLED across a
+    league's assets. A module that fires ~9 times a quarter on one index —
+    MacroBreakout does — can never reach significance per asset, but the
+    question "does this module have edge" is answerable across the three it
+    trades. See the pooled section of the report, and its caveat.
+    """
     acc = {name: {"edges": [], "hits": 0} for name in modules}
     for i in range(42, len(bars) - HORIZON):
         window = bars[: i + 1]
@@ -112,11 +119,69 @@ def measure(symbol: str, bars: list[dict], modules: dict) -> dict[str, dict]:
             acc[name]["edges"].append((forward * call) / ctx.atr)
             if (forward * call) > 0:
                 acc[name]["hits"] += 1
+    return acc
+
+
+def _summarise(acc: dict[str, dict]) -> dict[str, dict]:
     out = {}
     for name, rec in acc.items():
         stat = _stats(rec["edges"], rec["hits"])
         if stat:
             out[name] = stat
+    return out
+
+
+def measure(symbol: str, bars: list[dict], modules: dict) -> dict[str, dict]:
+    """Every module's edge on this asset. Mirrors entry_module_lab exactly."""
+    return _summarise(accumulate(symbol, bars, modules))
+
+
+#: Which assets are pooled together. A league's assets move together, which is
+#: exactly why pooling needs the caveat printed beside it.
+LEAGUES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Index Dojo", ("NIFTY", "BANKNIFTY", "SENSEX")),
+    ("MCX Arena", ("CRUDEOIL", "NATURALGAS", "GOLDM", "SILVERM")),
+)
+
+
+#: Printed WITH the pooled table, never as a footnote. A number whose
+#: limitation lives somewhere else gets quoted without it.
+POOLED_CAVEAT = (
+    "A league's assets move together, so pooled signals are correlated and the "
+    "effective sample is well below the printed n. Treat the pooled t as an "
+    "UPPER BOUND: good for ranking modules and spotting one worth watching, "
+    "never enough on its own to move capital."
+)
+
+
+def pool(per_asset: dict[str, dict[str, dict]]) -> dict[str, dict[str, dict]]:
+    """league -> module -> stat, pooling each module's signals across assets.
+
+    WHY THIS EXISTS (2026-08-18): every one of the six live index pairs measured
+    WEAK or NEGATIVE per asset, and MacroBreakout could not be judged at all —
+    it fires about nine times a quarter on NIFTY, so no single asset ever
+    reaches n. Pooled across the three it trades, it measured t=+2.79 on the
+    recent half against t=-0.83 on the older one, with two consecutive positive
+    quarters (+1.97 then +2.27). That is the only signal in the index league
+    that does not look like noise, and it is invisible per asset.
+
+    READ THE t WITH A DISCOUNT. NIFTY, BANKNIFTY and SENSEX move together, so
+    pooled signals are heavily correlated and the effective sample is far below
+    the printed n. The pooled t is therefore an UPPER BOUND on significance,
+    useful for ranking modules against each other and for spotting a module
+    worth watching — never sufficient on its own to move capital.
+    """
+    out: dict[str, dict[str, dict]] = {}
+    for league, assets in LEAGUES:
+        merged: dict[str, dict] = {}
+        for asset in assets:
+            for name, rec in (per_asset.get(asset) or {}).items():
+                cell = merged.setdefault(name, {"edges": [], "hits": 0})
+                cell["edges"] += rec["edges"]
+                cell["hits"] += rec["hits"]
+        stats = _summarise(merged)
+        if stats:
+            out[league] = stats
     return out
 
 
@@ -323,6 +388,7 @@ def main() -> int:
 
     lineup = live_lineup()
     measurements: dict[str, dict] = {}
+    raw: dict[str, dict] = {}
     failed: list[str] = []
 
     for symbol in UNIVERSE:
@@ -334,7 +400,8 @@ def main() -> int:
             print(f"  {symbol}: could not load bars ({exc})")
             failed.append(symbol)
             continue
-        measurements[symbol] = measure(symbol, bars, named)
+        raw[symbol] = accumulate(symbol, bars, named)
+        measurements[symbol] = _summarise(raw[symbol])
 
     if not measurements:
         print("No asset could be measured — is the broker session live? "
@@ -351,11 +418,30 @@ def main() -> int:
         "failed_symbols": failed,
         "lineup": lineup,
         "measurements": measurements,
+        # Extra key by design: evolution.plan() reads only lineup and
+        # measurements, so pooling cannot move Tier 1 until someone
+        # deliberately wires it in.
+        "pooled": pool(raw),
     }
 
     history = previous_snapshots(2, exclude=today)
     report = build_report(current, history)
     text = render(current, report)
+
+    # A module that fires nine times a quarter on one index can never reach
+    # significance per asset. Pooled across its league it can, which is how
+    # MacroBreakout turned out to be the only index module that does not look
+    # like noise.
+    pooled = current.get("pooled") or {}
+    if pooled:
+        lines = ["", "-" * 60, "POOLED ACROSS EACH LEAGUE"]
+        for league, mods in pooled.items():
+            lines.append("  " + league)
+            for name, s in sorted(mods.items(), key=lambda kv: -kv[1]["t"]):
+                lines.append("    %-26s n=%-5d edge=%+.3f  t=%+.2f"
+                             % (name, s["n"], s["edge_atr"], s["t"]))
+        lines += ["", POOLED_CAVEAT]
+        text += chr(10) + chr(10).join(lines)
 
     # Coverage first: a strategy measuring badly is a question about the
     # lineup, but an asset nobody can trade is a hole in the arena itself, and
