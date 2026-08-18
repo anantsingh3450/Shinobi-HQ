@@ -1531,18 +1531,45 @@ class AutonomousTradingBot:
 
             from integrations.data.models import CandleInterval, HistoricalDataRequest
 
-            instrument = self.orchestrator.price_source.resolve_instrument(symbol)
-            if instrument is None:
-                return None
-            res = self.orchestrator.price_source.get_historical_candles(
-                HistoricalDataRequest(
-                    instrument=instrument,
-                    start=datetime.now(timezone.utc) - timedelta(days=self._VOLUME_PROFILE_LOOKBACK_DAYS),
-                    end=datetime.now(timezone.utc),
-                    interval=CandleInterval.FIFTEEN_MINUTES,
-                )
+            start = datetime.now(timezone.utc) - timedelta(days=self._VOLUME_PROFILE_LOOKBACK_DAYS)
+            end = datetime.now(timezone.utc)
+
+            # An INDEX HAS NO VOLUME OF ITS OWN, so ask for the futures series
+            # whose volume represents it. NIFTY and BANKNIFTY got this by
+            # accident — they resolve to NFO futures — while SENSEX resolved to
+            # BSE:SENSEX, the index, whose volume is None. Today's volume then
+            # came back 0, this method returned None, and the caller SKIPPED the
+            # gate: across 200 volume rejections not one was SENSEX.
+            #
+            # Volume only. Price, ATR, bias and strike selection still read the
+            # index, because a futures basis would skew all four.
+            candles: list[Any] = []
+            _volume_candles = getattr(
+                self.orchestrator.price_source, "get_volume_candles", None
             )
-            candles = list(res.candles) if res and res.candles else []
+            if callable(_volume_candles):
+                candles = list(
+                    _volume_candles(symbol, start, end, CandleInterval.FIFTEEN_MINUTES)
+                    or []
+                )
+
+            if not candles:
+                # No volume series known, or a provider without one (mock, or a
+                # non-Kite feed). Fall back to the instrument's own candles; if
+                # those carry no volume either, the checks below return None and
+                # the caller skips the gate rather than inventing a ratio.
+                instrument = self.orchestrator.price_source.resolve_instrument(symbol)
+                if instrument is None:
+                    return None
+                res = self.orchestrator.price_source.get_historical_candles(
+                    HistoricalDataRequest(
+                        instrument=instrument,
+                        start=start,
+                        end=end,
+                        interval=CandleInterval.FIFTEEN_MINUTES,
+                    )
+                )
+                candles = list(res.candles) if res and res.candles else []
             if not candles:
                 return None
 

@@ -56,10 +56,50 @@ class KiteMarketDataProvider(MarketDataProvider):
     }
 
     #: Index underlyings whose spot is quoted on BSE and whose options list on
-    #: BFO. Kept separate from _FUTURES_UNDERLYINGS: there is no BSE index
-    #: futures contract to derive a spot from, so the index itself is the quote.
+    #: BFO. Kept separate from _FUTURES_UNDERLYINGS so that price and strike
+    #: selection read the INDEX, which is what BSE index options settle on.
+    #:
+    #: (An earlier version of this comment claimed "there is no BSE index
+    #: futures contract". There is: SENSEX26AUGFUT and later months list on BFO
+    #: with real volume and open interest. The reason to keep SENSEX out of
+    #: _FUTURES_UNDERLYINGS is the settlement reference, not the absence of a
+    #: contract. See _VOLUME_SERIES_EXCHANGES, which does use those futures.)
     _BSE_INDEX_UNDERLYINGS: dict[str, str] = {
         "SENSEX": "SENSEX",
+    }
+
+    #: Exchange carrying the FUTURES series whose VOLUME represents activity in
+    #: each underlying.
+    #:
+    #: An NSE/BSE index has no traded volume of its own — Kite reports volume 0
+    #: on NIFTY 50 and None on BSE:SENSEX. NIFTY and BANKNIFTY got a real volume
+    #: series by accident: they live in _FUTURES_UNDERLYINGS, so
+    #: _kite_quote_symbol resolves them to NFO front-month futures. SENSEX is
+    #: matched earlier by _INDEX_QUOTE_SYMBOLS and resolves to BSE:SENSEX, the
+    #: index, so _get_volume_context found volume 0, returned None, and the
+    #: caller SKIPPED the volume gate entirely.
+    #:
+    #: The result (found 2026-08-18): across 200 volume rejections, every single
+    #: one was NIFTY or BANKNIFTY and not one was SENSEX. The arena's premise is
+    #: that strategies face the same test on every asset; on SENSEX one of the
+    #: two largest gates silently did not exist.
+    #:
+    #: This map is used ONLY to source volume. Price, ATR, bias and strike
+    #: selection are untouched and still read the index, because a futures price
+    #: carries a basis (~45 points on NIFTY against a 50-point strike interval)
+    #: and index options settle on the index.
+    _VOLUME_SERIES_EXCHANGES: dict[str, str] = {
+        "NIFTY": "NFO",
+        "BANKNIFTY": "NFO",
+        "SENSEX": "BFO",
+        "BANKEX": "BFO",
+        "CRUDEOIL": "MCX",
+        "CRUDE_OIL": "MCX",
+        "NATURALGAS": "MCX",
+        "GOLD": "MCX",
+        "GOLDM": "MCX",
+        "SILVER": "MCX",
+        "SILVERM": "MCX",
     }
 
     #: Spot quote for each index whose options are CASH-SETTLED ON THE INDEX.
@@ -389,6 +429,87 @@ class KiteMarketDataProvider(MarketDataProvider):
             exchange=exchange,
             currency="INR"
         )
+
+    def volume_series_symbol(self, market: str) -> str | None:
+        """Kite quote symbol of the series whose VOLUME represents `market`.
+
+        Returns None when no volume-bearing series is known, and the caller must
+        then skip its volume gate rather than measure zero. Never used for
+        price: see _VOLUME_SERIES_EXCHANGES.
+        """
+        underlying = market.upper().strip()
+        exchange = self._VOLUME_SERIES_EXCHANGES.get(underlying)
+        if not exchange:
+            return None
+        mapped = self._FUTURES_UNDERLYINGS.get(underlying)
+        name = mapped[1] if mapped else underlying
+        try:
+            return f"{exchange}:{self._nearest_futures_symbol(exchange, name)}"
+        except Exception:
+            return None
+
+    def get_volume_candles(
+        self, market: str, start: datetime, end: datetime, interval: Any
+    ) -> tuple:
+        """Candles of the VOLUME series for `market`, or () when there is none.
+
+        Deliberately separate from get_historical_candles. That method must keep
+        returning the INDEX series for an index, because ATR, the bias engine
+        and strike selection all read it and a futures basis would skew every
+        one of them. Only the volume gate wants the futures tape.
+        """
+        kite_symbol = self.volume_series_symbol(market)
+        if not kite_symbol:
+            return ()
+
+        client = self._connection_manager.get_kite_client()
+        try:
+            token = client.quote([kite_symbol])[kite_symbol]["instrument_token"]
+        except Exception:
+            return ()
+
+        interval_map = {
+            CandleInterval.ONE_MINUTE: "minute",
+            CandleInterval.FIVE_MINUTES: "5minute",
+            CandleInterval.FIFTEEN_MINUTES: "15minute",
+            CandleInterval.ONE_HOUR: "60minute",
+            CandleInterval.ONE_DAY: "day",
+        }
+        from integrations.brokers.session_manager import KolkataTime
+        _ist = KolkataTime()
+        from_date = start.astimezone(_ist) if start.tzinfo else start
+        to_date = end.astimezone(_ist) if end.tzinfo else end
+
+        try:
+            rows = client.historical_data(
+                instrument_token=token,
+                from_date=from_date,
+                to_date=to_date,
+                interval=interval_map.get(interval, "15minute"),
+            )
+        except Exception:
+            return ()
+
+        inst = self.resolve_instrument(market)
+        out = []
+        for c in rows:
+            ts = c.get("date")
+            if isinstance(ts, str):
+                ts = datetime.fromisoformat(ts)
+            out.append(
+                Candle(
+                    instrument=inst,
+                    timestamp=ts,
+                    interval=interval,
+                    open=float(c.get("open")),
+                    high=float(c.get("high")),
+                    low=float(c.get("low")),
+                    close=float(c.get("close")),
+                    volume=float(c.get("volume", 0.0)),
+                    provider=self.provider_name,
+                )
+            )
+        return tuple(out)
 
     def get_price(self, market: str) -> float:
         """Retrieve latest price for compatibility with PriceSource."""
