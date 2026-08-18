@@ -363,20 +363,28 @@ class AutonomousTradingBot:
         except Exception as exc:
             logger.error(f"Failed to save active positions: {exc}")
 
-    def _entry_family_for(self, symbol: str) -> str:
-        """Volume-gate entry family for the strategy that would execute symbol.
+    def _entry_family_of(self, strategy_name: str | None) -> str:
+        """Volume-gate entry family for the strategy that is ACTUALLY trading.
 
-        "breakout" keeps the 1.2x volume-surge demand; anything else (trend/
-        pullback/mean-reversion) is validated against the thin-tape bar only.
-        Resolution: the ACTIVE strategy the portfolio would select for this
-        asset, classified by name.
+        "breakout" carries the surge demand (BREAKOUT_MIN_RATIO); every other
+        family is held only to the thin-tape floor (TREND_MIN_RATIO), because a
+        pullback or mean-reversion entry happens on quiet retracement tape by
+        design.
+
+        THIS USED TO TAKE A SYMBOL and answer with
+        `strategy_portfolio.select_strategy(symbol)` — the strategy the
+        PORTFOLIO would pick, asked before the league had run. The league then
+        reassigns selected_strat from its own winner, so the strategy whose
+        family chose the threshold was frequently not the strategy that would
+        have traded. 260 of 278 volume rejections in Hokage's history were made
+        on the breakout bar, and 242 of those would have passed the trend bar.
+        MeanReversion was being starved by MacroBreakout's threshold on symbols
+        MacroBreakout might not even win.
+
+        Takes the winner's NAME now, so the question is asked of the module
+        whose signal is about to become a position.
         """
-        try:
-            selected = self.strategy_portfolio.select_strategy(symbol)
-            name = (selected.get("strategy") or {}).get("name", "")
-            return "breakout" if "breakout" in name.lower() else "trend"
-        except Exception:
-            return "breakout"
+        return "breakout" if "breakout" in (strategy_name or "").lower() else "trend"
 
     def strategy_deployed_capital(self) -> dict[str, float]:
         """Capital locked in open positions per strategy_id.
@@ -4845,13 +4853,20 @@ class AutonomousTradingBot:
             except Exception:
                 quote = None
             vol_ctx = self._get_volume_context(symbol, quote) if quote is not None else None
+            _volume_ctx_for_winner = vol_ctx  # re-checked once the league picks
             if vol_ctx is None:
                 logger.info(f"Volume context unavailable for {symbol}; skipping volume gate (no fabricated volumes).")
                 is_vol_valid, vol_reason = True, "volume data unavailable; gate skipped"
             else:
                 current_vol, avg_vol = vol_ctx
+                # PRE-LEAGUE, so nobody knows yet which module will trade this
+                # symbol. Hold it only to the DEAD-TAPE FLOOR here; the
+                # family-specific surge demand is applied after the league
+                # names a winner, against that winner's own family. Rejecting a
+                # symbol early on a threshold borrowed from a strategy that has
+                # not won is how MeanReversion lost 242 entries it qualified for.
                 is_vol_valid, vol_reason = self.volume_engine.validate_breakout(
-                    current_vol, avg_vol, entry_family=self._entry_family_for(symbol)
+                    current_vol, avg_vol, entry_family="trend"
                 )
             if not is_vol_valid:
                 logger.info(f"Opportunity for {symbol} rejected by VolumeEngine: {vol_reason}")
@@ -5299,6 +5314,39 @@ class AutonomousTradingBot:
                     continue
 
                 _win_conf, selected_strat, _signal = _winner
+
+                # NOW the family is knowable, so ask the volume question of the
+                # module that actually won. A breakout winner must still show
+                # the surge; a mean-reversion winner never had to and no longer
+                # inherits the demand from a rival it just beat.
+                if _volume_ctx_for_winner is not None:
+                    _cur_vol, _avg_vol = _volume_ctx_for_winner
+                    _fam = self._entry_family_of(selected_strat.get("name"))
+                    _fam_ok, _fam_reason = self.volume_engine.validate_breakout(
+                        _cur_vol, _avg_vol, entry_family=_fam
+                    )
+                    if not _fam_ok:
+                        logger.info(
+                            f"League entry for {symbol} refused after the auction: "
+                            f"{selected_strat.get('name')} is a {_fam} entry and "
+                            f"{_fam_reason}"
+                        )
+                        eval_results[symbol] = {
+                            "state": "NO_TRADE",
+                            "blockers": [f"VolumeEngine: {_fam_reason}"],
+                            "confirmations": [],
+                            "conviction": int(committee_decision.decision_confidence),
+                            "risk": 0.0,
+                            "reasons": [f"VolumeEngine: {_fam_reason}"],
+                            "proposal_name": proposal.name,
+                        }
+                        bus.publish("OPPORTUNITY_REJECTED", {
+                            "symbol": symbol,
+                            "reason": f"VolumeEngine: {_fam_reason}",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        })
+                        continue
+
                 logger.info(
                     f"League entry for {symbol}: {selected_strat.get('name')} wins with "
                     f"{_signal.direction.upper()} (conf {_win_conf:.0f}) — {_signal.reason}. "
