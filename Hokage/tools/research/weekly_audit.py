@@ -140,13 +140,49 @@ def live_lineup() -> dict[str, dict]:
             mid = module_id_of.get(sid)
             if not mid:
                 continue
+            capital = strat.get("capital") or {}
+            try:
+                chest = float(capital.get("starting", 0.0)) + float(capital.get("realized_pnl", 0.0))
+            except (TypeError, ValueError):
+                chest = 0.0
             lineup[mid] = {
                 "strategy_id": sid,
                 "name": strat.get("name", sid),
                 "status": strat.get("status", "UNKNOWN"),
                 "scope": [a.upper() for a in (strat.get("supported_assets") or [])],
+                "chest": chest,
             }
     return lineup
+
+
+def coverage_gaps(lineup: dict[str, dict]) -> list[str]:
+    """Assets in UNIVERSE that no live, solvent strategy is scoped to.
+
+    The boot audit (autonomous_bot.audit_asset_coverage) catches this when
+    Hokage starts. This is the same question asked weekly, because a lineup
+    change made mid-week — an archive, a re-scope, a chest transfer — can
+    orphan an asset while the process keeps running and nothing reboots.
+
+    An empty scope FAILS OPEN, matching `_strategy_supports`: a missing list
+    means "no restriction recorded", not "trades nothing".
+    """
+    gaps: list[str] = []
+    for asset in UNIVERSE:
+        owners = [
+            info for info in lineup.values()
+            if info.get("status") not in (None, "UNKNOWN", "ARCHIVED")
+            and (not info.get("scope") or asset.upper() in info["scope"])
+        ]
+        solvent = [o for o in owners if float(o.get("chest") or 0.0) > 0]
+        if solvent:
+            continue
+        if owners:
+            names = ", ".join(sorted(o.get("name", "?") for o in owners))
+            gaps.append(f"{asset}: only {names} is scoped to it, and it has no chest "
+                        f"— it will win auctions and fill nothing.")
+        else:
+            gaps.append(f"{asset}: NO live strategy is scoped to it. It cannot trade.")
+    return gaps
 
 
 # ------------------------------------------------------------------ snapshots
@@ -320,6 +356,15 @@ def main() -> int:
     history = previous_snapshots(2, exclude=today)
     report = build_report(current, history)
     text = render(current, report)
+
+    # Coverage first: a strategy measuring badly is a question about the
+    # lineup, but an asset nobody can trade is a hole in the arena itself, and
+    # it is silent. Report it above the evolution verdict.
+    gaps = coverage_gaps(lineup)
+    if gaps:
+        text += ("\n\n" + "-" * 60 + "\nORPHANED ASSETS\n"
+                 + "\n".join(f"  {g}" for g in gaps)
+                 + "\n\nThese raise no error and fill no order. They just never trade.")
 
     # Phase 2: run the evolution policy over the same snapshots and say what it
     # would do. Nothing is applied while evolution.AUTONOMOUS_ENABLED is False —

@@ -701,6 +701,14 @@ class AutonomousTradingBot:
                 except Exception as exc:
                     logger.error(f"Strategy chest audit failed: {exc}")
 
+                # 0a-quater. And can every asset actually be traded by someone?
+                # A broke strategy fails loudly at the router; an orphaned asset
+                # fails silently forever. See audit_asset_coverage.
+                try:
+                    self._announce_orphaned_assets()
+                except Exception as exc:
+                    logger.error(f"Asset coverage audit failed: {exc}")
+
                 # 0b. A critical-battery sleep is not a surprise — it is a
                 # countdown. Warn while there is still time to plug in. The
                 # guard above does NOT cover this: ES_SYSTEM_REQUIRED stops the
@@ -1684,6 +1692,89 @@ class AutonomousTradingBot:
             return False
         return True
 
+    @staticmethod
+    def _chest_of(strat: dict[str, Any]) -> float:
+        """What this strategy can actually put at risk: seed plus realized P&L.
+
+        One definition, shared by the chest audit and the coverage audit. They
+        disagreeing about what "can afford to trade" means is how an asset ends
+        up reported as covered by a strategy that cannot fill.
+        """
+        capital = strat.get("capital") or {}
+        try:
+            return float(capital.get("starting", 0.0)) + float(capital.get("realized_pnl", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def audit_asset_coverage(self) -> list[str]:
+        """Name every asset in the universe that no live strategy can trade.
+
+        THE FAILURE THIS EXISTS TO CATCH, found 2026-08-18 and six days late:
+        TrendRider was archived on 2026-08-12 for measuring negative, and its
+        200,000 chest was released to SessionShift. Both decisions were right.
+        But TrendRider was the ONLY strategy scoped to CRUDEOIL, and
+        SessionShift is scoped to GOLDM and SILVERM. CRUDEOIL quietly stopped
+        being tradable and stayed that way for six sessions.
+
+        Nothing alarmed, because nothing failed. Hokage competed, stood aside,
+        and logged "not scoped to CRUDEOIL" twice a cycle — which at a glance
+        is indistinguishable from a quiet tape. A dead asset and a patient one
+        produce the same silence.
+
+        `evolution.py` Rail 2 already refuses to autonomously archive a
+        strategy when that would orphan an asset. But that rail guards the NEXT
+        archive; it never inspected the lineup it inherited. A rule enforced
+        only on new decisions is blind to the hole that predates it.
+
+        COVERAGE HERE MEANS LIVE *AND* SOLVENT. A broke owner is not an owner:
+        it wins the auction and converts the win into a stand-aside, which is
+        precisely how an asset goes dark while the arena looks healthy.
+        """
+        from bots.strategy.mcx_portfolio import MCX_UNIVERSE
+
+        findings: list[str] = []
+        leagues = (
+            ("Index Dojo", getattr(self, "strategy_portfolio", None),
+             ["NIFTY", "BANKNIFTY", "SENSEX"]),
+            ("MCX Arena", getattr(self, "mcx_strategy_portfolio", None),
+             list(MCX_UNIVERSE)),
+        )
+        for league, manager, universe in leagues:
+            portfolio = getattr(manager, "portfolio", None) or {}
+            strategies = list((portfolio.get("strategies") or {}).values())
+            if not strategies:
+                # An unloaded league is a different fault with its own alarms.
+                # Reporting every asset orphaned here would bury the real one.
+                continue
+            for asset in universe:
+                solvent: list[str] = []
+                broke: list[str] = []
+                for strat in strategies:
+                    if strat.get("status") in (None, "ARCHIVED"):
+                        continue
+                    if not self._strategy_supports(strat, asset):
+                        continue
+                    name = strat.get("name", strat.get("strategy_id", "?"))
+                    if self._chest_of(strat) > 0:
+                        solvent.append(name)
+                    else:
+                        broke.append(name)
+                if solvent:
+                    continue
+                if broke:
+                    findings.append(
+                        f"{league}: {asset} has no strategy that can trade it. "
+                        f"{', '.join(sorted(broke))} is scoped to it but holds no "
+                        f"chest, so it will win the auction and fill nothing."
+                    )
+                else:
+                    findings.append(
+                        f"{league}: {asset} has NO live strategy scoped to it at "
+                        f"all. It cannot trade today or any day until something is "
+                        f"scoped onto it, or it is dropped from the universe."
+                    )
+        return findings
+
     def audit_strategy_chests(self) -> list[str]:
         """Name every strategy that can compete but cannot afford to fill.
 
@@ -1712,11 +1803,7 @@ class AutonomousTradingBot:
             for strat in (portfolio.get("strategies") or {}).values():
                 if strat.get("status") == "ARCHIVED":
                     continue  # cannot trade by design; an idle chest is fine
-                capital = strat.get("capital") or {}
-                try:
-                    chest = float(capital.get("starting", 0.0)) + float(capital.get("realized_pnl", 0.0))
-                except (TypeError, ValueError):
-                    chest = 0.0
+                chest = self._chest_of(strat)
                 if chest > 0:
                     continue
                 scope = ", ".join(strat.get("supported_assets") or []) or "all assets"
@@ -1906,6 +1993,38 @@ class AutonomousTradingBot:
         except Exception as exc:
             logger.debug(f"Could not read equity for {account_id}: {exc}")
             return None
+
+    def _announce_orphaned_assets(self) -> None:
+        """Run the coverage audit once per boot and say so loudly if it bites.
+
+        Deliberately CRITICAL and deliberately on Telegram. An orphaned asset
+        produces no error, no exception and no failed order — only absence. The
+        only way it becomes visible is if something announces it.
+        """
+        if getattr(self, "_coverage_audit_done", False):
+            return
+        self._coverage_audit_done = True
+        try:
+            findings = self.audit_asset_coverage()
+        except Exception as exc:
+            logger.error(f"Asset coverage audit failed: {exc}")
+            return
+        if not findings:
+            logger.info("Asset coverage audit: every asset has a live strategy that can trade it.")
+            return
+        for line in findings:
+            logger.critical(f"ORPHANED ASSET — {line}")
+        if not self.telegram_bot:
+            return
+        try:
+            self.telegram_bot.send_message(
+                "ASSET CANNOT BE TRADED\n\n"
+                + "\n\n".join(findings)
+                + "\n\nThis raises no error and fills no order — it just never "
+                  "trades. Scope a strategy onto it, or drop it from the universe."
+            )
+        except Exception as exc:
+            logger.debug(f"Could not send the coverage audit alert: {exc}")
 
     def _announce_broke_strategies(self) -> None:
         """Run the chest audit once per boot and say so loudly if it bites."""
