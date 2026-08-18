@@ -3794,17 +3794,40 @@ class AutonomousTradingBot:
             try:
                 from bots.execution.models import TradeStatus
 
-                account = self.orchestrator.portfolio_store.load_account(
-                    self.orchestrator.paper_venue._account_id
-                )
-                changed = False
-                for position in account.positions.values():
-                    live = marked_to_market.get(position.market)
-                    if live is not None and position.status == TradeStatus.OPEN:
-                        position.update_price(live)
-                        changed = True
-                if changed:
-                    self.orchestrator.portfolio_store.save_account(account)
+                # EVERY venue holding one of these positions, not just the
+                # index book. `paper_venue` is paper_main, account "paper"; the
+                # MCX Arena is a SEPARATE venue with account "paper_mcx". This
+                # loaded only the former, so every commodity position stayed
+                # frozen at its entry price forever.
+                #
+                # Found 2026-08-18 on a live position: a CRUDEOIL call stored
+                # at 454.50 while it genuinely traded at 468.20, hiding +1,370
+                # of unrealized P&L. EXITS WERE NEVER AFFECTED — the ladder
+                # reads its own freshly fetched live_price, and that same
+                # position later closed correctly on TARGET_HIT — but MCX
+                # equity, the drift panel and every unrealized number the
+                # commander READS are computed from this book.
+                #
+                # Same shape as the exit-loop venue bug fixed 2026-08-17: the
+                # loop was taught about multiple venues, the write-back was not.
+                account_ids: list[str] = []
+                for _pos, _venue in positions_with_venue:
+                    _aid = getattr(_venue, "_account_id", None)
+                    if _aid and _aid not in account_ids:
+                        account_ids.append(_aid)
+                if not account_ids:
+                    account_ids = [self.orchestrator.paper_venue._account_id]
+
+                for _account_id in account_ids:
+                    account = self.orchestrator.portfolio_store.load_account(_account_id)
+                    changed = False
+                    for position in account.positions.values():
+                        live = marked_to_market.get(position.market)
+                        if live is not None and position.status == TradeStatus.OPEN:
+                            position.update_price(live)
+                            changed = True
+                    if changed:
+                        self.orchestrator.portfolio_store.save_account(account)
             except Exception as exc:
                 logger.error(f"Mark-to-market write-back failed (non-fatal): {exc}")
 
