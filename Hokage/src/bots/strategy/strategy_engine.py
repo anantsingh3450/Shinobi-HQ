@@ -71,19 +71,52 @@ class StrategyEngine:
         )
 
     def load_daily_trades_from_db(self, db_engine: Any, date_str: str) -> None:
-        """Recover daily utilized symbols from SQLite db on startup."""
+        """Rebuild today's entry counts from POSITIONS so the caps survive a restart.
+
+        The caps are the only thing between a losing strategy and unlimited
+        churn on one symbol, and they live in memory. Every restart used to
+        hand every playbook a fresh, empty allowance.
+
+        THIS READ THE WRONG TABLE (found 2026-08-18). It queried `trades`,
+        whose newest row was 2026-08-17, whose `playbook_id` was NULL on every
+        row, and whose `strategy_name` read "AutonomousExit" on every row —
+        that is the EXIT writer, not the entry. It therefore matched no live
+        playbook id and restored nothing, while looking like it worked: it
+        logged success either way. Hokage was restarted twice on 2026-08-18 and
+        the counters reset both times.
+
+        `positions` is the table that actually records an entry: one row per
+        opened position, carrying `opened_at` and `playbook_id`. A position
+        counts whether it is still OPEN or already CLOSED, because the cap
+        limits ENTRIES per day and not concurrent exposure — three round trips
+        on one symbol is precisely the churn it exists to stop.
+
+        Rows with no playbook_id are skipped and SAID SO, never guessed at. An
+        invented id would count against a bucket nothing enforces, which is
+        worse than a known gap because it would look enforced and not be.
+        """
         conn = db_engine.get_connection()
         try:
-            # Query all trades executed today
-            cursor = conn.execute("SELECT market, strategy_name, executed_at, playbook_id FROM trades;")
+            restored = 0
+            skipped = 0
+            cursor = conn.execute(
+                "SELECT market, playbook_id FROM positions "
+                "WHERE opened_at LIKE ? AND market IS NOT NULL;",
+                (date_str + "%",),
+            )
             for row in cursor.fetchall():
-                executed_at_str = row["executed_at"]
-                if executed_at_str.startswith(date_str):
-                    playbook_id = row["playbook_id"]
-                    if not playbook_id:
-                        playbook_id = self.get_playbook_id(row["strategy_name"])
-                    market = row["market"]
-                    self.record_trade(playbook_id, market, date_str)
-            logger.info("Successfully recovered daily Strategy Battle Arena stats from database.")
+                playbook_id = row["playbook_id"]
+                if not playbook_id:
+                    skipped += 1
+                    continue
+                self.record_trade(playbook_id, row["market"], date_str)
+                restored += 1
+            if restored or skipped:
+                msg = f"Daily caps: recovered {restored} of today's entries"
+                if skipped:
+                    msg += f"; {skipped} position(s) carried no playbook_id and were skipped"
+                logger.info(msg)
+            else:
+                logger.info("Daily caps: no entries recorded today; starting empty.")
         except Exception as e:
-            logger.error(f"Failed to load daily trades from database: {e}")
+            logger.error(f"Failed to load today's entries from database: {e}")

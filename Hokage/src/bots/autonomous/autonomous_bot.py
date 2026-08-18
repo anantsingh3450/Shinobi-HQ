@@ -4222,33 +4222,18 @@ class AutonomousTradingBot:
 
             side = OrderSide.BUY if direction == "long" else OrderSide.SELL
             resolved_ac = self.orchestrator.session_manager.resolve_asset_class(symbol)
-            resolved_exch = self.orchestrator.session_manager.resolve_exchange(symbol)
-            inst = Instrument(symbol=symbol, asset_class=resolved_ac, exchange=resolved_exch)
-            req = OrderRequest(
-                instrument=inst, side=side, quantity=1.0, order_type=OrderType.MARKET,
-                venue_id=venue.venue_id, strategy_id=selected_strat["strategy_id"],
-                execution_reason=f"MCX Arena: {selected_strat.get('name')} {direction} — {signal.reason}",
-            )
-
-            if not OptionsRouter.routes(symbol):
-                logger.warning(f"MCX Arena: {symbol} is not options-routed; skipping (never trade spot/futures).")
-                continue
-            try:
-                cash_for_premium = float(venue.get_account_balance().cash)
-            except Exception:
-                cash_for_premium = None
-            chest_budget = self._strategy_available_capital(selected_strat["strategy_id"])
-
             # DAILY CHURN CAP. The MCX path called record_trade() but never
-            # is_entry_allowed(), so it COUNTED entries against the cap and
-            # then ignored the count: the index league was capped at 3 entries
-            # per symbol and 5 unique symbols a day, the commodity league at
-            # nothing. Found 2026-08-18, when SessionShift entered SILVERM
-            # three times in one evening and lost twice in a row, the second
-            # trade lasting two minutes. The cap's own docstring is the reason
-            # it exists: "churn on one symbol is revenge trading, not data
-            # collection." Checked BEFORE the order is built, so a blocked
-            # entry costs no routing work and leaves no half-state behind.
+            # is_entry_allowed(), so it COUNTED entries against the cap and then
+            # ignored the count: the index league was capped at 3 entries per
+            # symbol and 5 unique symbols a day, the commodity league at
+            # nothing. Found 2026-08-18, when SessionShift entered SILVERM three
+            # times in one evening and lost twice in a row, the second trade
+            # lasting two minutes. The cap's own docstring is the reason it
+            # exists: "churn on one symbol is revenge trading, not data
+            # collection."
+            #
+            # Ahead of the OrderRequest, so a blocked entry builds nothing,
+            # routes nothing, and leaves no half-state behind.
             _playbook_id = f"MCX_{selected_strat['name']}"
             _allowed, _cap_reason = self.strategy_engine.is_entry_allowed(
                 _playbook_id, symbol, now_ist.strftime("%Y-%m-%d")
@@ -4261,6 +4246,28 @@ class AutonomousTradingBot:
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
                 continue
+
+            resolved_exch = self.orchestrator.session_manager.resolve_exchange(symbol)
+            inst = Instrument(symbol=symbol, asset_class=resolved_ac, exchange=resolved_exch)
+            req = OrderRequest(
+                instrument=inst, side=side, quantity=1.0, order_type=OrderType.MARKET,
+                venue_id=venue.venue_id, strategy_id=selected_strat["strategy_id"],
+                execution_reason=f"MCX Arena: {selected_strat.get('name')} {direction} — {signal.reason}",
+                # Carried so the position records WHICH playbook opened it. The
+                # index path has always set this; MCX never did, leaving all 42
+                # commodity positions with playbook_id NULL and the boot-time
+                # cap recovery nothing to match on.
+                playbook_id=_playbook_id,
+            )
+
+            if not OptionsRouter.routes(symbol):
+                logger.warning(f"MCX Arena: {symbol} is not options-routed; skipping (never trade spot/futures).")
+                continue
+            try:
+                cash_for_premium = float(venue.get_account_balance().cash)
+            except Exception:
+                cash_for_premium = None
+            chest_budget = self._strategy_available_capital(selected_strat["strategy_id"])
 
             try:
                 opt_router = OptionsRouter(price_source=self.orchestrator.price_source)
