@@ -79,9 +79,9 @@ def test_trendrider_needs_confirmed_trend_in_late_evening_window():
     mod = TrendRiderEntry()
     strong_up = tuple(100.0 + i * 0.15 for i in range(30))  # clear upward run
     last_price = strong_up[-1]
-    # Confirmed uptrend but too early (16:00, 420min) — outside 18:00-22:30.
+    # Confirmed uptrend but too early (16:00, 420min) — outside 17:00-22:30.
     sig = mod.evaluate(_ctx(minutes_into_session=420, ema9=101.0, ema21=99.0, vwap=100.0, price=last_price, closes=strong_up))
-    assert not sig.should_enter and "18:00-22:30" in sig.reason
+    assert not sig.should_enter and "17:00-22:30" in sig.reason
     # Same trend, inside the window (19:00, 600min) -> fires long.
     sig = mod.evaluate(_ctx(minutes_into_session=600, ema9=101.0, ema21=99.0, vwap=100.0, price=last_price, closes=strong_up))
     assert sig.should_enter and sig.direction == "long"

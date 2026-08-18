@@ -97,7 +97,7 @@ def generate_mcx_seed_portfolio() -> dict[str, Any]:
     meaningless evidence:
 
       RangeFade   09:30-16:30 IST, fades a VWAP overstretch  (mean reversion)
-      TrendRider  18:00-22:30 IST, joins a confirmed trend   (momentum)
+      TrendRider  17:00-22:30 IST, joins a confirmed trend   (momentum)
 
     Between them they cover thirteen hours of the MCX session without overlap
     and test genuinely opposite ideas, which is what makes a tournament worth
@@ -133,7 +133,7 @@ def generate_mcx_seed_portfolio() -> dict[str, Any]:
     )
     s2 = _seed(
         "strat-trendrider-mcx-v1", "TrendRider", ["RISK-ON", "BULL", "BEAR"],
-        "Joins an already-confirmed evening trend (18:00-22:30 IST) with volume behind it.",
+        "Joins an already-confirmed evening trend (17:00-22:30 IST) with volume behind it.",
     )
 
     return {

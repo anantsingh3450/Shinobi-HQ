@@ -147,7 +147,7 @@ async function load() {
     SessionShift: "Trades the 17:00-19:30 IST hand-off when US trading hours start overlapping India's evening session — the window where crude/gold genuinely wake up. Standard trend + VWAP alignment, but gated to fire ONLY in that window.",
     EventRider: "Rides sharp momentum thrusts in the 17:00-18:30 IST evening volatility window (a public, recurring cadence — never a guessed calendar). Needs no prior trend: a release can reverse the day's direction entirely.",
     RangeFade: "Fades VWAP overstretches during the quiet 09:30-16:30 IST pre-overlap hours, before US volume joins in. Refuses to fire once a real trend is present — same discipline as the index Dojo's MeanReversion.",
-    TrendRider: "Joins an ALREADY-confirmed evening trend (18:00-22:30 IST) with volume behind it — pure continuation, no pullback or range-break requirement. Bet: a volume-backed evening trend in crude/gold tends to run into the close.",
+    TrendRider: "Joins an ALREADY-confirmed evening trend (17:00-22:30 IST) with volume behind it — pure continuation, no pullback or range-break requirement. Bet: a volume-backed evening trend in crude/gold tends to run into the close.",
   };
   document.getElementById("explanations").innerHTML = (d.strategies || []).map(s => {
     const text = EXPLAIN[s.name] || s.notes || "No description available.";

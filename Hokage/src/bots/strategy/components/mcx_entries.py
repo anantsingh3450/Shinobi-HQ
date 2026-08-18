@@ -205,7 +205,7 @@ class TrendRiderEntry:
             return EntrySignal.stand_aside("TrendRider: session clock unknown.")
         if not (self.WINDOW_START_MIN <= m < self.WINDOW_END_MIN):
             return EntrySignal.stand_aside(
-                f"TrendRider: outside the 18:00-22:30 IST evening-trend window ({m}min into session)."
+                f"TrendRider: outside the 17:00-22:30 IST evening-trend window ({m}min into session)."
             )
 
         gap_pct = (abs(ctx.ema9 - ctx.ema21) / ctx.price * 100.0) if ctx.price else 0.0
