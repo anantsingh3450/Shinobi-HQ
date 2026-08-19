@@ -169,18 +169,50 @@ class PositionReviewEngine:
         stop_price: float,
         entry_price: float,
     ) -> str:
-        """Classify exit type."""
+        """Classify the exit from the reason the ladder ACTUALLY emitted.
+
+        THIS GRADED HOKAGE'S BEST TRADES AS HIS WORST (found 2026-08-19). The
+        matcher was written against English paraphrases the exit ladder has
+        never produced. Production emits TOKENS, and the real distribution
+        across every exit in history was:
+
+            Underlying Thesis Stop   26  -> STOP_HIT   (matched by luck: "Stop")
+            EOD                      18  -> PREMATURE
+            TARGET_HIT               15  -> PREMATURE  WRONG. It is ON_TARGET.
+            Option Hard Backstop     12  -> STOP_HIT   (matched: "stop" inside
+                                                        "Backstop")
+            TRAIL_LOCK                9  -> PREMATURE  WRONG. It is TRAILING.
+
+        24 of 80 exits — 30%, and EVERY SINGLE TARGET HIT — fell through to the
+        worst grade available. _build_lesson then wrote "Exit was premature,
+        trade closed before stop or target triggered" into the autopsy of a
+        trade that closed exactly ON its target, fifteen times. ImprovementBot
+        has been learning from that record.
+
+        The two clean wins on 2026-08-19 and 2026-08-18 were both filed this
+        way, which is how it surfaced: a CRUDEOIL call that hit its adaptive
+        target to the rupee was recorded as exiting prematurely.
+
+        ORDER MATTERS. TARGET_HIT and TRAIL_LOCK are matched BEFORE the generic
+        "STOP" test, because "Option Hard Backstop" contains "stop" and would
+        otherwise swallow anything checked after it.
+
+        The bare "TP" substring is also gone: it matched any reason containing
+        those two letters anywhere, which is a false positive waiting to happen.
+        """
         reason_upper = exit_reason.upper()
-        if "TAKE PROFIT" in reason_upper or "TP" in reason_upper:
+        if "TARGET_HIT" in reason_upper or "TAKE PROFIT" in reason_upper:
             return "ON_TARGET"
-        if "TRAILING" in reason_upper or "TSL" in reason_upper:
+        if ("TRAIL_LOCK" in reason_upper or "TRAILING" in reason_upper
+                or "TSL" in reason_upper):
             return "TRAILING"
         if "STOP" in reason_upper or "SL" in reason_upper:
             # Differentiate: did it hit stop near target (trailing) or early?
             if target_price > entry_price and exit_price > entry_price:
                 return "TRAILING"
             return "STOP_HIT"
-        # Premature = exit before stop or target triggered
+        # Everything left really did close before either level was reached —
+        # an EOD square-off, a kill switch, or a manual exit.
         return "PREMATURE"
 
     def _grade_sizing_quality(
