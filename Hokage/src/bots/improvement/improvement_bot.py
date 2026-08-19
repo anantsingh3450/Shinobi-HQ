@@ -505,10 +505,50 @@ class ImprovementBot:
         except Exception as exc:
             logger.error(f"Failed to atomically write applied improvements log: {exc}")
 
+    def _autopsy_exists(self, trade_id) -> bool:
+        """Has this trade already been autopsied?
+
+        The exit loop once fired once per REGISTERED PAPER VENUE rather than
+        once per position (fixed 2026-08-17), and every firing submitted its
+        own post-exit analysis. One 2026-07-15 trade left FIVE identical
+        autopsies behind because of it — the only duplication in the whole
+        corpus, but the write path is append-only and nothing stopped it
+        happening again.
+
+        This corpus is what the Pattern Reader counts, so a repeated exit
+        inflates whatever it concludes. Cheap to guard: the file is already
+        read here to count records.
+
+        A record with NO trade_id can never be matched and is therefore never
+        treated as a duplicate. 371 of the 440 rows on file predate trade_id
+        being recorded; collapsing them would destroy real, distinct trades.
+        """
+        if not trade_id or not self._autopsies_file.exists():
+            return False
+        try:
+            with self._autopsies_file.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    if not line.strip():
+                        continue
+                    try:
+                        if json.loads(line).get("trade_id") == trade_id:
+                            return True
+                    except json.JSONDecodeError:
+                        continue
+        except OSError:
+            return False
+        return False
+
     def process_autopsy(self, autopsy: Any) -> None:
         """Process and save a TradeAutopsy record."""
         try:
             record = autopsy.to_dict()
+            if self._autopsy_exists(record.get("trade_id")):
+                logger.info(
+                    f"TradeAutopsy for {autopsy.symbol} (Trade ID: "
+                    f"{autopsy.trade_id}) already recorded; not appending a duplicate."
+                )
+                return
             with self._autopsies_file.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(record) + "\n")
             logger.info(f"Saved TradeAutopsy for {autopsy.symbol} (Trade ID: {autopsy.trade_id})")
