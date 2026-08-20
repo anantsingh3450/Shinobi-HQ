@@ -146,9 +146,32 @@ class ShadowEngine:
             raise exc
 
     def generate_and_archive_report(self, session_id: str, report_type: str) -> str:
-        """Generate a structured, cryptographic SHA-256 checksummed EOD validation report."""
+        """Generate a structured, SHA-256 checksummed EOD validation report.
+
+        THE ID CARRIES THE SESSION, NOT JUST THE CLOCK (fixed 2026-08-20).
+        It used to be VAL_REP_{type}_{yyyymmdd_HHMMSS}, resolved to the
+        SECOND and with nothing identifying which session it belonged to. NSE
+        and BSE close at the same instant, so whenever their two reports were
+        generated inside the same second the second one lost:
+
+            2026-08-19  NSE ..._153041   BSE ..._153042   both survived, by luck
+            2026-08-20  NSE ..._153031   BSE COLLIDED     UNIQUE constraint failed
+
+        A race, not a permanent failure, which is why it went unnoticed — it
+        only bites when two exchanges land in the same second, and it fails
+        the SECOND exchange every time it does. BSE is alphabetically and
+        structurally the follower here, so the audit trail was silently
+        missing BSE days at random.
+
+        session_id already encodes the exchange and the session start, so
+        including it makes the id unique BY CONSTRUCTION rather than by the
+        clock ticking over in time.
+        """
         conn = self.engine.get_connection()
-        report_id = f"VAL_REP_{report_type.upper()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        report_id = (
+            f"VAL_REP_{report_type.upper()}_{session_id}_"
+            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
         timestamp = datetime.now(timezone.utc).isoformat()
 
         try:
