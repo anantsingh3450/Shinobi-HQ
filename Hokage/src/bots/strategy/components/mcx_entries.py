@@ -144,7 +144,31 @@ class RangeFadeEntry:
     #: hands straight over to TrendRider at 17:00: quiet hours fade, active hours
     #: trend, no gap and no overlap.
     WINDOW_END_MIN = 480     # 17:00 — hands over to TrendRider
+    #: Default stretch that counts as overextended. PER ASSET below, because
+    #: the two assets RangeFade trades measure nothing like each other.
     STRETCH_PCT = 0.30
+
+    #: Commander-approved 2026-08-20. NATURALGAS only.
+    #:
+    #: Swept six thresholds, train 2026-05..06 against hold-out 2026-07..08,
+    #: with the trend guard left ON throughout:
+    #:
+    #:   NATURALGAS  >=0.15%  TRAIN n=129 +0.368 t=+1.70  HOLD n=207 +0.486 t=+4.08
+    #:               >=0.30%  TRAIN n= 65 +0.196 t=+0.58  HOLD n= 87 +0.585 t=+3.10
+    #:
+    #: Halving the bar more than DOUBLES the signals and improves BOTH halves.
+    #: Overfitting degrades out of sample; this does the opposite, which is the
+    #: reason to believe it. Train still misses t>=2, so this is a measured
+    #: improvement rather than a confirmed edge.
+    #:
+    #: CRUDEOIL IS EXCLUDED ON PURPOSE. The same sweep on crude is negative at
+    #: every band on the hold-out and WORST at 0.15% (n=143, edge -0.052). One
+    #: class-level constant would have loosened both assets at once and bought
+    #: 57% more crude trades with negative expectancy.
+    STRETCH_PCT_BY_ASSET: dict[str, float] = {
+        "NATURALGAS": 0.15,
+    }
+
     MAX_TREND_GAP_PCT = 0.12
 
     def evaluate(self, ctx: MarketContext) -> EntrySignal:
@@ -161,14 +185,17 @@ class RangeFadeEntry:
             return EntrySignal.stand_aside(f"RangeFade: tape is trending (EMA gap {gap_pct:.3f}%) — refusing to fade it.")
 
         stretch = ctx.distance_from_vwap_pct()
-        if stretch >= self.STRETCH_PCT:
+        threshold = self.STRETCH_PCT_BY_ASSET.get(
+            (ctx.symbol or "").upper(), self.STRETCH_PCT
+        )
+        if stretch >= threshold:
             return EntrySignal(
                 True, "short",
                 f"RangeFade: price {ctx.price:.2f} stretched +{stretch:.2f}% above VWAP {ctx.vwap:.2f} "
                 f"in the quiet pre-overlap window — fading back to fair value.",
                 confidence=min(78.0, 52.0 + stretch * 18.0),
             )
-        if stretch <= -self.STRETCH_PCT:
+        if stretch <= -threshold:
             return EntrySignal(
                 True, "long",
                 f"RangeFade: price {ctx.price:.2f} stretched {stretch:.2f}% below VWAP {ctx.vwap:.2f} "
