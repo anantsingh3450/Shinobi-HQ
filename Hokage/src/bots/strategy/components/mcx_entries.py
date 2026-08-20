@@ -121,7 +121,7 @@ class EventRiderEntry:
 class RangeFadeEntry:
     """Fade an overstretched price during the quiet pre-overlap hours.
 
-    Hypothesis: before US trading hours join in (09:30-16:30 IST), MCX
+    Hypothesis: before US trading hours join in (09:30-17:00 IST), MCX
     commodities chop inside a range tracking their overnight parent close.
     A stretch from session VWAP in this quiet window is noise, not a new
     trend — fade it back to fair value. Explicitly refuses to fire once a
@@ -153,7 +153,7 @@ class RangeFadeEntry:
             return EntrySignal.stand_aside("RangeFade: session clock unknown.")
         if not (self.WINDOW_START_MIN <= m < self.WINDOW_END_MIN):
             return EntrySignal.stand_aside(
-                f"RangeFade: outside the 09:30-16:30 IST quiet window ({m}min into session)."
+                f"RangeFade: outside the 09:30-17:00 IST quiet window ({m}min into session)."
             )
 
         gap_pct = (abs(ctx.ema9 - ctx.ema21) / ctx.price * 100.0) if ctx.price else 0.0

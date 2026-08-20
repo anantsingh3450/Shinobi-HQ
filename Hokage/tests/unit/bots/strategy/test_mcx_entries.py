@@ -66,7 +66,7 @@ def test_rangefade_only_fires_in_quiet_hours_and_refuses_a_trend():
     mod = RangeFadeEntry()
     # Overstretched but OUTSIDE the quiet window (19:00, 600min).
     sig = mod.evaluate(_ctx(minutes_into_session=600, vwap=100.0, price=100.35))
-    assert not sig.should_enter and "09:30-16:30" in sig.reason
+    assert not sig.should_enter and "09:30-17:00" in sig.reason
     # Overstretched INSIDE the quiet window (12:00, 180min) -> fade short.
     sig = mod.evaluate(_ctx(minutes_into_session=180, ema9=100.1, ema21=100.0, vwap=100.0, price=100.35))
     assert sig.should_enter and sig.direction == "short"

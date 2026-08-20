@@ -96,7 +96,7 @@ def generate_mcx_seed_portfolio() -> dict[str, Any]:
     was the day the host slept from 10:28 to 18:03, so the trade counts were
     meaningless evidence:
 
-      RangeFade   09:30-16:30 IST, fades a VWAP overstretch  (mean reversion)
+      RangeFade   09:30-17:00 IST, fades a VWAP overstretch  (mean reversion)
       TrendRider  17:00-22:30 IST, joins a confirmed trend   (momentum)
 
     Between them they cover thirteen hours of the MCX session without overlap
@@ -129,7 +129,7 @@ def generate_mcx_seed_portfolio() -> dict[str, Any]:
 
     s1 = _seed(
         "strat-rangefade-mcx-v1", "RangeFade", ["SIDEWAYS", "LOW-VOLATILITY"],
-        "Fades VWAP overstretches during the quiet 09:30-16:30 IST pre-overlap hours.",
+        "Fades VWAP overstretches during the quiet 09:30-17:00 IST pre-overlap hours.",
     )
     s2 = _seed(
         "strat-trendrider-mcx-v1", "TrendRider", ["RISK-ON", "BULL", "BEAR"],
