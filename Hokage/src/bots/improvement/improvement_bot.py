@@ -505,33 +505,51 @@ class ImprovementBot:
         except Exception as exc:
             logger.error(f"Failed to atomically write applied improvements log: {exc}")
 
-    def _autopsy_exists(self, trade_id) -> bool:
+    @staticmethod
+    def _autopsy_identity(record: dict) -> tuple:
+        """What makes two autopsy rows the SAME trade.
+
+        A trade_id when there is one. When there is not, the position itself:
+        symbol, entry price, and the calendar day it was opened. Two distinct
+        entries on one contract at an identical premium on the same day would
+        collapse — possible under the 3-per-symbol cap, but far less damaging
+        than the alternative, which is what actually happened.
+        """
+        tid = record.get("trade_id")
+        if tid:
+            return ("id", tid)
+        return ("pos", record.get("symbol"), record.get("entry_price"),
+                str(record.get("timestamp") or "")[:10])
+
+    def _autopsy_exists(self, record: dict) -> bool:
         """Has this trade already been autopsied?
 
-        The exit loop once fired once per REGISTERED PAPER VENUE rather than
-        once per position (fixed 2026-08-17), and every firing submitted its
-        own post-exit analysis. One 2026-07-15 trade left FIVE identical
-        autopsies behind because of it — the only duplication in the whole
-        corpus, but the write path is append-only and nothing stopped it
-        happening again.
+        THE FIRST VERSION OF THIS GUARD ONLY MATCHED trade_id, AND THAT MISSED
+        85% OF THE PROBLEM. Of 444 rows on file, 378 were EOD square-off
+        records carrying NO trade_id at all — 42 real positions written 9x over,
+        one CRUDEOIL position on 2026-07-15 alone producing 32 identical rows
+        one second apart. Keyed on trade_id they were invisible, so the dedupe
+        run on 2026-08-19 removed four rows and left every one of them behind.
 
-        This corpus is what the Pattern Reader counts, so a repeated exit
-        inflates whatever it concludes. Cheap to guard: the file is already
-        read here to count records.
+        The exit loop that produced them was fixed on 2026-08-17 (it fired once
+        per registered paper venue instead of once per position), so this guard
+        is the belt to that fix's braces — and it now sees the rows the fix
+        could not.
 
-        A record with NO trade_id can never be matched and is therefore never
-        treated as a duplicate. 371 of the 440 rows on file predate trade_id
-        being recorded; collapsing them would destroy real, distinct trades.
+        WHY IT MATTERS: this file is what detect_patterns counts. A position
+        autopsied 32 times votes 32 times on whatever the Pattern Reader
+        concludes.
         """
-        if not trade_id or not self._autopsies_file.exists():
+        if not self._autopsies_file.exists():
             return False
+        identity = self._autopsy_identity(record)
         try:
             with self._autopsies_file.open("r", encoding="utf-8") as fh:
                 for line in fh:
                     if not line.strip():
                         continue
                     try:
-                        if json.loads(line).get("trade_id") == trade_id:
+                        if self._autopsy_identity(json.loads(line)) == identity:
                             return True
                     except json.JSONDecodeError:
                         continue
@@ -543,7 +561,7 @@ class ImprovementBot:
         """Process and save a TradeAutopsy record."""
         try:
             record = autopsy.to_dict()
-            if self._autopsy_exists(record.get("trade_id")):
+            if self._autopsy_exists(record):
                 logger.info(
                     f"TradeAutopsy for {autopsy.symbol} (Trade ID: "
                     f"{autopsy.trade_id}) already recorded; not appending a duplicate."

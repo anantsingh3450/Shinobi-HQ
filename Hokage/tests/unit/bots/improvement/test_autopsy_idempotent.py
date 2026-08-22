@@ -25,10 +25,12 @@ from bots.improvement.improvement_bot import ImprovementBot
 
 
 class _Autopsy:
-    def __init__(self, trade_id, symbol="CRUDEOIL26SEP8150CE", pnl=3030.0):
+    def __init__(self, trade_id, symbol="CRUDEOIL26SEP8150CE", pnl=3030.0,
+                 entry=429.70, timestamp="2026-08-19T14:39:01"):
         self.trade_id = trade_id
         self.symbol = symbol
         self._d = {"trade_id": trade_id, "symbol": symbol, "pnl": pnl,
+                   "entry_price": entry, "timestamp": timestamp,
                    "exit_reason": "TARGET_HIT: premium 460.00"}
 
     def to_dict(self):
@@ -79,19 +81,45 @@ def test_distinct_trades_are_all_kept(bot):
     assert sorted(r["trade_id"] for r in _rows(bot)) == ["mcx-1", "mcx-2", "mcx-3"]
 
 
-def test_records_without_a_trade_id_are_never_deduplicated(bot):
-    """371 of the 440 rows on file carry no trade_id. They are DIFFERENT trades
-    that predate the field. Treating a missing id as a collision would collapse
-    real history into one row."""
-    for _ in range(3):
-        bot.process_autopsy(_Autopsy(None))
-    assert len(_rows(bot)) == 3
+def test_id_less_rows_for_ONE_position_collapse_to_one(bot):
+    """The 2026-08-22 finding. 378 EOD square-off rows carried no trade_id and
+    represented just 42 positions — one CRUDEOIL position wrote 32 identical
+    rows a second apart. Keyed on trade_id alone they were invisible."""
+    a = _Autopsy(None, symbol="CRUDEOIL26JUL7750CE", entry=63.7,
+                 timestamp="2026-07-15T17:45:45")
+    for _ in range(32):
+        bot.process_autopsy(a)
+    assert len(_rows(bot)) == 1
 
 
-def test_an_empty_trade_id_is_treated_the_same_as_a_missing_one(bot):
+def test_id_less_rows_for_DIFFERENT_positions_are_all_kept(bot):
+    """Identity is (symbol, entry, day) — genuinely distinct positions differ in
+    at least one, and must survive."""
+    bot.process_autopsy(_Autopsy(None, symbol="CRUDEOIL26JUL7750CE", entry=63.7,
+                                 timestamp="2026-07-15T17:45:45"))
+    bot.process_autopsy(_Autopsy(None, symbol="CRUDEOIL26JUL7750CE", entry=66.8,
+                                 timestamp="2026-07-15T18:02:11"))
+    bot.process_autopsy(_Autopsy(None, symbol="NATURALGAS26AUG265CE", entry=3.25,
+                                 timestamp="2026-07-15T17:45:45"))
+    bot.process_autopsy(_Autopsy(None, symbol="CRUDEOIL26JUL7750CE", entry=63.7,
+                                 timestamp="2026-07-16T17:45:45"))
+    assert len(_rows(bot)) == 4
+
+
+def test_an_empty_trade_id_falls_back_to_position_identity(bot):
+    """An empty string is not an id. It must take the same (symbol, entry, day)
+    path as a missing one rather than being treated as a distinct key."""
     for _ in range(3):
         bot.process_autopsy(_Autopsy(""))
-    assert len(_rows(bot)) == 3
+    assert len(_rows(bot)) == 1
+
+
+def test_an_id_beats_position_identity_when_present(bot):
+    """Two entries on the same contract at the same premium on the same day
+    ARE distinguishable once they carry ids, and must both survive."""
+    bot.process_autopsy(_Autopsy("mcx-1", entry=429.70, timestamp="2026-08-19T10:00:00"))
+    bot.process_autopsy(_Autopsy("mcx-2", entry=429.70, timestamp="2026-08-19T14:00:00"))
+    assert len(_rows(bot)) == 2
 
 
 def test_a_corrupt_line_does_not_block_the_write(bot):

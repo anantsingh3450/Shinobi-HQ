@@ -3627,11 +3627,32 @@ class AutonomousTradingBot:
                     # (realized / MFE) is what separates a bad exit from a bad
                     # entry — neither is recoverable from entry/exit prices
                     # alone, which is why these were previously mocked.
+                    # THE SIDE HERE IS THE POSITION, NOT THE SIGNAL.
+                    #
+                    # entry_meta["side"] stores the UNDERLYING signal direction
+                    # (autonomous_bot.py:2533 / :4258 set SELL for a bearish
+                    # call), but the OptionsRouter turns a bearish signal into
+                    # BUY A PUT. Hokage only ever BUYS options, and the tracked
+                    # peak/trough are PREMIUMS, so the position is long the
+                    # thing being measured either way.
+                    #
+                    # Passing the signal side flipped the sign on every PUT.
+                    # Found 2026-08-22: all four winning puts in the corpus
+                    # carried an impossible NEGATIVE MFE, two of them the exact
+                    # negation of the realised return -
+                    #     CRUDEOIL26AUG8050PE   MFE -3.85   ret +3.85
+                    #     NATURALGAS26AUG255PE  MFE -17.87  ret +10.14
+                    # while all seven calls were correct.
+                    #
+                    # A negative MFE on a LOSING trade is legitimate (the best
+                    # moment was still under water), which is why this hid: it
+                    # only looks impossible on a put that WON.
+                    _is_option = str(_symbol or "").upper().endswith(("CE", "PE"))
                     _mfe_pct, _mae_pct = self._excursion_pcts(
                         entry_price=stored_entry_price,
                         peak_price=entry_meta.get("peak_price"),
                         trough_price=entry_meta.get("trough_price"),
-                        side=entry_meta.get("side", "BUY"),
+                        side="BUY" if _is_option else entry_meta.get("side", "BUY"),
                     )
 
                     # Record strategy portfolio trade outcome based on registered strategy ID.
