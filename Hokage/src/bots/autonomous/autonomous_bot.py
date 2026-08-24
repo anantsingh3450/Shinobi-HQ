@@ -3698,7 +3698,15 @@ class AutonomousTradingBot:
                     # A negative MFE on a LOSING trade is legitimate (the best
                     # moment was still under water), which is why this hid: it
                     # only looks impossible on a put that WON.
-                    _is_option = str(_symbol or "").upper().endswith(("CE", "PE"))
+                    # `symbol` is the loop variable from `for pos, venue in
+                    # positions_with_venue` (:3484). NOT `_symbol` — that is a
+                    # keyword-default parameter of the _async_post_exit closure
+                    # defined ~70 lines BELOW here, so referencing it raised
+                    # NameError at runtime on the first real exit after this
+                    # shipped (NATURALGAS26SEP265PE, 2026-08-24 14:41). The
+                    # order had already filled and the P&L was recorded; what
+                    # was lost was the autopsy.
+                    _is_option = str(symbol or "").upper().endswith(("CE", "PE"))
                     _mfe_pct, _mae_pct = self._excursion_pcts(
                         entry_price=stored_entry_price,
                         peak_price=entry_meta.get("peak_price"),
