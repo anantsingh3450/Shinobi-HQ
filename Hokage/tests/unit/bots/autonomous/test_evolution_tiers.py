@@ -203,12 +203,36 @@ def test_every_decision_carries_the_evidence_that_justified_it():
         assert "t_now" in d.evidence
 
 
-def test_autonomy_ships_DISARMED_for_the_first_observed_cycle():
-    """The 2026-08-21 audit is only the SECOND snapshot ever — the first moment
-    anything COULD be autonomous. Letting a loop's first opportunity to act also
-    be its first unobserved action is how you learn the policy was wrong by
-    reading the aftermath."""
-    assert ev.AUTONOMOUS_ENABLED is False
+def test_only_archiving_is_ever_autonomous():
+    """THE INVARIANT THAT OUTLIVES THE ROLLOUT.
+
+    Autonomy was armed on 2026-08-24 after the observed cycle, so asserting the
+    flag is False no longer means anything. What must NEVER change is the
+    asymmetry: Tier 1 archives and only archives. An archived strategy cannot
+    open a position, so a wrong autonomous decision costs opportunity, never a
+    larger loss. Reviving or rescoping ADDS risk and stays with the commander
+    however good the measurement looks.
+    """
+    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): 1.8}, TWO_LIVE)
+    now = _snap("2026-08-21", {("mod-a", "GOLDM"): 1.2}, TWO_LIVE)
+    for d in ev.plan([now, prev]):
+        if d.is_autonomous:
+            assert d.action == "archive", (
+                f"{d.action!r} must never be autonomous - only archiving "
+                f"reduces risk on its own"
+            )
+
+
+def test_a_revival_is_never_autonomous_however_well_it_measures():
+    lineup = dict(TWO_LIVE)
+    lineup["mod-b"] = {**lineup["mod-b"], "status": "ARCHIVED"}
+    prev = _snap("2026-08-14", {("mod-b", "GOLDM"): 3.9}, lineup)
+    now = _snap("2026-08-21", {("mod-b", "GOLDM"): 4.2}, lineup)
+    revivals = [d for d in ev.plan([now, prev]) if d.action == "revive"]
+    assert revivals, "a strongly measuring archived module should be raised"
+    for d in revivals:
+        assert not d.is_autonomous
+        assert d.blocked_reason
 
 
 def test_the_policy_still_reports_its_verdict_while_disarmed(monkeypatch):

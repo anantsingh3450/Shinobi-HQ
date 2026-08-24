@@ -83,7 +83,29 @@ MIN_DAYS_BETWEEN_SNAPSHOTS = 5
 #: were the ones he would have made. Same staged pattern that let
 #: `supported_assets`, the per-strategy stop table and the capital regimes land
 #: safely: ship the mechanism, watch it, then arm it.
-AUTONOMOUS_ENABLED = False
+#: ARMED 2026-08-24, after exactly the observed cycle this was staged for.
+#:
+#: The 2026-08-21 audit was the second snapshot ever and the first separated
+#: from its predecessor by enough days to count (08-15 -> 08-21, six days,
+#: clearing MIN_DAYS_BETWEEN_SNAPSHOTS). It found three candidates below the
+#: bar for two consecutive audits, retired the worst ONE, and escalated the
+#: other two rather than emptying the league in a single pass:
+#:
+#:   WOULD RETIRE   MeanReversion / NIFTY      +1.46 then +1.35
+#:   NEEDS A CALL   MacroBreakout / BANKNIFTY  +1.35 then +1.45
+#:   NEEDS A CALL   MeanReversion / SENSEX     +1.86 then +1.58
+#:
+#: Every rail held under real data rather than a simulated second week, and
+#: the verdict was the one the commander and I would have reached by hand.
+#: That was the whole condition for arming.
+#:
+#: WHAT THIS DOES AND DOES NOT PERMIT. Tier 1 archives, and only archives. An
+#: archived strategy cannot open a position, so the worst case of a wrong
+#: autonomous decision is forgone opportunity, never a larger loss. Reviving,
+#: rescoping and anything that widens a stop or raises a cap stay Tier 2/3 and
+#: still require the commander - bringing a strategy BACK adds risk, and that
+#: asymmetry is the entire design.
+AUTONOMOUS_ENABLED = True
 
 
 @dataclass
