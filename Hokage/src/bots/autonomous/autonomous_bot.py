@@ -3117,6 +3117,47 @@ class AutonomousTradingBot:
     #: loose enough that ordinary option noise does not end a trade, far looser
     #: than the 2.69% that ended the best trade of 2026-08-06.
     _OPTION_TRAIL_LOCK_FRACTION = 0.10
+
+    #: How much profit must exist before the trail engages at all.
+    #:
+    #: THE TRAIL WAS INERT. Measured 2026-08-24 over 107 distinct trades with
+    #: corrected excursions: it produced the binding floor on ONE of them.
+    #: The old arming rule was implicit - the floor was only offered once
+    #: peak*(1-0.10) cleared entry, i.e. peak >= +11.11%. Almost nothing peaks
+    #: that high, so almost nothing was ever protected.
+    #:
+    #: 50 trades reached profit. TWENTY of them finished in a LOSS, and every
+    #: single one had peaked under +11.11%, so the trail never armed on any:
+    #:     SENSEX2681378500PE   peaked +8.13%   ended -22.11%
+    #:     SENSEX2672378000CE   peaked +7.14%   ended -28.36%
+    #:     NIFTY2680424300CE    peaked +6.04%   ended -17.64%
+    #: 274 percentage-points of premium surrendered, mean 13.70pp each, with
+    #: nothing underneath but the -12% hard backstop.
+    #:
+    #: THE FLOOR IS NOW max(trail, entry), WHICH IS WHY ARMING EARLY IS SAFE.
+    #: Arming at +5% with a 10% giveback would otherwise put the floor at
+    #: 1.05*0.90 = 0.945 - BELOW entry - and let a winner become a loser, which
+    #: this rung exists to prevent. Taking the greater of the two keeps the old
+    #: invariant exactly and adds a breakeven floor for the modest winners the
+    #: proportional trail could never reach.
+    #:
+    #: Swept against the corpus, floor = max(peak*0.9, entry):
+    #:     arm +11.11% (old)   1 trade protected   mean return -0.54%
+    #:     arm  +5.00%         8 trades            mean return +0.35%
+    #:     arm  +2.00%        16 trades            mean return +0.99%
+    #:     arm  +0.50%        21 trades            mean return +1.32%
+    #:
+    #: 5% CHOSEN OVER THE APPARENT OPTIMUM ON PURPOSE. The sweep is blind to
+    #: opportunity cost: it cannot see a winner that dipped through an early
+    #: floor and would have recovered, because MFE records the peak and not the
+    #: path. Options oscillate in a 10-15% premium band by this ladder's own
+    #: measurement, so arming at +0.5% would be shaken out at breakeven by
+    #: ordinary noise and the simulation would never show it. 5% demands a real
+    #: move before Hokage refuses to give it all back.
+    #:
+    #: TARGET_HIT trades are immune either way - they exit AT their peak (100%
+    #: capture, n=20), so no trail can cut them short.
+    _OPTION_TRAIL_ARM_PCT = 0.05
     #: PROFIT_LOCK was retired 2026-08-06 (commander-approved) after being
     #: PROVED unreachable, not merely rare. Its stages were
     #: ((0.15, 0.08), (0.20, 0.10), (0.40, 0.50), (0.80, 0.65)).
@@ -3347,12 +3388,22 @@ class AutonomousTradingBot:
             # armed only once that floor clears entry — so an armed trail can
             # never turn a winner into a loser.
             trail_floor = peak_premium * (1.0 - self._OPTION_TRAIL_LOCK_FRACTION)
-            if trail_floor >= entry_premium:
-                floor_candidates.append((
-                    trail_floor,
-                    f"TRAIL_LOCK: gave back {self._OPTION_TRAIL_LOCK_FRACTION:.0%} of peak "
-                    f"(₹{(peak_premium - trail_floor) * quantity:,.0f}) from peak {peak_premium:.2f}",
-                ))
+            armed = peak_premium >= entry_premium * (1.0 + self._OPTION_TRAIL_ARM_PCT)
+            if armed:
+                # Never below entry: a winner cannot round-trip into a loser
+                # through this rung, which is the whole point of it.
+                protective = max(trail_floor, entry_premium)
+                if protective > trail_floor:
+                    label = (
+                        f"TRAIL_LOCK: breakeven floor held at entry {entry_premium:.2f} "
+                        f"after peaking {(peak_premium / entry_premium - 1.0):.1%}"
+                    )
+                else:
+                    label = (
+                        f"TRAIL_LOCK: gave back {self._OPTION_TRAIL_LOCK_FRACTION:.0%} of peak "
+                        f"(₹{(peak_premium - protective) * quantity:,.0f}) from peak {peak_premium:.2f}"
+                    )
+                floor_candidates.append((protective, label))
         if floor_candidates:
             floor_premium, floor_label = max(floor_candidates, key=lambda fc: fc[0])
             prev_floor = float(tracking.get("stop_price") or 0.0)
