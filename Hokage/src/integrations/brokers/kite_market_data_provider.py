@@ -265,6 +265,33 @@ class KiteMarketDataProvider(MarketDataProvider):
     #: the weekly index cycles (NIFTY/SENSEX) the strategies actually trade.
     _MIN_DAYS_TO_EXPIRY = 2
 
+    #: An option contract with no open interest has no market. Buying one is
+    #: not a trade — it is a position nobody will take off you.
+    #:
+    #: FOUND 2026-08-24. SILVERM26AUG expired that day, so the 2-DTE floor
+    #: correctly pushed selection to the September chain, and ATM-only strike
+    #: picking landed on SILVERM26SEP251000CE: volume 0, open interest 1 — and
+    #: that 1 was Hokage's own paper position. He put 63,805 into it, 29.6% of
+    #: the chest. The underlying then moved 934 points against him and the
+    #: premium did not tick once, so every premium-based rung (target, trail,
+    #: hard backstop) was blind and only the UNDERLYING thesis stop could exit.
+    #: It closed at exactly 0.00.
+    #:
+    #: A LIQUID STRIKE WAS ONE STEP AWAY: SILVERM26SEP250000CE, volume 5,122,
+    #: open interest 1,794, 0.4% further from ATM.
+    #:
+    #: Measured across every asset Hokage trades, ATM open interest was:
+    #:     NIFTY 2,674,100   SENSEX 306,520   BANKNIFTY 80,460
+    #:     GOLDM 1,432       CRUDEOIL 1,335   NATURALGAS 945
+    #:     SILVERM 1  <- the only one that fails
+    #: so this floor separates the dead contract from the live ones with three
+    #: orders of magnitude to spare and changes nothing on the other six.
+    _MIN_OPTION_OPEN_INTEREST = 100
+
+    #: How many strikes either side of ATM to consider when the nearest one is
+    #: illiquid. Bounded because each candidate costs a quote.
+    _LIQUIDITY_STRIKE_WINDOW = 9
+
     def resolve_option_contract(
         self,
         underlying: str,
@@ -357,7 +384,20 @@ class KiteMarketDataProvider(MarketDataProvider):
             return None
 
         nearest_expiry = min(c[0] for c in candidates)
-        atm = min((c for c in candidates if c[0] == nearest_expiry), key=lambda c: c[1])
+        at_expiry = sorted(
+            (c for c in candidates if c[0] == nearest_expiry), key=lambda c: c[1]
+        )
+
+        # CLOSEST TO ATM *THAT HAS A MARKET*, not closest outright. See
+        # _MIN_OPTION_OPEN_INTEREST for what buying a dead strike cost.
+        atm = self._closest_liquid(at_expiry, kite_exchange)
+        if atm is None:
+            logger.error(
+                f"No {chain_name} {option_type} strike at {nearest_expiry} carries "
+                f"open interest >= {self._MIN_OPTION_OPEN_INTEREST}. Standing aside "
+                f"rather than buying a contract with no market."
+            )
+            return None
         contract = atm[3]
         option_lot = float(contract.get("lot_size") or 0.0)
 
@@ -378,6 +418,60 @@ class KiteMarketDataProvider(MarketDataProvider):
             "expiry": nearest_expiry,
             "lot_size": option_lot,
         }
+
+    def _closest_liquid(self, at_expiry: list, kite_exchange: str):
+        """Nearest-to-ATM candidate carrying real open interest.
+
+        `at_expiry` is already sorted by distance from the strike reference, so
+        the first one that clears the floor is the closest liquid strike.
+
+        FAILS OPEN, DELIBERATELY AND LOUDLY. If the quote call fails there is
+        no liquidity evidence either way, and refusing every trade on a
+        transient API hiccup would starve the arena — the same reasoning the
+        volume gate uses when its context is unavailable. It falls back to the
+        plain ATM strike and says so at WARNING, because a check that silently
+        stops checking is worse than one that was never added.
+        """
+        window = at_expiry[: self._LIQUIDITY_STRIKE_WINDOW]
+        if not window:
+            return None
+        symbols = [f"{kite_exchange}:{c[3]['tradingsymbol']}" for c in window]
+        try:
+            quotes = self._connection_manager.get_kite_client().quote(symbols)
+        except Exception as exc:
+            logger.warning(
+                f"Could not price the option chain to check liquidity ({exc}); "
+                f"falling back to the ATM strike {window[0][3]['tradingsymbol']} "
+                f"UNCHECKED."
+            )
+            return window[0]
+
+        # A symbol ABSENT from the response is unknown, not dead. Only an
+        # explicit open-interest reading is evidence either way, and if the
+        # response carries none at all there is nothing to judge.
+        priced = [(c, quotes.get(sym)) for c, sym in zip(window, symbols)
+                  if isinstance(quotes.get(sym), dict)]
+        if not priced:
+            logger.warning(
+                f"Option chain returned no open-interest data; falling back to "
+                f"the ATM strike {window[0][3]['tradingsymbol']} UNCHECKED."
+            )
+            return window[0]
+
+        for candidate, data in priced:
+            try:
+                oi = float(data.get("oi") or 0.0)
+            except (TypeError, ValueError):
+                oi = 0.0
+            if oi >= self._MIN_OPTION_OPEN_INTEREST:
+                if candidate is not window[0]:
+                    logger.info(
+                        f"ATM strike {window[0][3]['tradingsymbol']} has no market; "
+                        f"taking {candidate[3]['tradingsymbol']} instead (open "
+                        f"interest {oi:,.0f})."
+                    )
+                return candidate
+        return None
 
     def resolve_instrument(self, market: str) -> Instrument:
         """Resolve a market string (e.g. INFY, NSE:INFY) into an Instrument.

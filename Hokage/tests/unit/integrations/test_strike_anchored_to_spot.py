@@ -40,6 +40,23 @@ def _nifty_chain():
     ]
 
 
+def _spot_calls(client):
+    """Quote calls asking for an INDEX SPOT, ignoring option-chain lookups.
+
+    resolve_option_contract now also prices the strikes around ATM to check
+    open interest (see test_option_contract_liquidity.py — Hokage bought a
+    contract with OI of 1 on 2026-08-24). These tests are about WHERE THE
+    STRIKE IS ANCHORED, so they must count the spot lookup and ignore the
+    liquidity lookup rather than counting every call.
+    """
+    out = []
+    for call in client.quote.call_args_list:
+        symbols = call.args[0] if call.args else []
+        if any(str(sym).endswith(("CE", "PE")) for sym in symbols):
+            continue
+        out.append(list(symbols))
+    return out
+
 def test_strike_follows_spot_not_the_futures_reference():
     """A 45-point basis — the size actually observed on 2026-07-30 — against a
     50-point strike ladder is enough to move the ATM choice a full step."""
@@ -51,7 +68,7 @@ def test_strike_follows_spot_not_the_futures_reference():
     # Futures 24,305 is nearest 24,300 (5.0 vs 55.0). True spot 24,260 is
     # nearest 24,250 (10.0 vs 40.0). The old code bought the wrong one.
     assert contract["strike"] == 24250.0
-    client.quote.assert_called_once_with(["NSE:NIFTY 50"])
+    assert _spot_calls(client) == [["NSE:NIFTY 50"]]
 
 
 def test_banknifty_uses_its_own_index_symbol():
@@ -65,7 +82,7 @@ def test_banknifty_uses_its_own_index_symbol():
     contract = provider.resolve_option_contract("BANKNIFTY", "PE", spot_price=57147.50)
 
     assert contract["strike"] == 56900.0
-    client.quote.assert_called_once_with(["NSE:NIFTY BANK"])
+    assert _spot_calls(client) == [["NSE:NIFTY BANK"]]
 
 
 def test_mcx_keeps_the_futures_reference_and_never_asks_for_a_spot():
@@ -80,7 +97,7 @@ def test_mcx_keeps_the_futures_reference_and_never_asks_for_a_spot():
     contract = provider.resolve_option_contract("CRUDEOIL", "CE", spot_price=7747.0)
 
     assert contract["strike"] == 7750.0
-    client.quote.assert_not_called()
+    assert _spot_calls(client) == [], "MCX must never ask for a spot quote"
 
 
 def test_missing_spot_quote_falls_back_instead_of_refusing_to_trade():
