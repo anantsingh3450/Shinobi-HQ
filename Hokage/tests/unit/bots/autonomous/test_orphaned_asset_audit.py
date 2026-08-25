@@ -18,7 +18,19 @@ lineup it inherited. These tests cover the hole that predates the rule.
 """
 from __future__ import annotations
 
+import pytest
+
 from bots.autonomous.autonomous_bot import AutonomousTradingBot as Bot
+
+
+@pytest.fixture(autouse=True)
+def _unpark(monkeypatch):
+    """CRUDEOIL was PARKED on 2026-08-26 after six failed sweeps, so the
+    coverage audit now logs it instead of alarming. These tests document
+    the 2026-08-18 orphan and the archived-does-not-count rule, which are
+    about the RULE rather than that asset — so they run with parking
+    lifted. test_parked_assets.py covers the parked behaviour itself."""
+    monkeypatch.setattr(Bot, "PARKED_ASSETS", {}, raising=False)
 
 INDEX = ["NIFTY", "BANKNIFTY", "SENSEX"]
 

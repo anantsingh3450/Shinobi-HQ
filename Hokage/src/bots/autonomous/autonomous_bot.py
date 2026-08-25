@@ -1773,6 +1773,34 @@ class AutonomousTradingBot:
         except (TypeError, ValueError):
             return 0.0
 
+    #: Assets deliberately NOT traded, with the reason. An asset in here is a
+    #: decision; an asset missing a strategy WITHOUT being in here is a bug.
+    #: The coverage audit reports the two differently so a standing choice
+    #: cannot desensitise the commander to a real orphan.
+    #:
+    #: CRUDEOIL parked 2026-08-26 after six sweeps, every one train vs hold-out
+    #: on the cleaned corpus, every one failing out of sample:
+    #:
+    #:   stretch threshold, 6 bands      hold-out -0.33 .. -1.07, best +0.53
+    #:   trend guard, 6 settings + off   hold-out -0.11 .. -1.28, ALL negative
+    #:   evening window 17:00-22:30      hold-out -0.02 .. -1.27
+    #:   horizon 30m..240m (no stop)     +2.06 at 240m — but see below
+    #:   horizon x stop, 12 combos       hold-out -1.63 .. +0.82, none clears
+    #:   direction inverted (follow)     train -7.72 / hold +1.49, mirror fail
+    #:
+    #: The 240-minute +2.06 was measured WITHOUT a stop. Adding the stop that
+    #: production always has collapses it to +0.82 — the same full-geometry
+    #: lesson SILVERM taught on 2026-08-15.
+    #:
+    #: Crude fails as a fade AND as a follow, so the signal carries no
+    #: information there; this is not a tuning problem. It comes back when a
+    #: crude-specific idea is built and measured, not before. NATURALGAS on the
+    #: identical signal measures +3.37 out of sample.
+    PARKED_ASSETS: dict[str, str] = {
+        "CRUDEOIL": ("no measured edge in any configuration — 6 sweeps, all "
+                     "failing out of sample; awaiting a crude-specific module"),
+    }
+
     def audit_asset_coverage(self) -> list[str]:
         """Name every asset in the universe that no live strategy can trade.
 
@@ -1834,11 +1862,20 @@ class AutonomousTradingBot:
                         f"{', '.join(sorted(broke))} is scoped to it but holds no "
                         f"chest, so it will win the auction and fill nothing."
                     )
+                elif asset.upper() in self.PARKED_ASSETS:
+                    # A standing decision, not a fault. Reported so it stays
+                    # visible, but never as an alarm — an alarm that fires every
+                    # boot for a choice already made teaches the commander to
+                    # ignore the one that matters.
+                    logger.info(
+                        f"{league}: {asset} is PARKED — "
+                        f"{self.PARKED_ASSETS[asset.upper()]}"
+                    )
                 else:
                     findings.append(
                         f"{league}: {asset} has NO live strategy scoped to it at "
                         f"all. It cannot trade today or any day until something is "
-                        f"scoped onto it, or it is dropped from the universe."
+                        f"scoped onto it, or it is parked deliberately."
                     )
         return findings
 
