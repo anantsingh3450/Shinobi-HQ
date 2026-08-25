@@ -35,6 +35,30 @@ def mock_orchestrator():
     )
     mock_venue.get_positions.return_value = []
     
+    # REAL CANDLES SO ATR IS REAL.
+    #
+    # _get_atr_for_symbol used to fall back to 1.5% of price when history was
+    # unavailable, and five tests in this file quietly depended on that
+    # fabrication — their own comments said "fallback = price*1.5%". On
+    # 2026-08-25 a Kite rate limit made that fallback hand production a GOLDM
+    # ATR of 2,413.6 against a real 345.29, a thesis stop seven times too wide,
+    # and the fallback was removed. A fabricated number had become load-bearing
+    # in the tests as well as in the bot.
+    #
+    # 20 candles with a ~1% true range give a numeric, plausible ATR through
+    # the REAL calculation path.
+    _base = 3000.0
+    _candles = []
+    for _i in range(20):
+        _c = MagicMock()
+        _c.high = _base + 15.0
+        _c.low = _base - 15.0
+        _c.close = _base
+        _candles.append(_c)
+    _hist = MagicMock()
+    _hist.candles = _candles
+    orch.price_source.get_historical_candles.return_value = _hist
+
     orch.registry.get_venue.return_value = mock_venue
     # Real registry surface: the bot iterates list_venues() and resolves each id.
     # "paper_main" contains "paper" so PAPER mode selects it.

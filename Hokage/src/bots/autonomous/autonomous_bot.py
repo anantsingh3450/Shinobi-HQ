@@ -964,8 +964,30 @@ class AutonomousTradingBot:
             logger.error(f"Failed to auto-stop shadow session and generate EOD package for exchange {exchange.name}: {exc}")
 
 
-    def _get_atr_for_symbol(self, symbol: str) -> float:
-        """Calculate the 14-period Average True Range on the 15-minute interval."""
+    def _get_atr_for_symbol(self, symbol: str) -> float | None:
+        """14-period ATR on the 15-minute interval, or None when unknowable.
+
+        RETURNS None RATHER THAN INVENTING A NUMBER (2026-08-25). It used to
+        fall back to 1.5% of price, and then to a literal 1.0. On 2026-08-25 a
+        Kite rate limit made GOLDM's calculation fail twice, and the fallback
+        handed back:
+
+            GOLDM price 160,907  ->  fabricated ATR 2,413.6
+            thesis stop = 1.25 x ATR = 3,017 points
+            real GOLDM ATR that week was 345.29 and 246.64
+            -> a stop SEVEN TIMES too wide
+
+        A fabricated risk number is worse than a missing one, because every
+        rung downstream treats it as measured. The two GOLDM trades the week
+        before stopped out after 563 and 321 points; a 3,017-point stop would
+        never have fired at all, and the position would have looked protected
+        the whole time.
+
+        This is the doctrine the rest of the ladder already follows — the
+        volume gate skips when its context is unavailable, the liquidity check
+        falls back and SAYS SO, excursions record None rather than 0.0. ATR was
+        the one place still guessing.
+        """
         try:
             from integrations.data.models import HistoricalDataRequest, CandleInterval
             from datetime import datetime, timedelta, UTC
@@ -993,14 +1015,13 @@ class AutonomousTradingBot:
         except Exception as e:
             logger.error(f"Failed to calculate ATR for {symbol}: {e}")
         
-        # Fallback to 1.5% of the current price
-        try:
-            price = self.orchestrator.price_source.get_price(symbol)
-            if price:
-                return price * 0.015
-        except Exception:
-            pass
-        return 1.0
+        # No fallback. An unknown ATR is unknown; callers must decide whether
+        # they can proceed without it, and the entry path refuses to.
+        logger.warning(
+            f"ATR unavailable for {symbol}; returning None rather than a "
+            f"fabricated value. Any rung or entry that needs it must stand down."
+        )
+        return None
 
     def _get_vix_impact(self) -> float:
         """Helper to get VIX volatility delta."""
@@ -1022,6 +1043,17 @@ class AutonomousTradingBot:
         """Calculate dynamic lot sizing per trade using Kelly Criterion with LLM confidence."""
         try:
             atr = self._get_atr_for_symbol(symbol)
+            if not atr or atr <= 0:
+                # Sizing divides by ATR. Without it there is no risk-based
+                # quantity to compute, and guessing one would size a position
+                # off an invented number — the exact failure this returns None
+                # to prevent. Zero means "no trade", which every caller already
+                # treats as a stand-aside.
+                logger.warning(
+                    f"Cannot size {symbol}: ATR unavailable, so risk-based "
+                    f"quantity is undefined. Standing aside."
+                )
+                return 0.0
             lot_multiplier = 1.0
             try:
                 instrument = self.orchestrator.price_source.resolve_instrument(symbol)
@@ -3412,8 +3444,20 @@ class AutonomousTradingBot:
                 tracking["stop_label"] = floor_label
             active_floor = float(tracking["stop_price"])
             if current_premium <= active_floor:
+                # THE LABEL MUST DESCRIBE THE FLOOR THAT ACTUALLY FIRED.
+                # `stop_label` is only written when a candidate REPLACES the
+                # stored floor, but `stop_price` is also seeded at entry with
+                # no label at all — so a seeded floor that outranked every
+                # candidate reported the CANDIDATE's label. On 2026-08-25 two
+                # exits announced "breakeven floor held at entry 6839.50" while
+                # 7181.48 did the work. Only use the freshly computed label
+                # when the freshly computed floor is the one in force.
+                if abs(floor_premium - active_floor) < 0.005:
+                    _label = floor_label          # the computed floor IS in force
+                else:
+                    _label = tracking.get("stop_label") or "TRAIL_LOCK: protective floor"
                 return True, (
-                    f"{tracking.get('stop_label', floor_label)} — premium {current_premium:.2f} "
+                    f"{_label} — premium {current_premium:.2f} "
                     f"hit protective floor {active_floor:.2f}"
                 ), tracking
 
@@ -4349,6 +4393,32 @@ class AutonomousTradingBot:
             #
             # Ahead of the OrderRequest, so a blocked entry builds nothing,
             # routes nothing, and leaves no half-state behind.
+            # NO ENTRY WITHOUT THE NUMBER THAT STOPS IT.
+            #
+            # The underlying thesis stop is 1.25 x ATR and is the exit that has
+            # fired more often than any other in Hokage's history — on the
+            # illiquid SILVERM of 2026-08-24 it was the ONLY one that could see
+            # anything at all. ATR was fetched AFTER the fill, purely for
+            # tracking, so a failed fetch produced a position whose main stop
+            # could not be computed.
+            #
+            # 2026-08-25 19:00:49 a Kite rate limit failed GOLDM's ATR, and one
+            # second later Hokage entered GOLDM. Checked BEFORE the order now,
+            # so a missing ATR costs an entry rather than a stop.
+            _entry_atr = self._get_atr_for_symbol(symbol)
+            if not _entry_atr or _entry_atr <= 0:
+                logger.warning(
+                    f"MCX Arena: entry for {symbol} stood down — ATR unavailable, "
+                    f"so the 1.25x ATR thesis stop cannot be sized. A position "
+                    f"without its main stop is not a position worth opening."
+                )
+                bus.publish("OPPORTUNITY_REJECTED", {
+                    "symbol": symbol,
+                    "reason": "NoATR: thesis stop cannot be sized",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+                continue
+
             _playbook_id = f"MCX_{selected_strat['name']}"
             _allowed, _cap_reason = self.strategy_engine.is_entry_allowed(
                 _playbook_id, symbol, now_ist.strftime("%Y-%m-%d")
@@ -4418,14 +4488,31 @@ class AutonomousTradingBot:
             qty_filled = getattr(resp, "filled_quantity", req.quantity) or req.quantity
             tracked_symbol = req.instrument.symbol
             tracked_entry_price = float(req_meta.get("premium_at_entry", entry_price))
-            entry_und_atr = self._get_atr_for_symbol(symbol)
+            entry_und_atr = _entry_atr
 
             self.strategy_engine.record_trade(_playbook_id, symbol, now_ist.strftime("%Y-%m-%d"))
 
             self._active_positions_tracking[tracked_symbol] = {
                 "entry_price": tracked_entry_price,
                 "peak_price": tracked_entry_price,
-                "stop_price": tracked_entry_price * (1.0 - self.tsl_percent) if side == OrderSide.BUY else tracked_entry_price * (1.0 + self.tsl_percent),
+                # A BOUGHT OPTION IS ALWAYS LONG ITS PREMIUM, CALL OR PUT.
+                #
+                # `side` here is the UNDERLYING SIGNAL's direction — SELL for a
+                # bearish call that the router turns into BUY A PUT — the same
+                # root cause as the inverted put excursions fixed 2026-08-22.
+                # Seeding off it put the protective floor 5% ABOVE entry on
+                # every put, which is a ceiling, not a stop. Worse, the floor
+                # only ever RISES, so that seeded value out-ranked the real
+                # rungs: on 2026-08-25 it fired twice, and the log claimed the
+                # breakeven floor had held while 1.05x entry did the work.
+                #
+                #   SILVERM26SEP245000PE  entry 6839.50  floor fired 7181.48
+                #   GOLDM26AUG161000PE    entry 1664.00  floor fired 1747.20
+                #
+                # Both were wins, which is luck of direction — the same seeding
+                # on a trade that dipped to +4% before running would cut a
+                # winner off at the knees.
+                "stop_price": tracked_entry_price * (1.0 - self.tsl_percent),
                 "target_price": tracked_entry_price * (1.0 + self.tp_percent),
                 "decision_id": f"mcx-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
                 "strategy_id": selected_strat["strategy_id"],
@@ -5744,7 +5831,9 @@ class AutonomousTradingBot:
                 self._active_positions_tracking[tracked_symbol] = {
                     "entry_price": tracked_entry_price,
                     "peak_price": tracked_entry_price,
-                    "stop_price": tracked_entry_price * (1.0 - self.tsl_percent) if tracked_side == OrderSide.BUY else tracked_entry_price * (1.0 + self.tsl_percent),
+                    # Bought option, always long the premium — see the note on
+                    # the MCX path. Never seed the floor above entry.
+                    "stop_price": tracked_entry_price * (1.0 - self.tsl_percent),
                     "target_price": tracked_entry_price * (1.0 + self.tp_percent),
                     "decision_id": decision_id,
                     "strategy_id": selected_strat["strategy_id"],
