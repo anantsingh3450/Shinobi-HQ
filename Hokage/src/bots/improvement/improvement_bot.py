@@ -578,11 +578,9 @@ class ImprovementBot:
                 count = sum(1 for line in fh if line.strip())
             
             if count > 0 and count % 5 == 0:
-                logger.info(f"Autopsy threshold reached ({count}). Triggering Pattern Detection and Evolution.")
+                logger.info(f"Autopsy threshold reached ({count}). Writing journal entry.")
                 patterns = self.detect_patterns("strat-autotrend-equities-v1")
                 if patterns:
-                    self.apply_autonomous_evolution(patterns)
-                    
                     from integrations.llm.processor import LLMProcessor
                     llm = LLMProcessor()
                     journal_entry = llm.generate_trading_journal_entry(patterns)
@@ -638,56 +636,42 @@ class ImprovementBot:
             return {}
 
     def apply_autonomous_evolution(self, patterns: dict[str, Any]) -> None:
-        """Apply safe autonomous adjustments to strategy parameters based on patterns."""
-        strategy_id = patterns.get("strategy_id")
-        if not strategy_id:
-            return
-            
-        strat = self.portfolio_manager.portfolio.get("strategies", {}).get(strategy_id)
-        if not strat:
-            return
-            
-        # Evolution Boundaries (Safety Caps)
-        # Risk Multiplier: 0.5x to 1.5x
-        # Stop-Loss: Max +0.5x ATR widening
-        
-        adjustments_made = []
-        
-        if patterns.get("stop_tightness_issue"):
-            # Widen stop loss slightly
-            current_atr_sl = float(strat.get("risk_management", {}).get("stop_loss_atr_multiplier", 1.5))
-            new_atr_sl = min(current_atr_sl + 0.2, 2.0) # Cap at 2.0 (i.e. +0.5 from base 1.5)
-            
-            if new_atr_sl > current_atr_sl:
-                strat["risk_management"]["stop_loss_atr_multiplier"] = new_atr_sl
-                adjustments_made.append(f"Widened Stop-Loss ATR from {current_atr_sl} to {new_atr_sl} due to premature stops.")
-                
-        if patterns.get("win_rate", 0) > 0.6:
-            # Increase risk multiplier
-            current_risk = float(strat.get("risk_management", {}).get("risk_multiplier", 1.0))
-            new_risk = min(current_risk + 0.1, 1.5) # Cap at 1.5
-            if new_risk > current_risk:
-                strat["risk_management"]["risk_multiplier"] = new_risk
-                adjustments_made.append(f"Increased Risk Multiplier from {current_risk} to {new_risk} due to high win rate.")
-        elif patterns.get("win_rate", 0) < 0.4:
-            # Decrease risk multiplier
-            current_risk = float(strat.get("risk_management", {}).get("risk_multiplier", 1.0))
-            new_risk = max(current_risk - 0.2, 0.5) # Cap at 0.5
-            if new_risk < current_risk:
-                strat["risk_management"]["risk_multiplier"] = new_risk
-                adjustments_made.append(f"Decreased Risk Multiplier from {current_risk} to {new_risk} due to low win rate.")
-                
-        if adjustments_made:
-            self.portfolio_manager.save_portfolio()
-            logger.info(f"Applied Autonomous Evolution: {adjustments_made}")
-            
-            # Send Telegram Alert if possible
-            bus = EventBus()
-            bus.publish("EVOLUTION_APPLIED", {
-                "strategy": strategy_id,
-                "adjustments": adjustments_made,
-                "timestamp": datetime.utcnow().isoformat()
-            })
+        """REMOVED 2026-08-26. It was a loaded gun, not a dead branch.
+
+        This method used to widen a strategy's stop (up to 2.0 ATR) and raise
+        its risk multiplier (up to 1.5x) on its own, and it never fired only
+        because `process_autopsy` handed it a strategy id that exists in neither
+        portfolio. That made it look harmless. It was not: the day anyone
+        "fixed" that id — a one-line change, and an obvious one — Hokage would
+        have started AUTONOMOUSLY WIDENING STOPS AND INCREASING SIZE.
+
+        On what evidence? `detect_patterns` ignores its strategy_id argument and
+        pools every autopsy across every strategy and symbol, and the trigger
+        fires every five trades. So a blended win rate over five trades spanning
+        four modules and six assets could have raised risk on one of them.
+
+        That is Tier 3 in the evolution policy — "anything that widens a stop,
+        raises a cap, or increases size" — the one tier that is never autonomous
+        at any confidence. It is also the exact opposite of the commander's
+        standing rule that capital must not be exposed to great risks.
+
+        It wrote to `risk_management.stop_loss_atr_multiplier` and
+        `risk_multiplier`, which production has never read — it reads
+        `_THESIS_ATR_MULT_BY_STRATEGY_ASSET`. So the knob was not connected to
+        the machine either. Three separate faults, and the only reason none of
+        them cost money is a typo.
+
+        The real loop now lives in `tools/research/sweep_lab.py`: it measures
+        every candidate on two disjoint periods with the production stop
+        applied, and writes PENDING proposals the commander rules on. It cannot
+        widen a stop or raise size at all — those knobs are declared tier "ask"
+        and are printed, never written.
+        """
+        logger.warning(
+            "apply_autonomous_evolution is retired — autonomous stop-widening "
+            "and size increases are Tier 3 and never automatic. Parameter "
+            "changes come from tools/research/sweep_lab.py as PENDING proposals."
+        )
 
     def evaluate_promotions(self) -> None:
         """Evaluate probation strategies for promotion to LIVE/ACTIVE."""

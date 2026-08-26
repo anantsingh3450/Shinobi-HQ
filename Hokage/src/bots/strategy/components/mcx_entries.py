@@ -18,6 +18,40 @@ from __future__ import annotations
 from bots.strategy.components.models import EntrySignal, MarketContext
 
 
+def _direction_allowed(module, asset: str, direction: str) -> bool:
+    """May this module take this side on this asset?
+
+    MEASURED 2026-08-26, full geometry (production 1.25 ATR stop), train
+    2026-05..06 against hold-out 2026-07..08:
+
+        SessionShift GOLDM    long  -0.93 / -0.76   NEGATIVE ON BOTH HALVES
+                              short +1.48 / +2.52
+        SessionShift SILVERM  long  +1.12 / -0.86   negative out of sample
+                              short +0.99 / +2.94
+        RangeFade    NATURALGAS long +2.53 / +2.23  CONFIRMED
+                              short -0.29 / +2.54   halves contradict
+
+    A module's two sides are two different bets and there was never a reason to
+    assume both work. Until this, Hokage could not express "this asset, this
+    side" at all, so a measured-losing direction kept its capital because the
+    winning one shared a module with it.
+
+    THE DRIFT CHECK THAT MAKES THIS BELIEVABLE. A one-sided result is usually
+    just the period's trend wearing a t-statistic, so the underlying drift was
+    measured per half and it FLIPS SIGN between them:
+
+        GOLDM       train  -7.01%   hold  +6.27%   -> short still wins
+        SILVERM     train  -8.74%   hold  +3.58%   -> short still wins
+        NATURALGAS  train  +5.02%   hold -14.16%   -> long  still wins
+
+    Each surviving side wins on the half whose drift opposed it. That is the
+    opposite of a trend artifact.
+    """
+    allowed = getattr(module, "DIRECTION_BY_ASSET", None) or {}
+    want = allowed.get((asset or "").upper())
+    return want is None or want == direction
+
+
 class SessionShiftEntry:
     """Trade the US-market hand-off, when crude/gold volume genuinely wakes up.
 
@@ -34,6 +68,39 @@ class SessionShiftEntry:
     WINDOW_END_MIN = 630    # 19:30
     MIN_GAP_PCT = 0.05
 
+    #: SHORT ONLY on both metals — see _direction_allowed for the measurement.
+    #: The long side measured negative on both halves for GOLDM and out of
+    #: sample for SILVERM, so this removes a loser rather than adding a winner.
+    #: Neither short side clears t>=2 on TRAIN, so this module is still
+    #: unconfirmed; it is simply no longer paying for its own wrong half.
+    DIRECTION_BY_ASSET: dict[str, str] = {
+        "GOLDM": "short",
+        "SILVERM": "short",
+    }
+
+    #: See RangeFadeEntry.TUNABLES for the contract. All tier "propose": each
+    #: changes only WHEN this module fires, never how much it risks when it does.
+    TUNABLES = {
+        "DIRECTION": {
+            "values": (None, "long", "short"),
+            "tier": "propose",
+            "per_asset": "DIRECTION_BY_ASSET",
+            "default": None,
+        },
+        "MIN_GAP_PCT": {
+            "values": (0.02, 0.05, 0.10, 0.15, 0.25),
+            "tier": "propose",
+        },
+        "WINDOW_START_MIN": {
+            "values": (420, 480, 510, 540),
+            "tier": "propose",
+        },
+        "WINDOW_END_MIN": {
+            "values": (570, 630, 690, 750, 810),
+            "tier": "propose",
+        },
+    }
+
     def evaluate(self, ctx: MarketContext) -> EntrySignal:
         m = ctx.minutes_into_session
         if m is None:
@@ -47,6 +114,16 @@ class SessionShiftEntry:
         gap_pct = (gap / ctx.price * 100.0) if ctx.price else 0.0
         if gap_pct < self.MIN_GAP_PCT:
             return EntrySignal.stand_aside(f"SessionShift: EMA band flat ({gap_pct:.3f}%) — no directional wake-up yet.")
+
+        asset = (ctx.symbol or "").upper()
+        if ctx.trend_up and ctx.above_vwap and not _direction_allowed(self, asset, "long"):
+            return EntrySignal.stand_aside(
+                f"SessionShift: long side is not scoped on {asset} — it measured negative there."
+            )
+        if (not ctx.trend_up) and (not ctx.above_vwap) and not _direction_allowed(self, asset, "short"):
+            return EntrySignal.stand_aside(
+                f"SessionShift: short side is not scoped on {asset} — it measured negative there."
+            )
 
         if ctx.trend_up and ctx.above_vwap:
             return EntrySignal(
@@ -169,7 +246,81 @@ class RangeFadeEntry:
         "NATURALGAS": 0.15,
     }
 
+    #: How far EMA9 and EMA21 may separate before the tape counts as trending
+    #: and a fade is refused. NEVER MEASURED — it was chosen, and on 2026-08-26
+    #: it blocked every single one of NATURALGAS's 31 in-window scans, with
+    #: observed gaps of 0.23% to 0.76% against a 0.12% bar. A guard that
+    #: refuses 100% of a day is either the only thing keeping the module alive
+    #: or the reason it never trades, and nothing on record said which.
     MAX_TREND_GAP_PCT = 0.12
+
+    #: Per asset, for the same reason STRETCH_PCT is: a guard tuned on one
+    #: commodity's volatility is not a guard on another's.
+    #:
+    #: NATURALGAS 0.12 -> 0.10, measured 2026-08-26 under full geometry on the
+    #: long side (the only side now scoped — see DIRECTION_BY_ASSET):
+    #:
+    #:   guard   TRAIN n    edge      t   |  HOLD  n    edge      t
+    #:    0.06      39   +1.098  +2.35   |    53  +0.827  +3.20   n below the floor
+    #:    0.08      49   +0.866  +2.24   |    66  +0.716  +3.30   CONFIRMED
+    #:    0.10      55   +0.821  +2.35   |    85  +0.497  +2.67   CONFIRMED  <- shipped
+    #:    0.12      64   +0.782  +2.53   |   113  +0.347  +2.23   CONFIRMED  (today)
+    #:    0.16      90   +0.782  +2.94   |   148  +0.131  +1.03
+    #:    0.20     113   +0.605  +2.63   |   179  +0.119  +1.08
+    #:
+    #: 0.08 scores best and 0.10 was shipped instead, on purpose. Three adjacent
+    #: values confirm, hold-out edge falls monotonically as the guard loosens,
+    #: and 0.06 already drops below the sample floor — so 0.08 sits one step from
+    #: a cliff while 0.10 sits inside the plateau. Taking the middle of a
+    #: contiguous confirmed band rather than its best-scoring edge is the
+    #: defence against shipping a boundary that was lucky, and it keeps 29% more
+    #: signals on an asset that is already starved for them.
+    MAX_TREND_GAP_PCT_BY_ASSET: dict[str, float] = {
+        "NATURALGAS": 0.10,
+    }
+
+    #: LONG ONLY on gas — fade the dip, never the rip. See _direction_allowed.
+    #: The short side measured -0.29 on train and turned significantly NEGATIVE
+    #: as the guard loosened (-2.17 at 0.16, -3.15 at 0.20) while the hold-out
+    #: stayed positive. Halves that contradict each other are noise, and this
+    #: one has the train half saying it loses.
+    DIRECTION_BY_ASSET: dict[str, str] = {
+        "NATURALGAS": "long",
+    }
+
+    #: Knobs sweep_lab may try at other settings. Declared here rather than in
+    #: the lab so that a module and the thing measuring it can never disagree
+    #: about what is tunable, and so a NEW module arrives sweepable.
+    #:
+    #: Tier "propose" changes only WHEN this module fires. Nothing here widens
+    #: a stop, raises a cap, or increases position size — those are tier "ask"
+    #: and sweep_lab will not write them as proposals at any confidence.
+    TUNABLES = {
+        "DIRECTION": {
+            "values": (None, "long", "short"),
+            "tier": "propose",
+            "per_asset": "DIRECTION_BY_ASSET",
+            "default": None,
+        },
+        "MAX_TREND_GAP_PCT": {
+            "values": (0.06, 0.08, 0.10, 0.12, 0.16, 0.20),
+            "tier": "propose",
+            "per_asset": "MAX_TREND_GAP_PCT_BY_ASSET",
+        },
+        "STRETCH_PCT": {
+            "values": (0.10, 0.15, 0.20, 0.30, 0.45),
+            "tier": "propose",
+            "per_asset": "STRETCH_PCT_BY_ASSET",
+        },
+        "WINDOW_END_MIN": {
+            "values": (360, 420, 480, 540, 600),
+            "tier": "propose",
+        },
+        "WINDOW_START_MIN": {
+            "values": (0, 30, 60, 120),
+            "tier": "propose",
+        },
+    }
 
     def evaluate(self, ctx: MarketContext) -> EntrySignal:
         m = ctx.minutes_into_session
@@ -180,14 +331,22 @@ class RangeFadeEntry:
                 f"RangeFade: outside the 09:30-17:00 IST quiet window ({m}min into session)."
             )
 
+        asset = (ctx.symbol or "").upper()
         gap_pct = (abs(ctx.ema9 - ctx.ema21) / ctx.price * 100.0) if ctx.price else 0.0
-        if gap_pct > self.MAX_TREND_GAP_PCT:
+        max_gap = self.MAX_TREND_GAP_PCT_BY_ASSET.get(asset, self.MAX_TREND_GAP_PCT)
+        if gap_pct > max_gap:
             return EntrySignal.stand_aside(f"RangeFade: tape is trending (EMA gap {gap_pct:.3f}%) — refusing to fade it.")
 
         stretch = ctx.distance_from_vwap_pct()
-        threshold = self.STRETCH_PCT_BY_ASSET.get(
-            (ctx.symbol or "").upper(), self.STRETCH_PCT
-        )
+        threshold = self.STRETCH_PCT_BY_ASSET.get(asset, self.STRETCH_PCT)
+        if stretch >= threshold and not _direction_allowed(self, asset, "short"):
+            return EntrySignal.stand_aside(
+                f"RangeFade: fading a rip is not scoped on {asset} — that side did not survive."
+            )
+        if stretch <= -threshold and not _direction_allowed(self, asset, "long"):
+            return EntrySignal.stand_aside(
+                f"RangeFade: fading a dip is not scoped on {asset} — that side did not survive."
+            )
         if stretch >= threshold:
             return EntrySignal(
                 True, "short",

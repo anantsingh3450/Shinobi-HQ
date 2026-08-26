@@ -468,6 +468,36 @@ def main() -> int:
     except Exception as exc:
         text += f"\n\n(evolution policy failed to run: {exc})"
 
+    # The middle step Hokage never had. The audit above re-SCORES the lineup as
+    # it stands and the evolution policy PRUNES what has stopped working;
+    # neither can look at a module that works and ask whether one of its own
+    # knobs would work better. Until 2026-08-26 that question was only ever
+    # answered by Claude, by hand, in a chat session — 117 autopsies on disk and
+    # zero improvement proposals ever written.
+    #
+    # Nothing here is applied. Proposals land as PENDING rows for the commander,
+    # and anything tiered ASK is printed and not written at all.
+    swept: list = []
+    if not dry_run:
+        try:
+            import sweep_lab
+
+            proposals, asked = sweep_lab.sweep()
+            fresh = [p for p in proposals if not sweep_lab.already_answered(p)]
+            swept = fresh + asked
+            if fresh or asked:
+                lines = ["", "-" * 60, "KNOB SWEEP"]
+                for p in fresh:
+                    lines.append("  PROPOSE  " + p["rationale"])
+                    lines.append("           -> " + sweep_lab.write_proposal(p))
+                for r in asked:
+                    lines.append("  ASK      " + r)
+                lines.append("")
+                lines.append("Nothing is applied. Review with /proposals.")
+                text += chr(10) + chr(10).join(lines)
+        except Exception as exc:
+            text += f"\n\n(knob sweep failed to run: {exc})"
+
     print("\n" + text + "\n")
 
     if not dry_run:
@@ -478,7 +508,11 @@ def main() -> int:
         print(f"snapshot written: hokage_brain/research/snapshots/{today}.json")
 
     if telegram:
-        worth_sending = bool(report["demotions"] or report["revivals"] or report["moves"])
+        # A knob proposal is a decision waiting on the commander, so it counts
+        # as news even in a week where nothing else moved. Without this the loop
+        # would close and then talk to a log file nobody reads.
+        worth_sending = bool(report["demotions"] or report["revivals"]
+                             or report["moves"] or swept)
         if not worth_sending:
             print("telegram: nothing changed, staying quiet.")
         else:
