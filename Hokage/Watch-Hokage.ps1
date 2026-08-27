@@ -24,7 +24,13 @@ $Log = Join-Path $Root 'logs\liveness.log'
 Push-Location $Root
 try {
     $line = & $Python (Join-Path $Root 'tools\ops\liveness_probe.py') 2>&1
-    $line | Tee-Object -FilePath $Log -Append
+    # Out-File -Encoding utf8, NOT Tee-Object: Windows PowerShell 5.1's
+    # Tee-Object has no -Encoding switch and writes UTF-16LE, which produced a
+    # liveness.log full of NUL-separated characters on 2026-08-27 — unreadable
+    # by grep and by any parser that reads it later. Same class of fault as the
+    # BOM that broke the profile JSON readers.
+    $line | Write-Output
+    $line | Out-File -FilePath $Log -Append -Encoding utf8
     exit 0
 } finally {
     Pop-Location

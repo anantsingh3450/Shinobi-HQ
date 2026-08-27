@@ -24,13 +24,14 @@ Push-Location $Root
 try {
     $state = & $Python (Join-Path $Root 'tools\check_broker_session.py') 2>$null
     if ($LASTEXITCODE -ne 0) {
+        # Out-File -Encoding utf8: PS 5.1's Tee-Object writes UTF-16LE.
         "$(Get-Date -Format 'yyyy-MM-dd HH:mm') candle sync SKIPPED: session is $state" |
-            Tee-Object -FilePath $Log -Append
+            Out-File -FilePath $Log -Append -Encoding utf8
         exit 1
     }
 
     & $Python (Join-Path $Root 'tools\research\candle_archive.py') sync 2>&1 |
-        Tee-Object -FilePath $Log -Append
+        Out-File -FilePath $Log -Append -Encoding utf8
     exit $LASTEXITCODE
 } finally {
     Pop-Location

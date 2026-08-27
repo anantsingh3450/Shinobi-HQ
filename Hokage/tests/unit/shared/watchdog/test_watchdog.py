@@ -85,6 +85,16 @@ def test_watchdog_failure_detection_stale_heartbeat(tmp_path: Path):
     # test (stale heartbeat -> incident -> score below 100) is unchanged; it is
     # now exercised against a subsystem that publishes from real work.
     old_time = datetime.now(timezone.utc) - timedelta(seconds=400)
+
+    # This Watchdog was constructed a moment ago, so a heartbeat 400s old
+    # predates its own process start — which since 2026-08-27 means "written by
+    # a previous run", not "stale". That distinction exists because the 08-27
+    # boot logged 135 ERRORs about a heartbeat belonging to the process that had
+    # died at 04:14. To exercise the case this test is actually about — a
+    # subsystem that HAS published in this run and then went quiet — the process
+    # must have been up longer than the heartbeat is old.
+    watchdog.process_started_at = datetime.now(timezone.utc) - timedelta(hours=2)
+
     hb = Heartbeat(
         subsystem="strategy_engine",
         timestamp=old_time,

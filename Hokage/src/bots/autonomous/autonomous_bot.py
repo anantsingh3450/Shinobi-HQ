@@ -1224,6 +1224,7 @@ class AutonomousTradingBot:
         family: set[str] | None = None,
         max_same_direction: int | None = None,
         family_label: str = "index-family",
+        counter_trend: bool = False,
     ) -> tuple[bool, str]:
         """Portfolio-level entry checks the per-trade gates cannot see.
 
@@ -1280,6 +1281,40 @@ class AutonomousTradingBot:
                 )
 
         # --- 2. post-win re-entry watermark --------------------------------
+        # TREND-FOLLOWING MODULES ONLY, since 2026-08-27.
+        #
+        # The rule says "not buying the dip of our own winner", which is sound
+        # for a module whose thesis is that the move continues. Applied to a
+        # COUNTER-TREND module it is exactly inverted: RangeFade exists to buy
+        # a price stretched BELOW VWAP, so a lower price is a BETTER entry, not
+        # a stale one. The gate was per-symbol and could not see which module
+        # had won the auction.
+        #
+        # WHAT IT COST, on the one asset with a confirmed edge:
+        #
+        #     2026-08-27  RangeFade won the NATURALGAS auction   17 times
+        #                 blocked by this watermark              16
+        #                 actually traded                         1  (+2,000)
+        #
+        # MEASURED before changing, train vs hold-out, full geometry — is the
+        # Nth signal of a day worse than the first?
+        #
+        #     1st of the day   TRAIN n=5  +1.907 t=+1.10 | HOLD n=20 -0.059 t=-0.21
+        #     2nd onward       TRAIN n=11 +1.946 t=+2.15 | HOLD n=71 +0.225 t=+1.28
+        #     3rd onward       TRAIN n=7  +2.148 t=+2.93 | HOLD n=51 +0.267 t=+1.38
+        #
+        # The repeats measure BETTER than the first on both halves, and the
+        # hold-out puts the first signal of the day slightly NEGATIVE. The
+        # watermark was keeping the worst signal and discarding the best.
+        #
+        # Neither bucket clears t>=2 on both halves and the ordinal split is a
+        # proxy (the watermark only triggers after a PROFITABLE exit), so this
+        # is not a confirmed edge — it is the removal of a rule the evidence
+        # does not support, from the one module whose thesis it contradicts.
+        # Commander-approved 2026-08-27. Trend modules keep it in full force.
+        if counter_trend:
+            return True, "cluster gates passed (watermark n/a: counter-trend module)"
+
         wm = getattr(self, "_target_exit_watermarks", {}).get(symbol_upper)
         if wm and wm.get("direction") == direction and isinstance(underlying_price, (int, float)):
             level = float(wm.get("level") or 0.0)
@@ -3503,7 +3538,67 @@ class AutonomousTradingBot:
                     f"hit protective floor {active_floor:.2f}"
                 ), tracking
 
+        self._trace_ladder(symbol, entry_premium, current_premium, peak_premium, tracking)
         return False, "", tracking
+
+    #: A new peak must beat the last traced one by this much to be worth a line.
+    _LADDER_TRACE_PEAK_STEP = 0.02
+
+    def _trace_ladder(
+        self,
+        symbol: str,
+        entry_premium: float,
+        current_premium: float,
+        peak_premium: float,
+        tracking: dict[str, Any],
+    ) -> None:
+        """Log the ladder's STATE CHANGES while a position is still open.
+
+        2026-08-27: GOLDM26SEP157000PE was entered at 3750, peaked +6.7%, and
+        exited three hours later at 3741 for -90. The only line the ladder ever
+        wrote was the exit itself, so there was no way — for the commander or
+        for me — to reconstruct why a position that was up 6.7% ended at zero.
+        Every rung's state was computed on every tick and then discarded.
+
+        This traces the three transitions that actually explain a round-trip:
+        the trail ARMING, the protective floor RATCHETING, and a materially new
+        PEAK. Deliberately NOT a per-tick dump — the watchdog already showed
+        what happens when a subsystem logs its state every few seconds: 74% of
+        2026-08-27's log was one sentence repeated, and it buried 135 real
+        errors. A line here has to earn its place by reporting a change.
+        """
+        if entry_premium <= 0:
+            return
+        target = tracking.get("target_price")
+        floor = float(tracking.get("stop_price") or 0.0)
+        armed = peak_premium >= entry_premium * (1.0 + self._OPTION_TRAIL_ARM_PCT)
+
+        events: list[str] = []
+        if armed and not tracking.get("_traced_armed"):
+            tracking["_traced_armed"] = True
+            events.append(f"trail ARMED at peak {peak_premium:.2f} "
+                          f"({peak_premium / entry_premium - 1.0:+.1%})")
+
+        last_floor = float(tracking.get("_traced_floor") or 0.0)
+        if floor > last_floor + 0.005:
+            tracking["_traced_floor"] = floor
+            events.append(f"floor RATCHETED {last_floor:.2f} -> {floor:.2f}")
+
+        last_peak = float(tracking.get("_traced_peak") or entry_premium)
+        if peak_premium >= last_peak * (1.0 + self._LADDER_TRACE_PEAK_STEP):
+            tracking["_traced_peak"] = peak_premium
+            events.append(f"new peak {peak_premium:.2f} "
+                          f"({peak_premium / entry_premium - 1.0:+.1%})")
+
+        if not events:
+            return
+        logger.info(
+            "Exit ladder %s: %s | now %.2f (%+.1f%%) peak %.2f floor %s target %s",
+            symbol, "; ".join(events), current_premium,
+            (current_premium / entry_premium - 1.0) * 100.0, peak_premium,
+            f"{floor:.2f}" if floor else "none",
+            f"{target:.2f}" if target else "not set",
+        )
 
     def _monitor_and_exit_positions(self, is_tick: bool = True) -> None:
         """Check open positions across all active venues and enforce TSL/TP exits."""
@@ -4416,6 +4511,7 @@ class AutonomousTradingBot:
                 family, label, cap = set(), "unclassified", 2
             cluster_ok, cluster_reason = self._entry_cluster_gate(
                 symbol, direction, entry_price, family=family, max_same_direction=cap, family_label=label,
+                counter_trend=self._is_counter_trend_strategy(selected_strat.get("strategy_id")),
             )
             if not cluster_ok:
                 logger.info(f"MCX Arena entry blocked for {symbol}: {cluster_reason}")
@@ -5648,7 +5744,10 @@ class AutonomousTradingBot:
                 # Portfolio-level cluster gates: correlation cap across the
                 # index family + post-win re-entry watermark (2026-07-17:
                 # three simultaneous same-direction CE = one bet tripled).
-                cluster_ok, cluster_reason = self._entry_cluster_gate(symbol, original_entry, entry_price)
+                cluster_ok, cluster_reason = self._entry_cluster_gate(
+                    symbol, original_entry, entry_price,
+                    counter_trend=self._is_counter_trend_strategy(selected_strat.get("strategy_id")),
+                )
                 if not cluster_ok:
                     logger.info(f"Entry blocked for {symbol}: {cluster_reason}")
                     eval_results[symbol] = {

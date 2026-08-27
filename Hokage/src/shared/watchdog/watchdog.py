@@ -38,6 +38,23 @@ class Watchdog:
             "strategy_engine": 195.0,   # autonomous scan loop: 60s interval
             "market_data": 195.0,       # published only on a SUCCESSFUL quote
         }
+        #: When THIS process started. Heartbeats are persisted to disk and
+        #: therefore outlive the process that wrote them, so an age measured
+        #: against `now` alone describes the PREVIOUS run.
+        #:
+        #: 2026-08-27: Hokage booted at 07:58 after dying at 04:14 and logged
+        #: 135 ERRORs in thirteen minutes — "Subsystem 'market_data' has a stale
+        #: heartbeat (age: 13471.1s > 195s)". Four hours of staleness, all of it
+        #: belonging to a process that no longer existed. A subsystem that has
+        #: not yet published in THIS run has not gone stale; it has not started.
+        self.process_started_at = datetime.now(timezone.utc)
+
+        #: How long after boot a real publisher may stay silent before it counts
+        #: against health. market_data publishes only on a SUCCESSFUL quote, and
+        #: a pre-open boot can sit an hour from the first one — calling that a
+        #: fault would make the alarm meaningless every single morning.
+        self.boot_grace_sec = 900.0
+
         self.memory_warning_threshold_mb = 350.0
         self.memory_critical_threshold_mb = 500.0
         self.thread_count_warning_threshold = 30
@@ -263,7 +280,7 @@ class Watchdog:
 
     def check_system_health(self) -> float:
         """Run diagnostic checks on all subsystems, detect failures, log incidents, and return health score (0-100)."""
-        logger.info("Initiating active Watchdog diagnostic checks.")
+        logger.debug("Initiating active Watchdog diagnostic checks.")
         
         incidents = []
         total_checks = 7
@@ -289,10 +306,24 @@ class Watchdog:
             threshold = self.heartbeat_stale_threshold_overrides.get(
                 sub, self.heartbeat_stale_threshold_sec
             )
-            if not hb:
-                # Missing heartbeat is a warning
+            # A heartbeat written by a PREVIOUS run is not evidence about this
+            # one. Treat anything older than process start as "not yet
+            # published", and give it the boot grace before it counts at all.
+            since_boot = (now - self.process_started_at).total_seconds()
+            from_this_run = bool(hb) and hb.timestamp >= self.process_started_at
+
+            if not from_this_run:
+                if since_boot <= self.boot_grace_sec:
+                    logger.debug(
+                        f"Watchdog: Subsystem '{sub}' has not published yet "
+                        f"({since_boot:.0f}s into boot, grace {self.boot_grace_sec:.0f}s)."
+                    )
+                    continue
                 stale_subsystems.append(sub)
-                logger.warning(f"Watchdog: Subsystem '{sub}' has never published a heartbeat.")
+                logger.warning(
+                    f"Watchdog: Subsystem '{sub}' has published nothing since this "
+                    f"process started {since_boot / 60.0:.0f} min ago."
+                )
             else:
                 age = (now - hb.timestamp).total_seconds()
                 if age > threshold:
@@ -455,7 +486,37 @@ class Watchdog:
             if any(i.severity == "FATAL" for i in active_incidents):
                 health_score = 0.0
 
-        logger.info(f"Watchdog diagnostic completed. Overall Health Score: {health_score:.1f}/100.")
+        # SPEAK ONLY WHEN SOMETHING CHANGES.
+        #
+        # 2026-08-27: 19,845 of the day's 26,875 log lines — 74% — were this
+        # diagnostic announcing "Overall Health Score: 100.0/100" every six
+        # seconds. It is the same score that read 100.0/100 while Hokage was
+        # dying at 04:14 and while his broker token was expired, so it has never
+        # once been right about anything, and it buried the day's 135 genuine
+        # errors under twenty thousand lines of itself.
+        #
+        # A log nobody can read is a log nobody reads. The score is still
+        # computed every cycle and still returned to every caller; it is only
+        # WRITTEN when it moves or when the picture is not perfect. The
+        # unhealthy case is logged every time, at WARNING, because that is the
+        # line that has to survive being scrolled past.
+        previous = getattr(self, "_last_logged_health", None)
+        changed = previous is None or abs(previous - health_score) >= 0.05
+        self._last_logged_health = health_score
+
+        if health_score < 100.0:
+            logger.warning(
+                f"Watchdog diagnostic: health {health_score:.1f}/100 — "
+                f"{len(active_incidents)} unresolved incident(s)."
+            )
+        elif changed:
+            logger.info(
+                f"Watchdog diagnostic: health recovered to {health_score:.1f}/100."
+                if previous is not None else
+                f"Watchdog diagnostic: health {health_score:.1f}/100."
+            )
+        else:
+            logger.debug(f"Watchdog diagnostic: health {health_score:.1f}/100 (unchanged).")
         return health_score
 
     # ------------------------------------------------------------------

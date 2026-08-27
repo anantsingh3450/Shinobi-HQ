@@ -130,6 +130,27 @@ class TelegramBotUplink:
             text = text.replace(ch, "\\" + ch)
         return text
 
+    #: Characters of the outgoing message kept in the audit line.
+    _AUDIT_PREVIEW_CHARS = 90
+
+    def _audit(self, outcome: str, text: str, extra: str = "") -> None:
+        """Record that a message was sent, not merely that one failed.
+
+        2026-08-27: two round trips opened and closed, and the log carried NO
+        evidence either was announced. `send_message` returned True silently and
+        logged only on failure, so the single Telegram line in the whole day was
+        a DNS error at 16:11:58 — meaning the commander could not audit what
+        Hokage had told him, or whether it had told him anything at all.
+
+        One line per send, first %d characters only: enough to know which alert
+        this was, never the whole payload, and never the token (which lives in
+        the URL and is not touched here).
+        """ % 90,
+        preview = " ".join(str(text).split())[:self._AUDIT_PREVIEW_CHARS]
+        logger.info("Telegram %s: %s%s%s", outcome, preview,
+                    "..." if len(str(text)) > self._AUDIT_PREVIEW_CHARS else "",
+                    f" [{extra}]" if extra else "")
+
     def send_message(self, text: str) -> bool:
         """Send a message to the configured Telegram chat."""
         if not self.enabled:
@@ -145,6 +166,7 @@ class TelegramBotUplink:
         try:
             res = requests.post(url, json=payload, timeout=10)
             if res.status_code == 200:
+                self._audit("sent", text)
                 return True
             # Telegram rejects the WHOLE message when an interpolated value
             # opens a Markdown entity it cannot close — an underscore in
@@ -162,12 +184,14 @@ class TelegramBotUplink:
                 payload.pop("parse_mode", None)
                 retry = requests.post(url, json=payload, timeout=10)
                 if retry.status_code == 200:
+                    self._audit("sent", text, "plain-text fallback")
                     return True
                 logger.error(f"Telegram plain-text retry also failed {retry.status_code}: {retry.text}")
                 return False
             logger.error(f"Telegram API error {res.status_code}: {res.text}")
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
+        self._audit("NOT SENT", text)
         return False
 
     def notify_fill(self, trade_details: dict) -> None:
