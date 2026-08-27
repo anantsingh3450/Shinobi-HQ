@@ -279,6 +279,23 @@ class RangeFadeEntry:
         "NATURALGAS": 0.10,
     }
 
+    #: Weekdays this module refuses to fade, per asset. Monday=0.
+    #:
+    #: RangeFade's whole hypothesis is that the pre-overlap hours are RANGEBOUND
+    #: — "a stretch in this quiet window is noise, not a new trend". Open-source
+    #: research on gas (2026-08-27) says that assumption has a known weak spot:
+    #: natural gas return volatility is measurably HIGHER ON THURSDAYS than any
+    #: other weekday, because the EIA storage report prints at 20:00 IST and the
+    #: market spends the day positioning for it — "estimates circulate from
+    #: Monday; positions get squared Wednesday night".
+    #:
+    #: A day whose morning is spent positioning for an evening release is not a
+    #: quiet range, so fading it may be fading a real move. That is a HYPOTHESIS,
+    #: not a finding — and unlike the EIA module itself it can be settled on a
+    #: real sample, because every Thursday already sits inside the corpus the
+    #: module is measured on. Empty until measured.
+    SKIP_WEEKDAYS_BY_ASSET: dict[str, tuple[int, ...]] = {}
+
     #: LONG ONLY on gas — fade the dip, never the rip. See _direction_allowed.
     #: The short side measured -0.29 on train and turned significantly NEGATIVE
     #: as the guard loosened (-2.17 at 0.16, -3.15 at 0.20) while the hold-out
@@ -320,6 +337,14 @@ class RangeFadeEntry:
             "values": (0, 30, 60, 120),
             "tier": "propose",
         },
+        #: () = fade every day, (3,) = sit out Thursdays. See
+        #: SKIP_WEEKDAYS_BY_ASSET for why Thursday is the one worth asking about.
+        "SKIP_WEEKDAYS": {
+            "values": ((), (3,)),
+            "tier": "propose",
+            "per_asset": "SKIP_WEEKDAYS_BY_ASSET",
+            "default": (),
+        },
     }
 
     def evaluate(self, ctx: MarketContext) -> EntrySignal:
@@ -332,6 +357,13 @@ class RangeFadeEntry:
             )
 
         asset = (ctx.symbol or "").upper()
+        skip = self.SKIP_WEEKDAYS_BY_ASSET.get(asset, ())
+        if skip and ctx.weekday is not None and ctx.weekday in skip:
+            return EntrySignal.stand_aside(
+                f"RangeFade: {asset} does not fade on this weekday — its quiet-range "
+                f"assumption did not hold there."
+            )
+
         gap_pct = (abs(ctx.ema9 - ctx.ema21) / ctx.price * 100.0) if ctx.price else 0.0
         max_gap = self.MAX_TREND_GAP_PCT_BY_ASSET.get(asset, self.MAX_TREND_GAP_PCT)
         if gap_pct > max_gap:
@@ -362,6 +394,163 @@ class RangeFadeEntry:
                 confidence=min(78.0, 52.0 + abs(stretch) * 18.0),
             )
         return EntrySignal.stand_aside(f"RangeFade: price only {stretch:+.2f}% from VWAP — not stretched enough.")
+
+
+class EIAReactionEntry:
+    """Trade the weekly EIA gas storage print — after the vacuum, not into it.
+
+    THE ONE GENUINELY FORECASTABLE EVENT IN THE GAS WEEK. Built 2026-08-27 from
+    open sources, because natural gas has a scheduled information release that
+    nothing else Hokage trades does:
+
+      * The EIA Weekly Natural Gas Storage Report publishes EVERY THURSDAY at
+        10:30 a.m. ET — 20:00 IST — and MCX natural gas is a cash-settled
+        derivative of NYMEX Henry Hub that "follows within seconds".
+      * Academic work on energy futures finds gas return volatility is
+        MEASURABLY HIGHER ON THURSDAYS than any other weekday. Two independent
+        sources, one practitioner and one academic, point at the same hour.
+      * A 10 Bcf surprise against consensus moves the front month 10-20 cents
+        almost instantly.
+
+    AND HOKAGE WAS BLIND TO IT TWICE OVER. MarketContext carried no weekday at
+    all until today, so a weekly event was literally inexpressible; and every
+    live gas window (RangeFade 09:30-17:00) closes three hours before the print.
+    The most informative hour of the gas week had no module in it.
+
+    WHY IT REFUSES THE FIRST FIFTEEN MINUTES. The same sources are blunt about
+    the release itself being untradeable: repricing is complete "by 10:30:01",
+    spreads go from "a tick wide" to "ten wide in the release seconds", "the
+    worst fills of the week happen between 10:30 and 10:35", and "stops placed
+    at sensible technical levels get vacuumed in both directions". Whatever edge
+    exists is NOT in the print. So this module never fires on the 20:00 scan —
+    it waits for the release bar to CLOSE and reads what the move actually was.
+    Liquidity is "tradeable within the half hour" and "the most honest prices
+    print after 11:00", which is where the window sits.
+
+    THE HYPOTHESIS BEING TESTED, stated before it was measured so the result
+    cannot be rewritten afterwards: the initial print is a liquidity event, not
+    a valuation event — "a bullish print spikes price into resting sell orders
+    and reverses within fifteen minutes". If that is true beyond the first bar,
+    the release-bar move should partially REVERSE over the following hour, and
+    fading it pays. If it is false, the move is real information and following
+    it pays. Both readings are measurable; DIRECTION_BY_ASSET records which one
+    the tape actually supports, and an empty table means neither has earned
+    capital yet.
+
+    THE HONEST LIMIT, which no amount of care removes: this is a WEEKLY event.
+    Kite serves at most 200 days of 15-minute candles, so the entire measurable
+    universe is roughly 28 Thursdays. One observation per Thursday — counting
+    four bars inside one release window as four observations would be
+    manufacturing n, which is the exact trick every lab here exists to refuse.
+    Fourteen events per half cannot reach the ship bar, and a module that cannot
+    reach the bar does not get told it has.
+    """
+
+    module_id = "entry-eiareaction-mcx-v1"
+
+    #: The EIA storage report lands 10:30 ET = 20:00 IST, which on a 09:00 MCX
+    #: open is minute 660 — confirmed against Hokage's own 2026-08-26 scan log,
+    #: which stamped the 20:00:26 scan "(660min into session)".
+    RELEASE_MIN = 660
+
+    #: 20:15-20:45 IST. Starts one full bar AFTER the print so the release bar
+    #: has closed and the vacuum has passed; two scans wide so a single missed
+    #: poll does not silently skip the week's only opportunity.
+    WINDOW_START_MIN = 675
+    WINDOW_END_MIN = 705
+
+    #: Thursday. Monday=0, so EIA day is 3.
+    EIA_WEEKDAY = 3
+
+    #: How far the release bar must have travelled, in ATR, to count as a
+    #: reaction worth trading rather than an ordinary bar that happened to land
+    #: at 20:00. Sweepable.
+    MIN_REACTION_ATR = 0.50
+
+    #: EMPTY ON PURPOSE. Nothing is scoped until it has been measured on this
+    #: asset — the whole point of the module is that the direction is the open
+    #: question, and an unmeasured guess about it is how CRUDEOIL cost 6 sweeps.
+    DIRECTION_BY_ASSET: dict[str, str] = {}
+
+    #: True = fade the release move, False = follow it. Not per-asset yet
+    #: because the module trades exactly one asset; it becomes per-asset the
+    #: moment a second one is scoped.
+    FADE_THE_PRINT = True
+
+    TUNABLES = {
+        "MIN_REACTION_ATR": {
+            "values": (0.25, 0.50, 0.75, 1.00, 1.50),
+            "tier": "propose",
+        },
+        "FADE_THE_PRINT": {
+            "values": (True, False),
+            "tier": "propose",
+        },
+        "WINDOW_START_MIN": {
+            "values": (675, 690, 705),
+            "tier": "propose",
+        },
+    }
+
+    def evaluate(self, ctx: MarketContext) -> EntrySignal:
+        weekday = ctx.weekday
+        if weekday is None:
+            return EntrySignal.stand_aside(
+                "EIAReaction: session date unknown — cannot tell whether this is EIA day."
+            )
+        if weekday != self.EIA_WEEKDAY:
+            return EntrySignal.stand_aside(
+                "EIAReaction: not a Thursday — the storage report only prints once a week."
+            )
+
+        m = ctx.minutes_into_session
+        if m is None:
+            return EntrySignal.stand_aside("EIAReaction: session clock unknown.")
+        if m < self.WINDOW_START_MIN:
+            return EntrySignal.stand_aside(
+                f"EIAReaction: too early ({m}min) — refusing the 20:00-20:15 release vacuum, "
+                f"where spreads go ten wide and stops are hunted in both directions."
+            )
+        if m >= self.WINDOW_END_MIN:
+            return EntrySignal.stand_aside(
+                f"EIAReaction: past the 20:15-20:45 post-release window ({m}min into session)."
+            )
+
+        if ctx.atr is None or ctx.atr <= 0:
+            return EntrySignal.stand_aside(
+                "EIAReaction: ATR unavailable — the reaction bar cannot be sized without it."
+            )
+        if len(ctx.closes) < 3:
+            return EntrySignal.stand_aside(
+                f"EIAReaction: need 3 bars to measure the release move, have {len(ctx.closes)}."
+            )
+
+        # The release bar is the one BEFORE the current (still forming) bar.
+        move = ctx.closes[-2] - ctx.closes[-3]
+        reaction = abs(move) / ctx.atr
+        if reaction < self.MIN_REACTION_ATR:
+            return EntrySignal.stand_aside(
+                f"EIAReaction: the print barely moved the tape ({reaction:.2f} ATR) — "
+                f"no reaction to trade."
+            )
+
+        spiked_up = move > 0
+        direction = ("short" if spiked_up else "long") if self.FADE_THE_PRINT \
+            else ("long" if spiked_up else "short")
+
+        asset = (ctx.symbol or "").upper()
+        if not _direction_allowed(self, asset, direction):
+            return EntrySignal.stand_aside(
+                f"EIAReaction: the {direction} side is not scoped on {asset}."
+            )
+
+        stance = "fading" if self.FADE_THE_PRINT else "following"
+        return EntrySignal(
+            True, direction,
+            f"EIAReaction: the storage print moved the tape {move:+.2f} ({reaction:.2f} ATR) "
+            f"and the release bar has closed — {stance} it into the post-vacuum hour.",
+            confidence=min(80.0, 55.0 + reaction * 10.0),
+        )
 
 
 class TrendRiderEntry:
@@ -429,4 +618,5 @@ MCX_ENTRY_MODULES: dict[str, object] = {
     "strat-eventrider-mcx-v1": EventRiderEntry(),
     "strat-rangefade-mcx-v1": RangeFadeEntry(),
     "strat-trendrider-mcx-v1": TrendRiderEntry(),
+    "strat-eiareaction-mcx-v1": EIAReactionEntry(),
 }

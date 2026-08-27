@@ -11,6 +11,7 @@ handed to every module, so all competitors are judged on identical data.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,25 @@ class MarketContext:
     vix_percentile: float | None = None
     #: Minutes since the session opened; None when the session clock is unknown.
     minutes_into_session: int | None = None
+    #: Calendar date of the session being traded, read off the LAST CANDLE — not
+    #: from the wall clock, which would silently fabricate a date on any replay
+    #: or backtest and make an event module untestable.
+    #:
+    #: Added 2026-08-27. Until then no module could know what day it was, so a
+    #: recurring weekly event was literally inexpressible. Open-source research
+    #: on natural gas says the EIA storage report lands every Thursday 10:30 ET
+    #: (20:00 IST) and that gas return volatility is measurably higher on
+    #: Thursdays than any other day — the single most informative hour of the
+    #: gas week, and Hokage was blind to which day it was.
+    #:
+    #: None when the feed could not supply candles. A module reading it must
+    #: stand aside on None rather than guess a weekday.
+    session_date: "date | None" = None
+
+    @property
+    def weekday(self) -> int | None:
+        """Monday=0 .. Sunday=6, or None when the session date is unknown."""
+        return None if self.session_date is None else self.session_date.weekday()
 
     @property
     def trend_up(self) -> bool:

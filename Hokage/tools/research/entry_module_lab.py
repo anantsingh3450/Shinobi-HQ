@@ -57,6 +57,10 @@ def build_context(symbol: str, bars: list[dict], ctx: Ctx, session: list[dict]) 
         regime="UNKNOWN",
         vix_percentile=None,
         minutes_into_session=int((now - first).total_seconds() // 60),
+        #: Same source production uses — the last candle's own date. If the lab
+        #: read a wall clock here, every backtested bar would claim to be today
+        #: and a weekday-aware module could not be measured at all.
+        session_date=now.date(),
     )
 
 

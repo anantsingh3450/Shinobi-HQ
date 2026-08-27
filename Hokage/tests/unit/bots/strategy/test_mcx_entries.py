@@ -23,10 +23,16 @@ def _ctx(minutes_into_session, ema9=100.5, ema21=99.0, vwap=100.0, price=101.0, 
     )
 
 
-def test_four_distinct_modules_registered():
-    assert len(MCX_ENTRY_MODULES) == 4
-    ids = {m.module_id for m in MCX_ENTRY_MODULES.values()}
-    assert len(ids) == 4  # no accidental duplicate module_id
+def test_every_registered_module_has_a_distinct_id():
+    """Was `== 4` until 2026-08-27, when EIAReaction became the fifth and the
+    test failed for the one reason that is not a fault — the arena grew. The
+    invariant worth guarding is that no two modules share a module_id, because
+    a duplicate would silently make one of them unmeasurable: every lab keys
+    its results by module_id, so the second would overwrite the first's row
+    and one strategy would be scored on another's signals."""
+    ids = [m.module_id for m in MCX_ENTRY_MODULES.values()]
+    assert len(set(ids)) == len(ids), sorted(ids)
+    assert len(ids) >= 4
 
 
 def test_sessionshift_only_fires_in_us_overlap_window():

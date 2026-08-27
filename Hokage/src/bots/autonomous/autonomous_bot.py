@@ -1474,6 +1474,11 @@ class AutonomousTradingBot:
                 regime=regime_data.get("prediction", "UNKNOWN"),
                 vix_percentile=self._india_vix_percentile(),
                 minutes_into_session=minutes_in,
+                #: Off the candle, never datetime.now(). The session being
+                #: traded is whatever the tape says it is; a wall-clock read
+                #: would disagree with it on any replay and would be a
+                #: fabricated value in exactly the way ATR used to be.
+                session_date=last_day,
             )
 
         if cache is not None:
