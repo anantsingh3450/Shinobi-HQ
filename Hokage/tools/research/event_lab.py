@@ -47,7 +47,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from signal_lab import Ctx, load_bars  # noqa: E402
+from signal_lab import MAX_HISTORY_DAYS, Ctx, load_bars  # noqa: E402
 from entry_module_lab import build_context  # noqa: E402
 from sweep_lab import HORIZON, PROD_STOP_ATR, _stats, realised  # noqa: E402
 
@@ -58,11 +58,6 @@ EIA_WEEKDAY = 3
 
 #: 20:00 IST on a 09:00 MCX open.
 RELEASE_MIN = 660
-
-#: Kite's ceiling for 15-minute candles. Asking for more silently returns less,
-#: which would look like a quiet market rather than a truncated request.
-MAX_HISTORY_DAYS = 195
-
 
 def load_max(asset: str) -> list[dict]:
     end = date.today()

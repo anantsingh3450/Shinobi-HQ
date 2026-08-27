@@ -39,6 +39,8 @@ USAGE
 """
 from __future__ import annotations
 
+import datetime as _dt
+
 import math
 import sys
 from pathlib import Path
@@ -243,7 +245,138 @@ CANDIDATES = {
 
 
 # ------------------------------------------------------------------- harness
+#: Kite's ceiling for a single 15-minute history request.
+MAX_HISTORY_DAYS = 195
+
+#: Fewest bars a measurement half may contain before it is refused outright.
+#: A half is roughly six weeks of MCX tape, which is ~1,400 fifteen-minute bars;
+#: 500 is the point below which a "result" is really a statement about missing
+#: data wearing a t-statistic.
+MIN_BARS_PER_HALF = 500
+
+
+def available_range(symbol: str) -> tuple[str, str]:
+    """The first and last 15-minute bar Kite will actually serve for `symbol`.
+
+    WHY THIS EXISTS. 2026-08-27, 08:15: the gas sweep reported TRAIN n=3 where
+    the same sweep had reported n=55 the previous evening. Nothing about the
+    market changed — the front-month contract rolled. `load_bars` resolves MCX
+    symbols to the nearest live expiry, and a freshly-fronted contract has no
+    history from before it listed:
+
+        NATURALGAS26SEPFUT   3500 bars   from 2026-05-20   <- today's front
+        NATURALGAS26OCTFUT   2825 bars   from 2026-05-27
+        NATURALGAS26NOVFUT   1787 bars   from 2026-05-29
+
+    So the fixed TRAIN window (2026-05-01..06-30) had walked off the front of
+    the data and was silently measuring six days instead of two months. It did
+    not error. It returned n=3 and a t-statistic of +2.00.
+
+    That is the most dangerous shape a bug can take here: a measurement that
+    still looks like a measurement. Every MCX pair degrades this way on every
+    roll, and the weekly audit would have compared next Friday's six-week train
+    half against last Friday's three-month one and called the difference a
+    change in edge.
+
+    Deeper history is not available to buy: gas's oldest live contract starts
+    2026-05-20 and nothing in Kite's instrument dump reaches further, because
+    expired contracts are delisted along with their tokens.
+    """
+    end = _dt.date.today()
+    start = end - _dt.timedelta(days=MAX_HISTORY_DAYS)
+    bars = load_bars(symbol,
+                     start.strftime("%Y-%m-%d") + " 09:00:00",
+                     end.strftime("%Y-%m-%d") + " 23:59:00")
+    if not bars:
+        raise ValueError(f"no candles available for {symbol}")
+    return (bars[0]["date"].strftime("%Y-%m-%d %H:%M:%S"),
+            bars[-1]["date"].strftime("%Y-%m-%d %H:%M:%S"))
+
+
+def halves(symbol: str) -> tuple[tuple[str, str], tuple[str, str]]:
+    """(train, hold-out) windows derived from what this symbol actually has.
+
+    Split at the midpoint of the available range, train older. Derived rather
+    than hardcoded so a contract roll shortens BOTH halves honestly instead of
+    hollowing out one of them. Callers must record the dates they were given —
+    comparability across weeks comes from recording the window, not from
+    pretending it never moves.
+    """
+    first, last = available_range(symbol)
+    a = _dt.datetime.strptime(first, "%Y-%m-%d %H:%M:%S")
+    b = _dt.datetime.strptime(last, "%Y-%m-%d %H:%M:%S")
+    mid = a + (b - a) / 2
+    cut = mid.strftime("%Y-%m-%d")
+    return ((first, cut + " 23:59:00"), (cut + " 00:00:00", last))
+
+
+def _kite():
+    from dotenv import load_dotenv
+    load_dotenv(str(ROOT / ".env"))
+    from integrations.brokers.secrets import SecretManager
+    from kiteconnect import KiteConnect
+
+    secrets = SecretManager()
+    kite = KiteConnect(api_key=secrets.get_secret("api_key", broker="zerodha"))
+    kite.set_access_token(secrets.get_secret("access_token", broker="zerodha"))
+    return kite
+
+
+def _live_futures(kite, symbol: str) -> list[dict]:
+    today = _dt.date.today()
+    futures = [
+        i for i in kite.instruments("MCX")
+        if i["name"] == symbol and i["instrument_type"] == "FUT"
+        and (i["expiry"].date() if hasattr(i["expiry"], "date") else i["expiry"]) >= today
+    ]
+    if not futures:
+        raise ValueError(f"no live {symbol} futures contract")
+    return futures
+
+
+def _front_contract(symbol: str) -> str:
+    """Tradingsymbol of the contract `load_bars` will actually read.
+
+    Recorded alongside every archived bar, because two contracts on the same
+    underlying trade at different absolute prices and an indicator computed
+    across the seam is measuring the roll rather than the market.
+    """
+    if symbol in _SPOT:
+        return _SPOT[symbol][1]
+    return min(_live_futures(_kite(), symbol),
+               key=lambda i: i["expiry"])["tradingsymbol"]
+
+
 def load_bars(symbol: str, start: str, end: str) -> list[dict]:
+    """Bars for [start, end], ARCHIVE FIRST, Kite as the fallback.
+
+    A futures contract carries no history from before it listed, and an expired
+    one is delisted along with its token — so what Kite will serve SHRINKS on
+    every roll. On 2026-08-27 that turned a three-month gas train window into
+    five weeks overnight, silently, and the sweep reported "TRAIN n=3, t=+2.00"
+    rather than an error.
+
+    Reading the archive first makes the series grow instead: anything ever seen
+    stays seen. Anything the archive is missing is fetched from Kite and WRITTEN
+    THROUGH, so simply using the labs deepens the corpus.
+    """
+    from candle_archive import load as archive_load, remember
+
+    cached = archive_load(symbol, start, end)
+    if cached:
+        fresh = _fetch_from_kite(symbol, start, end)
+        if len(fresh) > len(cached):
+            remember(symbol, fresh)
+            return archive_load(symbol, start, end)
+        return cached
+
+    bars = _fetch_from_kite(symbol, start, end)
+    if bars:
+        remember(symbol, bars)
+    return bars
+
+
+def _fetch_from_kite(symbol: str, start: str, end: str) -> list[dict]:
     from dotenv import load_dotenv
     load_dotenv(str(ROOT / ".env"))
     from integrations.brokers.secrets import SecretManager
@@ -259,18 +392,11 @@ def load_bars(symbol: str, start: str, end: str) -> list[dict]:
                      if i["tradingsymbol"] == tradingsymbol)
     elif symbol in _MCX_FUTURES:
         # Front-month future: the contract with the nearest expiry still ahead
-        # of us. Anything already expired has a dead, unrepresentative tape.
-        from datetime import date
-        today = date.today()
-        futures = [
-            i for i in kite.instruments("MCX")
-            if i["name"] == symbol and i["instrument_type"] == "FUT"
-            and (i["expiry"].date() if hasattr(i["expiry"], "date") else i["expiry"]) >= today
-        ]
-        if not futures:
-            raise ValueError(f"no live {symbol} futures contract")
-        front = min(futures, key=lambda i: i["expiry"])
-        token = front["instrument_token"]
+        # of us. Anything already expired has a dead, unrepresentative tape —
+        # and its token is gone from the dump entirely, which is why the archive
+        # in candle_archive.py exists.
+        futures = _live_futures(kite, symbol)
+        token = min(futures, key=lambda i: i["expiry"])["instrument_token"]
     else:
         raise ValueError(f"unknown symbol {symbol}")
     return kite.historical_data(token, start, end, "15minute")

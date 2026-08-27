@@ -69,9 +69,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from signal_lab import Ctx, load_bars  # noqa: E402
+from signal_lab import MIN_BARS_PER_HALF, Ctx, halves, load_bars  # noqa: E402
 from entry_module_lab import build_context  # noqa: E402
-from holdout_lab import HOLDOUT, TRAIN, live_pairs  # noqa: E402
+from holdout_lab import live_pairs  # noqa: E402
 
 from bots.strategy.components.entries import ENTRY_MODULES  # noqa: E402
 from bots.strategy.components.mcx_entries import MCX_ENTRY_MODULES  # noqa: E402
@@ -310,6 +310,7 @@ def sweep(only: set[str] | None = None, do_write: bool = False) -> tuple[list, l
                for k, m in {**ENTRY_MODULES, **MCX_ENTRY_MODULES}.items()}
 
     bars_cache: dict[tuple[str, str], list[dict]] = {}
+    window_cache: dict[str, tuple] = {}
     proposals: list[dict] = []
     asked: list[str] = []
 
@@ -322,17 +323,34 @@ def sweep(only: set[str] | None = None, do_write: bool = False) -> tuple[list, l
             continue
 
         try:
-            halves = {}
-            for label, (a, b) in (("train", TRAIN), ("hold", HOLDOUT)):
+            if asset not in window_cache:
+                window_cache[asset] = halves(asset)
+            train_win, hold_win = window_cache[asset]
+            data = {}
+            for label, (a, b) in (("train", train_win), ("hold", hold_win)):
                 key = (asset, label)
                 if key not in bars_cache:
                     bars_cache[key] = load_bars(asset, a, b)
-                halves[label] = bars_cache[key]
+                data[label] = bars_cache[key]
         except Exception as exc:
             print("\n  %s: could not load bars (%s)" % (asset, exc))
             continue
 
-        print("\n  %s / %s" % (sname, asset))
+        #: A half thinner than this is missing data, not a quiet market. Saying
+        #: so beats reporting "TRAIN n=3, t=+2.00" as though it were a result —
+        #: which is exactly what the stale fixed window did on 2026-08-27 after
+        #: the gas contract rolled.
+        thin = {k: len(v) for k, v in data.items() if len(v) < MIN_BARS_PER_HALF}
+        if thin:
+            print("\n  %s / %s: SKIPPED — %s. Not enough tape to judge; the "
+                  "contract may have just rolled."
+                  % (sname, asset,
+                     ", ".join("%s has %d bars" % (k, n) for k, n in thin.items())))
+            continue
+
+        print("\n  %s / %s   train %s..%s  hold %s..%s"
+              % (sname, asset, train_win[0][:10], train_win[1][:10],
+                 hold_win[0][:10], hold_win[1][:10]))
 
         for knob, spec in tunables.items():
             tier = spec["tier"]
@@ -348,7 +366,7 @@ def sweep(only: set[str] | None = None, do_write: bool = False) -> tuple[list, l
                      for v, m in variants(module, knob, spec, asset, grid)]
             scored: dict = {}
             for label in ("train", "hold"):
-                for key, e in measure_all(asset, halves[label], cells).items():
+                for key, e in measure_all(asset, data[label], cells).items():
                     scored.setdefault(key, {})[label] = _stats(e)
 
             inc = scored[(knob, incumbent)]
@@ -403,8 +421,10 @@ def main() -> int:
 
     print("=" * 92)
     print("  SWEEP LAB — try each live module's own knobs, propose what survives")
-    print("  Train %s..%s   Hold-out %s..%s"
-          % (TRAIN[0][:10], TRAIN[1][:10], HOLDOUT[0][:10], HOLDOUT[1][:10]))
+    print("  Train and hold-out are derived per asset from the tape Kite "
+          "actually serves,")
+    print("  split at its midpoint — a contract roll must shorten BOTH halves, "
+          "not hollow one out.")
     print("  Every cell measured WITH the production %s ATR thesis stop." % PROD_STOP_ATR)
     print("  A proposal must clear t>=%.1f on BOTH halves AND beat today's "
           "setting on BOTH." % SHIP_BAR)
