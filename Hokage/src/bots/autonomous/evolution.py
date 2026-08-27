@@ -294,8 +294,25 @@ def summarise(decisions: list[Decision]) -> str:
     asking = [d for d in decisions if not d.is_autonomous]
 
     if acting:
+        # "RETIRING" is a claim that something HAPPENED, and until an applier
+        # exists it is false. Found 2026-08-28, hours before the Friday audit
+        # that would have printed it: `plan()` returns Decisions and
+        # `weekly_audit` puts `summarise()` into the report — and NOTHING in the
+        # codebase writes an archive to a portfolio. AUTONOMOUS_ENABLED = True
+        # only suppressed the "not yet armed" caveat, so the report would have
+        # announced "RETIRING: MeanReversion on NIFTY" while the lineup stayed
+        # exactly as it was.
+        #
+        # A system that reports an action it did not take is worse than one that
+        # takes no action, because the commander stops checking. Same fault as
+        # the exit that announced the floor it had COMPUTED rather than the one
+        # that FIRED. The wording now describes the state that actually exists;
+        # it changes back the day an applier lands.
         if AUTONOMOUS_ENABLED:
-            lines.append("RETIRING (autonomous — this only reduces risk):")
+            lines.append(
+                "CLEARED TO RETIRE (Tier 1 — reduces risk only; NOT YET APPLIED, "
+                "no applier exists, so the lineup is unchanged):"
+            )
         else:
             lines.append("WOULD RETIRE (autonomy not yet armed — nothing changed):")
         for d in acting:

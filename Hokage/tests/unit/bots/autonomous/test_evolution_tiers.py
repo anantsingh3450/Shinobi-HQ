@@ -160,8 +160,15 @@ def test_the_summary_separates_acting_from_asking(monkeypatch):
     prev = _snap("2026-08-14", {("mod-a", "GOLDM"): 1.8}, TWO_LIVE)
     now = _snap("2026-08-21", {("mod-a", "GOLDM"): 1.2}, TWO_LIVE)
     text = ev.summarise(ev.plan([now, prev]))
-    assert "RETIRING (autonomous" in text
-    assert "only reduces risk" in text
+    # The two sections must stay distinguishable — what Tier 1 has cleared on
+    # its own, and what needs the commander. The heading wording changed on
+    # 2026-08-28 (see test_the_summary_never_claims_an_archive_that_nothing
+    # _performs); what this test guards is the SEPARATION, not the phrasing.
+    assert "RETIRE" in text.upper()
+    assert "reduces risk" in text
+    assert "NEEDS YOUR DECISION" not in text, (
+        "a lone Tier 1 decision must not also appear as a question"
+    )
 
 
 def test_two_readings_DAYS_apart_are_not_two_weeks_of_evidence():
@@ -259,8 +266,41 @@ def test_the_summary_says_plainly_that_nothing_changed(monkeypatch):
     assert "WOULD RETIRE" in ev.summarise(decisions)
     assert "nothing changed" in ev.summarise(decisions)
 
+    # 2026-08-28: this used to assert "RETIRING (autonomous", which is a claim
+    # that something HAPPENED — and nothing did. `plan()` returns Decisions,
+    # `weekly_audit` prints `summarise()`, and NOTHING in the codebase writes an
+    # archive to a portfolio. AUTONOMOUS_ENABLED only suppressed the caveat, so
+    # the Friday report would have announced a retirement that never occurred.
+    # A system that reports an action it did not take is worse than one that
+    # takes no action, because the commander stops checking.
     monkeypatch.setattr(ev, "AUTONOMOUS_ENABLED", True)
-    assert "RETIRING (autonomous" in ev.summarise(decisions)
+    armed = ev.summarise(decisions)
+    assert "NOT YET APPLIED" in armed
+    assert "lineup is unchanged" in armed
+
+
+def test_the_summary_never_claims_an_archive_that_nothing_performs(monkeypatch):
+    """Guards the gap directly: while the module exposes no applier, the summary
+    must not use language that reads as a completed action. Delete this test the
+    day an applier lands — and change the wording in the same commit."""
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(Path(ev.__file__).read_text(encoding="utf-8"))
+    functions = {n.name for n in ast.walk(tree)
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    has_applier = any("apply" in name for name in functions)
+
+    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): 1.8}, TWO_LIVE)
+    now = _snap("2026-08-21", {("mod-a", "GOLDM"): 1.2}, TWO_LIVE)
+    monkeypatch.setattr(ev, "AUTONOMOUS_ENABLED", True)
+    text = ev.summarise(ev.plan([now, prev]))
+
+    if not has_applier:
+        assert "RETIRING (autonomous" not in text, (
+            "the summary announces a retirement, but no function in evolution.py "
+            "applies one — the lineup would be unchanged"
+        )
 
 
 def test_the_module_cannot_write_anything():
