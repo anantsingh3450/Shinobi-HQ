@@ -204,3 +204,71 @@ def test_a_missing_or_corrupt_state_file_starts_clean(tmp_path):
     bad = tmp_path / "bad.json"
     bad.write_text("{not json", encoding="utf-8")
     assert lp.State.load(bad).strikes == 0
+
+
+# ----------------------------------------------- a stop the commander ordered
+def test_a_deliberate_stop_is_not_an_outage():
+    """2026-08-28 21:22: the commander said "stop hokage for today". Three
+    checks later, at 22:00, this probe would have Telegrammed him "HOKAGE IS NOT
+    TRADING" about a stop he had just ordered.
+
+    The docstring already said a bot stopped on purpose must stay stopped; the
+    probe simply had no way to tell which kind of silence it was looking at."""
+    # Exactly STRIKES calls: going further would return "" because an outage
+    # alarms ONCE, which is the rule tested above.
+    msg, _ = run(TRADING, False, "UNKNOWN", times=lp.STRIKES)
+    assert msg, "sanity: an unexplained outage must still alarm"
+
+    state = lp.State()
+    for _ in range(lp.STRIKES * 3):
+        msg, state = lp.assess(TRADING, False, "UNKNOWN", state,
+                               "stopped for the day")
+    assert msg == ""
+    assert state.strikes == 0, "a deliberate stop must not bank strikes"
+    assert "stopped on purpose" in state.last_reason
+
+
+def test_the_marker_does_not_silence_a_LIVING_but_blind_hokage():
+    """The marker explains a process that is GONE. If Hokage is up and his token
+    is dead, that is a real fault regardless of any stale marker."""
+    msg, _ = lp.assess(TRADING, True, "EXPIRED", lp.State(), "stopped for the day")
+    _, state = run(TRADING, True, "EXPIRED", times=lp.STRIKES - 1)
+    msg, _ = lp.assess(TRADING, True, "EXPIRED", state, "stopped for the day")
+    assert msg, "an expired token on a running Hokage must still alarm"
+
+
+def test_seeing_him_up_again_clears_the_marker(tmp_path, monkeypatch):
+    """The self-healing property. Without it, one deliberate stop would leave
+    the alarm permanently deaf — a far worse failure than the false alarm it
+    prevents."""
+    marker = tmp_path / "stopped.json"
+    monkeypatch.setattr(lp, "STOP_MARKER", marker)
+    monkeypatch.setattr(lp, "STATE_PATH", tmp_path / "liveness.json")
+    monkeypatch.setattr(lp, "dashboard_answers", lambda *a, **k: True)
+    monkeypatch.setattr(lp, "broker_session", lambda: "LIVE Anant")
+    monkeypatch.setattr(lp, "send", lambda text: True)
+    monkeypatch.setattr(lp.sys, "argv", ["liveness_probe.py"])
+
+    lp.mark_stopped("stopped for the day", marker)
+    assert marker.exists()
+    lp.main()
+    assert not marker.exists(), "seeing Hokage up must re-arm the alarm"
+
+
+def test_the_marker_survives_a_round_trip(tmp_path):
+    marker = tmp_path / "stopped.json"
+    lp.mark_stopped("stopped for the day", marker)
+    assert lp.deliberate_stop(marker) == "stopped for the day"
+
+
+def test_no_marker_reads_as_no_deliberate_stop(tmp_path):
+    assert lp.deliberate_stop(tmp_path / "absent.json") is None
+
+
+def test_a_corrupt_marker_counts_as_absent(tmp_path):
+    """A monitor that crashes on its own state file is worse than no monitor —
+    and failing OPEN here means the alarm stays armed, which is the safe
+    direction for a corrupt marker."""
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    assert lp.deliberate_stop(bad) is None

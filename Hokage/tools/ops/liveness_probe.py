@@ -60,6 +60,20 @@ ROOT = Path(__file__).resolve().parents[2]
 STATE_PATH = ROOT / "hokage_brain" / "state" / "liveness.json"
 DASHBOARD = "http://127.0.0.1:5000/"
 
+#: Written when Hokage is stopped ON PURPOSE, so this probe stays quiet.
+#:
+#: 2026-08-28 21:22: the commander said "stop hokage for today". Three checks
+#: later — 22:00 — this probe would have Telegrammed him "HOKAGE IS NOT
+#: TRADING" about a stop he had just ordered. That is precisely the alarm
+#: fatigue everything else here is built to avoid: the docstring already said
+#: "a bot the commander stopped on purpose must stay stopped", and the probe had
+#: no way to know which kind of silence it was looking at.
+#:
+#: SELF-HEALING BY DESIGN. The marker is cleared the moment Hokage is seen UP
+#: again, so a deliberate stop cannot leave the alarm permanently deaf — which
+#: would be a far worse failure than the false alarm it prevents.
+STOP_MARKER = ROOT / "hokage_brain" / "state" / "stopped_deliberately.json"
+
 #: MCX runs 09:00-23:30 IST. Outside it, silence is correct behaviour.
 MARKET_OPEN = time(9, 0)
 MARKET_CLOSE = time(23, 30)
@@ -105,13 +119,40 @@ def in_market_hours(now: datetime) -> bool:
     return MARKET_OPEN <= now.time() < MARKET_CLOSE
 
 
-def assess(now: datetime, reachable: bool, session: str, state: State) -> tuple[str, State]:
+def mark_stopped(reason: str = "stopped on purpose", path: Path = STOP_MARKER) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "at": datetime.now().isoformat(timespec="seconds"), "reason": reason,
+    }, indent=2), encoding="utf-8")
+
+
+def deliberate_stop(path: Path = STOP_MARKER) -> str | None:
+    """The recorded reason, or None. A corrupt marker counts as absent — a
+    monitor that crashes on its own state file is worse than no monitor."""
+    try:
+        return str(json.loads(path.read_text(encoding="utf-8-sig")).get("reason") or "")
+    except Exception:
+        return None
+
+
+def assess(now: datetime, reachable: bool, session: str, state: State,
+           stopped_on_purpose: str | None = None) -> tuple[str, State]:
     """(message to send, new state). Empty message means stay quiet.
 
     `session` is check_broker_session's verdict: LIVE..., EXPIRED,
     NO_CREDENTIALS, or UNKNOWN when the check itself could not run.
+    `stopped_on_purpose` is the reason from the stop marker, or None.
     """
     healthy = reachable and session.startswith("LIVE")
+
+    # A stop the commander ordered is not an outage. Strikes are reset rather
+    # than merely un-reported, so the first check after a restart starts clean
+    # instead of alarming on a bot that is still booting.
+    if stopped_on_purpose is not None and not reachable:
+        state.strikes = 0
+        state.alerted = False
+        state.last_reason = f"stopped on purpose: {stopped_on_purpose}"
+        return "", state
 
     if healthy:
         recovered = state.alerted
@@ -200,15 +241,32 @@ def send(message: str) -> bool:
 
 
 def main() -> int:
+    if "--stopped-on-purpose" in sys.argv:
+        reason = next((a for a in sys.argv[1:] if not a.startswith("--")),
+                      "stopped on purpose")
+        mark_stopped(reason)
+        print(f"marked: {reason}. This probe will stay quiet until Hokage is "
+              f"seen up again, which clears the marker automatically.")
+        return 0
+
     now = datetime.now()
     state = State.load()
     reachable = dashboard_answers()
     session = broker_session() if reachable else "UNKNOWN"
+    stopped = deliberate_stop()
 
-    message, state = assess(now, reachable, session, state)
+    # Seeing him UP is what ends a deliberate stop. Clearing it here rather than
+    # at boot means the alarm re-arms itself even if he is started by hand, by
+    # the scheduler, or from the desktop shortcut — no start path can forget.
+    if reachable and stopped is not None:
+        STOP_MARKER.unlink(missing_ok=True)
+        stopped = None
+
+    message, state = assess(now, reachable, session, state, stopped)
     state.save()
 
-    status = "OK" if (reachable and session.startswith("LIVE")) else "BAD"
+    status = "OK" if (reachable and session.startswith("LIVE")) else (
+        "STOPPED ON PURPOSE" if stopped is not None else "BAD")
     print(f"{now:%Y-%m-%d %H:%M:%S}  dashboard={'up' if reachable else 'down'}  "
           f"session={session}  strikes={state.strikes}  -> {status}")
 
