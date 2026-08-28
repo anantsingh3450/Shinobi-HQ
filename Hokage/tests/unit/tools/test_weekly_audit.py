@@ -119,7 +119,12 @@ def test_the_first_run_records_a_baseline_and_flags_nothing():
     assert report["moves"] == []
     assert len(report["new"]) == 1
     text = wa.render(now, report)
-    assert "FIRST RUN" in text
+    # Wording widened 2026-08-28: there are now TWO ways to have nothing to diff
+    # against — a genuine first run, and a change of measurement basis that makes
+    # last week's numbers incomparable. Both must say so plainly rather than
+    # printing a delta between two different rulers.
+    assert "NO COMPARABLE PRIOR SNAPSHOT" in text
+    assert "clock starts here" in text
     assert "as it did last week" not in text
 
 
@@ -150,3 +155,75 @@ def test_the_ship_bar_matches_every_other_lab():
     different bar here would quietly create two definitions of 'edge'."""
     assert wa.SHIP_BAR == 2.0
     assert wa.MIN_N == 30
+
+
+# ------------------------------------------------- the measurement basis
+def test_a_basis_change_suppresses_every_delta():
+    """The first run under the 2026-08-28 geometry would otherwise have reported
+    RangeFade/NATURALGAS as +4.34 -> +1.08, a 3.26 collapse. Nothing collapsed:
+    the stop was included, the sample was split, and the contract had rolled.
+    Reporting the ruler moving as the market moving hands the commander a
+    decline that did not happen."""
+    old = _snapshot("2026-08-21", {("mod-a", "GOLDM"): 4.34}, LIVE)
+    old["geometry"] = "pooled-105d-nostop"
+    now = _snapshot("2026-08-28", {("mod-a", "GOLDM"): 1.08}, LIVE)
+
+    report = wa.build_report(now, [old])
+    assert report["moves"] == [], "a delta across two bases is not a move"
+    assert report["demotions"] == [], "and it is not a second bad week either"
+    assert report["compared_to"] is None
+    assert "NO COMPARABLE PRIOR SNAPSHOT" in wa.render(now, report)
+
+
+def test_the_same_basis_still_diffs_normally():
+    """Suppression is keyed on the bases DIFFERING, so two snapshots agreeing —
+    including two legacy ones that both predate the stamp — still diff.
+
+    The report is deliberately more permissive than evolution.plan(), which
+    additionally requires a positive stamp on both sides. The report informs a
+    human who can weigh it; the policy removes a strategy's capital, and the
+    stricter rule belongs on the side that acts."""
+    old = _snapshot("2026-08-21", {("mod-a", "GOLDM"): 4.34}, LIVE)
+    now = _snapshot("2026-08-28", {("mod-a", "GOLDM"): 1.08}, LIVE)
+    report = wa.build_report(now, [old])
+    assert report["compared_to"] == "2026-08-21"
+    assert report["moves"], "a real week-on-week move must still be reported"
+
+
+def test_the_policy_is_stricter_than_the_report_about_unstamped_snapshots():
+    """Guards the asymmetry above, so a later reader does not 'fix' one to match
+    the other and quietly let legacy numbers retire a strategy."""
+    from bots.autonomous import evolution as ev
+
+    legacy_pair = [_snapshot("2026-08-28", {("mod-a", "GOLDM"): 1.0},
+                             {"mod-a": {"strategy_id": "s-a", "name": "Alpha",
+                                        "status": "SHADOW_MODE", "scope": ["GOLDM"]}}),
+                   _snapshot("2026-08-21", {("mod-a", "GOLDM"): 1.5},
+                             {"mod-a": {"strategy_id": "s-a", "name": "Alpha",
+                                        "status": "SHADOW_MODE", "scope": ["GOLDM"]}})]
+    for snap in legacy_pair:
+        snap["ship_bar"] = 2.0
+    assert ev.plan(legacy_pair) == [], "unstamped snapshots must not retire anything"
+
+
+def test_a_parked_asset_is_not_reported_as_orphaned():
+    """CRUDEOIL was parked 2026-08-26 after six sweeps failed out of sample. The
+    boot audit has honoured that since; this report had not, and was about to
+    announce 'CRUDEOIL: NO live strategy is scoped to it' every Friday for a
+    decision already made."""
+    from bots.autonomous.autonomous_bot import AutonomousTradingBot as Bot
+
+    assert "CRUDEOIL" in Bot.PARKED_ASSETS
+    gaps = wa.coverage_gaps({
+        "mod-a": {"strategy_id": "s-a", "name": "Alpha", "status": "SHADOW_MODE",
+                  "scope": ["NATURALGAS"], "chest": 100.0},
+    })
+    assert not any("CRUDEOIL" in g for g in gaps), gaps
+    assert any("GOLDM" in g for g in gaps), "an UNPARKED orphan must still scream"
+
+
+def test_the_geometry_stamp_reaches_the_report():
+    now = _snapshot("2026-08-28", {("mod-a", "GOLDM"): 1.1}, LIVE)
+    text = wa.render(now, wa.build_report(now, []))
+    assert wa.GEOMETRY in text
+    assert "ATR stop applied" in text

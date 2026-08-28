@@ -49,7 +49,10 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from signal_lab import Ctx, load_bars, _MCX_FUTURES  # noqa: E402
+from signal_lab import (  # noqa: E402
+    MIN_BARS_PER_HALF, Ctx, halves, load_bars, _MCX_FUTURES,
+)
+from sweep_lab import realised  # noqa: E402
 from entry_module_lab import build_context  # noqa: E402
 
 from bots.strategy.components.entries import ENTRY_MODULES  # noqa: E402
@@ -68,7 +71,36 @@ MIN_N = 30
 
 #: How much history each run measures over. Long enough for a decent n, short
 #: enough that a regime change shows up rather than being averaged away.
+#:
+#: Kept only for the snapshot header now — the windows themselves come from
+#: signal_lab.halves(), which derives them from the tape Kite actually serves.
 LOOKBACK_DAYS = 105
+
+#: The production thesis stop, in ATR of the underlying. Every number this audit
+#: writes is measured INSIDE it.
+PROD_STOP_ATR = 1.25
+
+#: How this audit measures. Written into every snapshot, and compared by
+#: evolution.plan() before two snapshots may be treated as consecutive evidence.
+#:
+#: WHY A VERSION STRING AND NOT JUST A BETTER MEASUREMENT. Until 2026-08-28 this
+#: audit scored a 105-day POOLED window on RAW forward edge with NO stop and NO
+#: train/hold split — and the evolution policy retired strategies by comparing
+#: one week's number against the last. That is a lower evidence bar than any
+#: change is allowed to SHIP against, applied to a decision that removes a
+#: strategy's capital.
+#:
+#: It is also the exact geometry that has misled twice in one week: crude's
+#: +2.06 became +0.82 once the stop was included, and gas's +2.67 became +1.08
+#: once the contract roll shortened the window. A retirement decision resting on
+#: that basis is a coin flip wearing a t-statistic.
+#:
+#: Changing the basis makes old snapshots incomparable. A silent change would
+#: have been worse than the original fault: the policy would have read last
+#: week's no-stop pooled t against this week's hold-out-with-stop t and called
+#: the difference a decline in edge. So the basis is STAMPED, and a change to it
+#: RESETS the consecutive-week evidence rather than continuing it.
+GEOMETRY = "holdout-split+stop1.25"
 
 UNIVERSE = ["NIFTY", "BANKNIFTY", "SENSEX", "CRUDEOIL", "NATURALGAS", "GOLDM", "SILVERM"]
 
@@ -107,7 +139,6 @@ def accumulate(symbol: str, bars: list[dict], modules: dict) -> dict[str, dict]:
         if not ctx.atr:
             continue
         mkt = build_context(symbol, window, ctx, session)
-        forward = bars[i + HORIZON]["close"] - ctx.price
         for name, module in modules.items():
             try:
                 sig = module.evaluate(mkt)
@@ -116,8 +147,13 @@ def accumulate(symbol: str, bars: list[dict], modules: dict) -> dict[str, dict]:
             if not getattr(sig, "should_enter", False):
                 continue
             call = 1 if sig.direction == "long" else -1
-            acc[name]["edges"].append((forward * call) / ctx.atr)
-            if (forward * call) > 0:
+            # WITH THE PRODUCTION STOP, not raw forward edge. A module is judged
+            # on the geometry it actually trades inside; measuring it without
+            # the stop scores a system that does not exist, which is how a
+            # 240-minute crude horizon read +2.06 and delivered +0.82.
+            edge = realised(bars, i, call, ctx.atr)
+            acc[name]["edges"].append(edge)
+            if edge > 0:
                 acc[name]["hits"] += 1
     return acc
 
@@ -134,6 +170,50 @@ def _summarise(acc: dict[str, dict]) -> dict[str, dict]:
 def measure(symbol: str, bars: list[dict], modules: dict) -> dict[str, dict]:
     """Every module's edge on this asset. Mirrors entry_module_lab exactly."""
     return _summarise(accumulate(symbol, bars, modules))
+
+
+def measure_split(symbol: str, modules: dict) -> tuple[dict, dict, tuple]:
+    """(per-module stats, raw halves for pooling, (train_window, hold_window)).
+
+    Two disjoint periods derived from the tape Kite actually serves, train
+    older. The reported `t` and `edge_atr` are the HOLD-OUT's — the half the
+    module was not selected on, and the fresher tape — with the train figures
+    carried alongside so a retirement can be read against both.
+
+    Returns {} for the asset when either half is too thin to judge. A verdict
+    built on 3 signals is what a contract roll looks like, not what a decline
+    looks like: on 2026-08-27 the stale fixed window measured six days of gas
+    and reported n=3, t=+2.00 without erroring.
+    """
+    train_win, hold_win = halves(symbol)
+    bars = {"train": load_bars(symbol, *train_win),
+            "hold": load_bars(symbol, *hold_win)}
+
+    thin = {k: len(v) for k, v in bars.items() if len(v) < MIN_BARS_PER_HALF}
+    if thin:
+        detail = ", ".join(f"{k} has {n} bars" for k, n in thin.items())
+        raise ValueError(f"not enough tape to judge ({detail}); contract may have rolled")
+
+    raw = {half: accumulate(symbol, rows, modules) for half, rows in bars.items()}
+    stats = {half: _summarise(rec) for half, rec in raw.items()}
+
+    out: dict[str, dict] = {}
+    for name in modules:
+        hold = stats["hold"].get(name)
+        train = stats["train"].get(name)
+        if not hold:
+            continue
+        out[name] = {
+            # `t` and `edge_atr` stay the primary keys every reader already
+            # uses; they now mean the HOLD-OUT, measured with the stop.
+            "n": hold["n"], "accuracy": hold["accuracy"],
+            "edge_atr": hold["edge_atr"], "t": hold["t"],
+            "n_train": (train or {}).get("n", 0),
+            "edge_train": (train or {}).get("edge_atr", 0.0),
+            "t_train": (train or {}).get("t", 0.0),
+            "confirmed": bool(train and train["t"] >= SHIP_BAR and hold["t"] >= SHIP_BAR),
+        }
+    return out, raw, (train_win, hold_win)
 
 
 #: Which assets are pooled together. A league's assets move together, which is
@@ -231,8 +311,21 @@ def coverage_gaps(lineup: dict[str, dict]) -> list[str]:
     An empty scope FAILS OPEN, matching `_strategy_supports`: a missing list
     means "no restriction recorded", not "trades nothing".
     """
+    # A PARKED asset is a decision, not a gap. The boot audit has honoured this
+    # since CRUDEOIL was parked on 2026-08-26; this one did not, so the weekly
+    # report was about to announce "CRUDEOIL: NO live strategy is scoped to it"
+    # every Friday for a choice already made. An alarm that fires every week for
+    # a settled decision is how the one that matters gets skipped.
+    try:
+        from bots.autonomous.autonomous_bot import AutonomousTradingBot as _Bot
+        parked = dict(getattr(_Bot, "PARKED_ASSETS", {}) or {})
+    except Exception:
+        parked = {}
+
     gaps: list[str] = []
     for asset in UNIVERSE:
+        if asset.upper() in parked:
+            continue
         owners = [
             info for info in lineup.values()
             if info.get("status") not in (None, "UNKNOWN", "ARCHIVED")
@@ -277,6 +370,23 @@ def build_report(current: dict, history: list[dict]) -> dict:
     """Deltas, demotion candidates, revival candidates."""
     prev = history[0] if history else None
     older = history[1] if len(history) > 1 else None
+
+    # A DELTA ACROSS TWO MEASUREMENT BASES IS NOT A CHANGE IN EDGE.
+    #
+    # The first run under the 2026-08-28 geometry produced this, and every line
+    # of it was the ruler moving rather than the market:
+    #
+    #     RangeFade/NATURALGAS   +4.34 -> +1.08  (-3.26)
+    #     SessionShift/GOLDM     +3.70 -> +1.87  (-1.83)
+    #
+    # Both dropped because the stop was included, the sample was split, and the
+    # contract had rolled — not because either module got worse. Reporting that
+    # as a "notable move", or as a second week below the bar, would hand the
+    # commander a decline that did not happen. evolution.plan() already refuses
+    # to compare across bases; the human-readable report must refuse too.
+    if prev is not None and current.get("geometry") != prev.get("geometry"):
+        prev = older = None
+
     lineup = current["lineup"]
 
     moves, demotions, revivals, new_rows = [], [], [], []
@@ -330,10 +440,16 @@ def build_report(current: dict, history: list[dict]) -> dict:
 def render(current: dict, report: dict) -> str:
     lines = [f"HOKAGE WEEKLY AUDIT — {current['date']}",
              f"horizon {HORIZON * 15}min · ship bar t>={SHIP_BAR} · min n={MIN_N}"]
+    lines.append(f"geometry: {GEOMETRY} (hold-out half, {PROD_STOP_ATR} ATR stop applied)")
     if report["compared_to"]:
         lines.append(f"compared to {report['compared_to']}")
     else:
-        lines.append("FIRST RUN — no prior snapshot, so nothing to diff yet.")
+        lines.append(
+            "NO COMPARABLE PRIOR SNAPSHOT — nothing to diff. Either this is the "
+            "first run, or the measurement basis changed and last week's numbers "
+            "were taken with a different ruler. Retirement needs two audits on "
+            "the SAME basis, so the clock starts here."
+        )
     lines.append("")
 
     if report["demotions"]:
@@ -377,31 +493,86 @@ def render(current: dict, report: dict) -> str:
 
 
 # ------------------------------------------------------------------------ main
+def _record_retirements(decisions) -> str:
+    """Cleared Tier 1 retirements become PENDING proposals. Returns a report line.
+
+    Deduplicated on (strategy, asset, action) against anything already PENDING or
+    REJECTED, for the same reason the knob sweep is: a weekly job that re-asks an
+    answered question every Friday teaches the commander to stop reading it.
+    """
+    import sqlite3
+    import uuid
+    from datetime import datetime as _dt, timezone as _tz
+
+    cleared = [d for d in decisions if getattr(d, "is_autonomous", False)]
+    if not cleared:
+        return ""
+
+    db = ROOT / "hokage_brain" / "hokage.db"
+    if not db.exists():
+        return "(no brain database — retirement not recorded)"
+
+    written, skipped = [], []
+    with sqlite3.connect(db) as conn:
+        for d in cleared:
+            new_values = json.dumps({"status": "ARCHIVED", "asset": d.asset})
+            existing = conn.execute(
+                "SELECT status FROM improvement_proposals WHERE strategy_id=? "
+                "AND asset=? AND action=? AND status IN ('PENDING','REJECTED')",
+                (d.strategy_id, d.asset, "ARCHIVE_STRATEGY"),
+            ).fetchone()
+            if existing:
+                skipped.append(f"{d.strategy_name}/{d.asset} (already {existing[0]})")
+                continue
+            conn.execute(
+                "INSERT INTO improvement_proposals (proposal_id, strategy_id, "
+                "strategy_name, asset, timestamp, action, previous_values, "
+                "new_values, rationale, expected_improvement, status) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                ("retire-" + uuid.uuid4().hex[:12], d.strategy_id, d.strategy_name,
+                 d.asset, _dt.now(_tz.utc).isoformat(), "ARCHIVE_STRATEGY",
+                 json.dumps({"status": "LIVE"}), new_values,
+                 f"{d.reason} | evidence: {json.dumps(d.evidence)}", 0.0, "PENDING"),
+            )
+            written.append(f"{d.strategy_name}/{d.asset}")
+
+    lines = []
+    if written:
+        lines.append("Recorded as PENDING proposals: " + ", ".join(written)
+                     + ". Apply with Hokage STOPPED — a running Hokage rewrites "
+                       "the portfolio from memory and would undo it.")
+    if skipped:
+        lines.append("Already answered, not re-asked: " + ", ".join(skipped))
+    return "\n".join(lines)
+
+
 def main() -> int:
     args = set(sys.argv[1:])
     dry_run = "--dry-run" in args
     telegram = "--telegram" in args
 
     end = datetime.now(timezone.utc)
-    start = end - timedelta(days=LOOKBACK_DAYS)
-    window = (start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"))
 
     lineup = live_lineup()
     measurements: dict[str, dict] = {}
-    raw: dict[str, dict] = {}
+    raw_hold: dict[str, dict] = {}
+    windows: dict[str, dict] = {}
     failed: list[str] = []
 
     for symbol in UNIVERSE:
         modules = MCX_ENTRY_MODULES if symbol in _MCX_FUTURES else ENTRY_MODULES
         named = {getattr(m, "module_id", k): m for k, m in modules.items()}
         try:
-            bars = load_bars(symbol, *window)
+            stats, raw, (train_win, hold_win) = measure_split(symbol, named)
         except Exception as exc:
-            print(f"  {symbol}: could not load bars ({exc})")
+            print(f"  {symbol}: {exc}")
             failed.append(symbol)
             continue
-        raw[symbol] = accumulate(symbol, bars, named)
-        measurements[symbol] = _summarise(raw[symbol])
+        measurements[symbol] = stats
+        # Pooling reads the hold-out only. Pooling both halves together would
+        # rebuild the very number this change exists to retire.
+        raw_hold[symbol] = raw["hold"]
+        windows[symbol] = {"train": list(train_win), "hold": list(hold_win)}
 
     if not measurements:
         print("No asset could be measured — is the broker session live? "
@@ -415,13 +586,20 @@ def main() -> int:
         "horizon_bars": HORIZON,
         "ship_bar": SHIP_BAR,
         "lookback_days": LOOKBACK_DAYS,
+        # How this snapshot was measured. evolution.plan() refuses to treat two
+        # snapshots as consecutive evidence unless these match, so changing the
+        # basis resets the retirement clock instead of silently comparing a
+        # no-stop pooled t against a hold-out-with-stop t.
+        "geometry": GEOMETRY,
+        "stop_atr": PROD_STOP_ATR,
+        "windows": windows,
         "failed_symbols": failed,
         "lineup": lineup,
         "measurements": measurements,
         # Extra key by design: evolution.plan() reads only lineup and
         # measurements, so pooling cannot move Tier 1 until someone
         # deliberately wires it in.
-        "pooled": pool(raw),
+        "pooled": pool(raw_hold),
     }
 
     history = previous_snapshots(2, exclude=today)
@@ -465,6 +643,20 @@ def main() -> int:
             if not evolution.AUTONOMOUS_ENABLED:
                 text += ("\n\n(Autonomy is not armed yet. This is a report of what "
                          "Hokage WOULD do; the lineup is unchanged.)")
+            # A retirement the policy has CLEARED becomes a PENDING proposal,
+            # in the same table the knob sweep writes to, so there is one place
+            # the commander rules on changes.
+            #
+            # IT IS NOT APPLIED HERE, and that is not timidity. This job runs at
+            # 23:45 while Hokage is RUNNING, and a running Hokage rewrites
+            # hokage_brain/portfolio/*.json from memory — on 2026-08-26 that
+            # silently reverted the CRUDEOIL park within hours and he traded a
+            # parked asset all day. An archive written underneath a live process
+            # would be undone exactly the same way, and would report success
+            # while doing nothing. Applying it is a deliberate act taken with
+            # Hokage stopped.
+            if not dry_run:
+                text += "\n" + _record_retirements(decisions)
     except Exception as exc:
         text += f"\n\n(evolution policy failed to run: {exc})"
 

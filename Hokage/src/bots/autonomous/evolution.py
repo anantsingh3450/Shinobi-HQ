@@ -167,6 +167,28 @@ def _assets_still_covered(
     return counts
 
 
+def _same_geometry(current: dict, previous: dict | None) -> bool:
+    """True when two snapshots measured the same way.
+
+    2026-08-28: the weekly audit moved from a 105-day POOLED window on raw
+    forward edge with no stop, to a train/hold split measured inside the
+    production 1.25 ATR stop. That is a strictly better basis, and comparing one
+    against the other would be nonsense — a module's number can move a full
+    point purely from including the stop, which is precisely what happened to
+    crude (+2.06 raw, +0.82 with geometry).
+
+    A retirement is justified by a TREND, and there is no trend across a change
+    of instrument. So a basis change RESETS the consecutive-week evidence rather
+    than continuing it: nothing can be retired until two audits agree on the new
+    footing. Snapshots written before the field existed carry no geometry, which
+    correctly never matches the current one.
+    """
+    if previous is None:
+        return False
+    return bool(current.get("geometry")) and \
+        current.get("geometry") == previous.get("geometry")
+
+
 def _far_enough_apart(current: dict, previous: dict | None) -> bool:
     """True when two snapshots are separated enough to be distinct evidence.
 
@@ -202,7 +224,8 @@ def plan(snapshots: list[dict]) -> list[Decision]:
     # ---------------------------------------------------------- Tier 1: retire
     # Two readings taken days apart are the same tape measured twice, not two
     # weeks of evidence. Without a real gap there is no trend to act on.
-    comparable = _far_enough_apart(current, previous)
+    comparable = (_far_enough_apart(current, previous)
+                  and _same_geometry(current, previous))
     live_now = _live_pairs(current)
     live_before = _live_pairs(previous) if comparable else {}
     archives: list[Decision] = []

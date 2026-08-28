@@ -16,7 +16,14 @@ from __future__ import annotations
 from bots.autonomous import evolution as ev
 
 
-def _snap(day: str, rows: dict, lineup: dict, bar: float = 2.0) -> dict:
+#: The measurement basis every snapshot is stamped with. Two snapshots are only
+#: consecutive evidence if they agree on it — see
+#: test_a_change_of_measurement_basis_resets_the_retirement_clock.
+GEOMETRY = "holdout-split+stop1.25"
+
+
+def _snap(day: str, rows: dict, lineup: dict, bar: float = 2.0,
+          geometry: str = GEOMETRY) -> dict:
     """rows: {(module, asset): t}"""
     measurements: dict[str, dict] = {}
     for (module, asset), t in rows.items():
@@ -24,7 +31,7 @@ def _snap(day: str, rows: dict, lineup: dict, bar: float = 2.0) -> dict:
             "n": 300, "t": t, "edge_atr": 0.2, "accuracy": 50.0
         }
     return {"date": day, "ship_bar": bar, "lineup": lineup,
-            "measurements": measurements}
+            "geometry": geometry, "measurements": measurements}
 
 
 #: Two live strategies, so archiving one never orphans an asset by default.
@@ -317,3 +324,74 @@ def test_the_module_cannot_write_anything():
     for forbidden in ("write_text", "execute", "commit", "save", "place_order",
                       "send_message"):
         assert forbidden not in called, f"policy module performs I/O: {forbidden}()"
+
+
+# --------------------------------------------------- the measurement basis
+def test_a_change_of_measurement_basis_resets_the_retirement_clock():
+    """A retirement is justified by a TREND, and there is no trend across a
+    change of instrument.
+
+    2026-08-28: the weekly audit moved from a 105-day POOLED window on raw
+    forward edge with NO stop to a train/hold split measured inside the
+    production 1.25 ATR stop. Including the stop alone can move a module's
+    number by a full point — crude read +2.06 raw and +0.82 with geometry — so
+    comparing last week's basis against this week's would call a change of
+    ruler a decline in edge, and retire a strategy for it.
+    """
+    old = _snap("2026-08-21", {("mod-a", "GOLDM"): 1.8}, TWO_LIVE,
+                geometry="pooled-105d-nostop")
+    new = _snap("2026-08-28", {("mod-a", "GOLDM"): 1.2}, TWO_LIVE)
+
+    assert ev.plan([new, old]) == [], "two bases are not two weeks of evidence"
+
+    # Same numbers, same dates, same basis -> the retirement stands.
+    matched = _snap("2026-08-21", {("mod-a", "GOLDM"): 1.8}, TWO_LIVE)
+    assert ev.plan([new, matched]), "a same-basis decline must still retire"
+
+
+def test_a_snapshot_written_before_the_field_existed_never_matches():
+    """The two snapshots already on disk (2026-08-15, 2026-08-21) carry no
+    geometry at all. Absent must not read as 'compatible' — that would let the
+    old no-stop numbers retire a strategy on the new footing."""
+    legacy = {"date": "2026-08-21", "ship_bar": 2.0, "lineup": TWO_LIVE,
+              "measurements": {"GOLDM": {"mod-a": {"n": 300, "t": 1.8,
+                                                   "edge_atr": 0.2,
+                                                   "accuracy": 50.0}}}}
+    new = _snap("2026-08-28", {("mod-a", "GOLDM"): 1.2}, TWO_LIVE)
+    assert ev.plan([new, legacy]) == []
+
+
+def test_two_snapshots_missing_geometry_do_not_compare_either():
+    """Neither side stamped: still not comparable. Anything else would make the
+    guard vanish the moment both sides were legacy."""
+    a = {"date": "2026-08-21", "ship_bar": 2.0, "lineup": TWO_LIVE,
+         "measurements": {"GOLDM": {"mod-a": {"n": 300, "t": 1.8,
+                                              "edge_atr": 0.2, "accuracy": 50.0}}}}
+    b = dict(a, date="2026-08-28")
+    b["measurements"] = {"GOLDM": {"mod-a": {"n": 300, "t": 1.2,
+                                             "edge_atr": 0.2, "accuracy": 50.0}}}
+    assert ev.plan([b, a]) == []
+
+
+def test_the_audit_stamps_the_basis_it_actually_measured_with():
+    """The guard is only as good as the stamp. If weekly_audit stopped writing
+    `geometry`, every future comparison would silently refuse forever — which is
+    safe, but would quietly disable Tier 1 and nobody would notice."""
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    root = next(p for p in Path(__file__).resolve().parents
+                if (p / "hokage_brain").is_dir())
+    sys.path.insert(0, str(root / "tools" / "research"))
+    spec = importlib.util.spec_from_file_location(
+        "weekly_audit_probe", root / "tools" / "research" / "weekly_audit.py")
+    wa = importlib.util.module_from_spec(spec)
+    sys.modules["weekly_audit_probe"] = wa
+    spec.loader.exec_module(wa)
+
+    assert wa.GEOMETRY == GEOMETRY, (
+        "the audit's stamp and this test's expectation have diverged; a "
+        "deliberate basis change should update both in the same commit"
+    )
+    assert wa.PROD_STOP_ATR == 1.25
