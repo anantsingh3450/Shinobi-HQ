@@ -19,10 +19,21 @@ class IntelligenceCache:
     """Manages reading and writing precomputed files in hokage_brain/intelligence/."""
 
     def __init__(self, brain_root: Path | None = None) -> None:
-        """Initialize IntelligenceCache."""
+        """Initialize IntelligenceCache.
+
+        CONSTRUCTING THIS MUST NOT TOUCH THE FILESYSTEM. It used to mkdir the
+        intelligence directory here, which meant merely BUILDING the object
+        created directories — and a test handing it a MagicMock produced a real
+        folder named after the mock's repr:
+
+            MagicMock/mock.resolver.resolve_brain_root()/2185934233552/intelligence
+
+        That litter reappeared on every test run and had been papered over with
+        a .gitignore entry rather than fixed. The directory is now created when
+        something is actually WRITTEN, which is the only moment it is needed.
+        """
         self._resolver = PathResolver(brain_root)
         self._intel_dir = self._resolver.resolve_brain_root() / "intelligence"
-        self._intel_dir.mkdir(parents=True, exist_ok=True)
 
     def get_cache_file_path(self, filename: str) -> Path:
         """Return absolute path for cache file."""
@@ -32,6 +43,10 @@ class IntelligenceCache:
         """Write precomputed JSON dictionary back to intelligence cache folder atomically."""
         file_path = self.get_cache_file_path(filename)
         try:
+            # Created here, at the moment it is genuinely needed, rather than in
+            # the constructor — see __init__.
+            self._intel_dir.mkdir(parents=True, exist_ok=True)
+
             # Inject update timestamp if not already present
             if isinstance(data, dict) and "updated_at" not in data and "timestamp" not in data:
                 from datetime import datetime, timezone

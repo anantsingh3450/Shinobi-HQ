@@ -58,3 +58,71 @@ def test_new_paper_account_uses_commander_profile_capital(tmp_path: Path):
     account = store.load_account("paper")
     assert account.cash == 500000.0
     assert account.initial_balance == 500000.0
+
+
+# --------------------------------------------------------------------------
+# The suite must not litter the WORKING TREE either.
+#
+# The guards above stop tests writing into the production brain. They did not
+# stop tests creating directories elsewhere in the repo, and two had been
+# quietly accumulating on every run:
+#
+#     MagicMock/mock.resolver.resolve_brain_root()/2185934233552/intelligence
+#     dummy/
+#
+# Both came from constructors with filesystem side effects — IntelligenceCache
+# and TradeDNAEngine each did `mkdir(parents=True)` in `__init__`, so merely
+# BUILDING one created folders, and a test handing in a MagicMock produced a
+# real directory named after the mock's repr. `MagicMock/` had been added to
+# .gitignore rather than fixed, which hid the symptom and kept the cause.
+#
+# Both now create their directory when something is actually written.
+# --------------------------------------------------------------------------
+def test_building_the_intelligence_cache_creates_nothing(tmp_path: Path):
+    """A constructor must not touch the filesystem."""
+    from bots.autonomous.cache import IntelligenceCache
+
+    root = tmp_path / "brain"
+    IntelligenceCache(root)
+    assert not root.exists(), "constructing the cache created directories"
+
+
+def test_writing_through_the_cache_does_create_it(tmp_path: Path):
+    """Laziness must not become breakage — the write path still works."""
+    from bots.autonomous.cache import IntelligenceCache
+
+    cache = IntelligenceCache(tmp_path / "brain")
+    cache.write_intelligence("probe.json", {"ok": True})
+    assert cache.read_intelligence("probe.json").get("ok") is True
+
+
+def test_building_the_trade_dna_engine_creates_nothing(tmp_path: Path):
+    from bots.autonomous.trade_dna import TradeDNAEngine
+
+    root = tmp_path / "brain"
+    TradeDNAEngine(root)
+    assert not root.exists(), "constructing the DNA engine created directories"
+
+
+def test_a_mock_brain_root_cannot_create_a_real_directory(tmp_path, monkeypatch):
+    """The exact shape of the litter: a MagicMock passed where a path belongs.
+
+    Building the object must stay inert even then — the repr of a mock must
+    never become a folder in the working tree."""
+    from unittest.mock import MagicMock
+
+    from bots.autonomous.cache import IntelligenceCache
+
+    monkeypatch.chdir(tmp_path)
+    IntelligenceCache(MagicMock())
+    assert list(tmp_path.iterdir()) == [], sorted(p.name for p in tmp_path.iterdir())
+
+
+def test_the_repo_has_no_mock_shaped_directories():
+    """Belt and braces: if either constructor regains a mkdir, this catches the
+    artifact itself rather than the mechanism."""
+    for junk in ("MagicMock", "dummy"):
+        assert not (_REPO_ROOT / junk).exists(), (
+            f"'{junk}/' is back in the repo — a test is writing to the working "
+            f"tree again. Find the constructor that mkdirs and make it lazy."
+        )

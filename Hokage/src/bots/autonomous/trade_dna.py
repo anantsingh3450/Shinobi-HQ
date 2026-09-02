@@ -68,10 +68,12 @@ class TradeDNAEngine:
 
     def __init__(self, brain_root: Path | None = None) -> None:
         """Initialize TradeDNAEngine."""
+        # No filesystem side effect in the constructor — see
+        # IntelligenceCache.__init__ for the litter that produced.
         self._resolver = PathResolver(brain_root)
-        intel_dir = self._resolver.resolve_brain_root() / "intelligence"
-        intel_dir.mkdir(parents=True, exist_ok=True)
-        self._dna_file = intel_dir / "trade_dna.jsonl"
+        self._dna_file = (
+            self._resolver.resolve_brain_root() / "intelligence" / "trade_dna.jsonl"
+        )
 
     # ------------------------------------------------------------------
     # Record
@@ -128,6 +130,8 @@ class TradeDNAEngine:
         }
 
         try:
+            # Created at the moment it is needed, not at construction.
+            self._dna_file.parent.mkdir(parents=True, exist_ok=True)
             with self._dna_file.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(dna, sort_keys=True) + "\n")
             logger.info(

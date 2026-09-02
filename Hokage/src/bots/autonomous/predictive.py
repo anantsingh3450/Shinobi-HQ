@@ -364,6 +364,9 @@ class PredictionAccuracyTracker:
 
         # Save stats back to cache
         try:
+            # IntelligenceCache no longer mkdirs in its constructor, so a writer
+            # that reaches the directory directly must ensure it itself.
+            self._accuracy_file.parent.mkdir(parents=True, exist_ok=True)
             with self._accuracy_file.open("w", encoding="utf-8") as fh:
                 json.dump(self.stats, fh, indent=2, sort_keys=True)
             logger.info("Saved prediction accuracy statistics.")

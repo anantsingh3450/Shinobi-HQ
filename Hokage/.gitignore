@@ -19,7 +19,6 @@ venv/
 *.egg-info/
 
 # Test artifacts
-MagicMock/
 scratch/
 
 # Runtime journals
