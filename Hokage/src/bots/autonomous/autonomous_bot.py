@@ -1771,6 +1771,15 @@ class AutonomousTradingBot:
     #: a minute recovers a mid-session login well inside a single scan cycle.
     _RECONNECT_MIN_INTERVAL_SECONDS = 60.0
 
+    #: Consecutive NETWORK failures before the broker client is rebuilt.
+    #:
+    #: Three, because the feed is probed roughly once a minute: a real internet
+    #: blip clears well inside that (2026-09-02's 08:58 outage healed in ~90
+    #: seconds untouched), while the 13:53 one ran 47 minutes because nothing
+    #: ever rebuilt the client. Below three this would churn the connection on
+    #: every transient; far above it, the dead pool keeps costing trading hours.
+    _NETWORK_REBUILD_AFTER = 3
+
     def _try_broker_reconnect(self) -> bool:
         """Re-authenticate the broker session in place, at most once a minute.
 
@@ -2309,10 +2318,56 @@ class AutonomousTradingBot:
         """
         try:
             self.orchestrator.price_source.get_price("NIFTY 50")
+            self._consecutive_network_failures = 0
         except Exception as exc:
             reason = str(exc)
             today = self._now_ist().strftime("%Y-%m-%d")
             kind = self._diagnose_feed_failure(reason)
+
+            # A NETWORK failure that will not clear is a poisoned connection
+            # pool, and only rebuilding the client fixes it.
+            #
+            # 2026-09-02: a ~90-second DNS blip at 08:58 healed on its own. A
+            # second one at 13:53 did NOT — Hokage logged "feed is DOWN
+            # (network)" every minute for 47 minutes while DNS resolved
+            # perfectly from a fresh process beside him, made zero trades, and
+            # only recovered when restarted by hand. His last successful scan
+            # was 13:45.
+            #
+            # The self-heal existed and was unreachable: `_try_broker_reconnect`
+            # fired only when `kind == "unknown"`, which is the mid-session
+            # login signature. A network diagnosis skipped it entirely, so he
+            # retried a dead pool forever.
+            #
+            # NOT on the first failure. A genuine internet outage needs no
+            # rebuild and churning the client through one would be noise; the
+            # 08:58 blip healed by itself well inside this threshold. After
+            # several consecutive failures the internet is not the explanation
+            # any more — his own client is.
+            if kind == "network":
+                self._consecutive_network_failures = (
+                    getattr(self, "_consecutive_network_failures", 0) + 1
+                )
+                if (self._consecutive_network_failures >= self._NETWORK_REBUILD_AFTER
+                        and self._try_broker_reconnect()):
+                    logger.info(
+                        "Market data feed recovered by rebuilding the broker client "
+                        "after %d consecutive network failures.",
+                        self._consecutive_network_failures,
+                    )
+                    self._consecutive_network_failures = 0
+                    self._last_feed_alert_date = None
+                    if self.telegram_bot and getattr(self, "_feed_outage_announced", False):
+                        self.telegram_bot.send_message(
+                            "✅ *HOKAGE CAN SEE AGAIN*\n"
+                            "The connection was stuck, not the internet. The broker "
+                            "client was rebuilt and the feed is live. Scanning has "
+                            "resumed — no restart needed."
+                        )
+                    self._feed_outage_announced = False
+                    return
+            else:
+                self._consecutive_network_failures = 0
 
             # "unknown" means the standalone probe authenticated fine with the
             # CURRENT stored token while the feed still refused — which is the

@@ -35,6 +35,12 @@ def _stub(price_error: Exception | None = None, send_ok: bool = True) -> SimpleN
         telegram_bot=telegram,
         _AUTH_ERROR_TAGS=AutonomousTradingBot._AUTH_ERROR_TAGS,
         _NETWORK_ERROR_TAGS=AutonomousTradingBot._NETWORK_ERROR_TAGS,
+        # Added 2026-09-02 with the network-rebuild path. A persistent "network"
+        # failure now rebuilds the broker client after this many consecutive
+        # misses, because on that date a stuck connection pool kept Hokage blind
+        # for 47 minutes while the internet was fine.
+        _NETWORK_REBUILD_AFTER=AutonomousTradingBot._NETWORK_REBUILD_AFTER,
+        _consecutive_network_failures=0,
         _last_feed_alert_date=None,
         _feed_outage_announced=False,
         _now_ist=lambda: datetime(2026, 7, 27, 12, 0, 0),
