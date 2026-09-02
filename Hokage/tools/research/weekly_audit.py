@@ -500,6 +500,63 @@ def render(current: dict, report: dict) -> str:
 
 
 # ------------------------------------------------------------------------ main
+def parked_watch(measurements: dict) -> str:
+    """Is a PARKED asset ready to come back? Reported every week.
+
+    WHY THIS EXISTS. CRUDEOIL was parked on 2026-08-26 after six sweeps failed
+    out of sample, and re-measured on 2026-09-02 with everything built since —
+    the candle archive, derived train/hold windows, full geometry. Still nothing
+    confirmed, seventh sweep.
+
+    But nothing was WATCHING it. The knob sweep only visits LIVE pairs, and this
+    audit measured crude every week and then said nothing about it. Parking was
+    a one-way door: an asset with no live strategy generates no proposals, so
+    improving evidence would never have surfaced and crude could never have
+    earned its way back.
+
+    That is a direct obstacle to the commander's stated aim — Hokage is to become
+    a MASTER of crude and natural gas. Mastery of an asset you have stopped
+    looking at is not reachable. So every parked asset is scored here weekly,
+    and the moment something clears the bar on BOTH halves it is named.
+
+    Reviving is Tier 3 — it ADDS risk — so this reports and never acts, however
+    good the number.
+    """
+    try:
+        from bots.autonomous.autonomous_bot import AutonomousTradingBot as _Bot
+        parked = dict(getattr(_Bot, "PARKED_ASSETS", {}) or {})
+    except Exception:
+        return ""
+    if not parked:
+        return ""
+
+    lines = ["", "-" * 60, "PARKED ASSET WATCH"]
+    for asset, reason in sorted(parked.items()):
+        rows = (measurements.get(asset) or {})
+        lines.append(f"  {asset} — {reason}")
+        if not rows:
+            lines.append("    nothing measurable this week.")
+            continue
+        ranked = sorted(rows.items(), key=lambda kv: -kv[1].get("t", 0.0))
+        for module, stat in ranked[:4]:
+            train_t = stat.get("t_train")
+            train = "below min n" if train_t is None else f"{train_t:+.2f}"
+            lines.append(
+                "    %-28s train %-12s hold %+.2f (n=%d)%s"
+                % (module, train, stat.get("t", 0.0), stat.get("n", 0),
+                   "   <<< CLEARS BOTH HALVES" if stat.get("confirmed") else "")
+            )
+        ready = [m for m, s in ranked if s.get("confirmed")]
+        if ready:
+            lines.append(
+                f"    -> {', '.join(ready)} now clears the bar on {asset}. "
+                f"Reviving ADDS risk, so it is Tier 3 and waits for your word."
+            )
+        else:
+            lines.append("    -> still nothing clears both halves. Stays parked.")
+    return "\n".join(lines)
+
+
 def _record_retirements(decisions) -> str:
     """Cleared Tier 1 retirements become PENDING proposals. Returns a report line.
 
@@ -631,6 +688,10 @@ def main() -> int:
     # Coverage first: a strategy measuring badly is a question about the
     # lineup, but an asset nobody can trade is a hole in the arena itself, and
     # it is silent. Report it above the evolution verdict.
+    # A parked asset is deliberately absent from the orphan list, so it needs
+    # its own section or it is never spoken about again.
+    text += chr(10) + parked_watch(measurements)
+
     gaps = coverage_gaps(lineup)
     if gaps:
         text += ("\n\n" + "-" * 60 + "\nORPHANED ASSETS\n"

@@ -227,3 +227,70 @@ def test_the_geometry_stamp_reaches_the_report():
     text = wa.render(now, wa.build_report(now, []))
     assert wa.GEOMETRY in text
     assert "ATR stop applied" in text
+
+
+# ------------------------------------------------------- the parked asset watch
+def _stat(t, t_train=None, n=100, confirmed=False):
+    return {"n": n, "accuracy": 52.0, "edge_atr": 0.2, "t": t,
+            "t_train": t_train, "n_train": None if t_train is None else 80,
+            "edge_train": None if t_train is None else 0.2,
+            "train_below_min_n": t_train is None, "confirmed": confirmed}
+
+
+def test_a_parked_asset_is_still_scored_every_week():
+    """CRUDEOIL was parked 2026-08-26 and the knob sweep only visits LIVE pairs,
+    so nothing was watching it. Parking was a one-way door: an asset with no live
+    strategy generates no proposals, so improving evidence would never surface
+    and crude could never earn its way back.
+
+    That directly blocks the commander's aim — Hokage is to become a MASTER of
+    crude and gas, and mastery of an asset you stopped looking at is not
+    reachable."""
+    text = wa.parked_watch({"CRUDEOIL": {"entry-trendrider-mcx-v1": _stat(3.60, 1.21)}})
+    assert "CRUDEOIL" in text
+    assert "entry-trendrider-mcx-v1" in text
+    assert "still nothing clears both halves" in text
+
+
+def test_a_parked_asset_that_now_clears_the_bar_is_named():
+    text = wa.parked_watch({
+        "CRUDEOIL": {"entry-trendrider-mcx-v1": _stat(3.60, 2.40, confirmed=True)}
+    })
+    assert "CLEARS BOTH HALVES" in text
+    assert "now clears the bar on CRUDEOIL" in text
+    assert "Tier 3" in text, "reviving ADDS risk and must always ask"
+
+
+def test_the_watch_never_revives_anything_itself():
+    """Reviving is Tier 3 at any confidence — the tier that keeps a bad
+    measurement from becoming a bigger position."""
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(wa.parked_watch)))
+    called = {getattr(n.func, "attr", None) for n in ast.walk(tree)
+              if isinstance(n, ast.Call)}
+    for forbidden in ("save_portfolio", "write_text", "execute", "commit"):
+        assert forbidden not in called, forbidden
+
+
+def test_a_train_half_below_min_n_is_shown_as_such_not_as_zero():
+    """RangeFade/NATURALGAS printed "tr_t +0.00" in the 2026-08-28 snapshot when
+    its train half had merely fallen below MIN_N — it read as "measured flat"
+    when it had fired 16 times. Missing is not zero."""
+    text = wa.parked_watch({"CRUDEOIL": {"mod": _stat(1.5, None)}})
+    assert "below min n" in text
+    assert "+0.00" not in text
+
+
+def test_nothing_is_said_when_no_asset_is_parked(monkeypatch):
+    from bots.autonomous.autonomous_bot import AutonomousTradingBot as Bot
+
+    monkeypatch.setattr(Bot, "PARKED_ASSETS", {})
+    assert wa.parked_watch({"CRUDEOIL": {"mod": _stat(1.5)}}) == ""
+
+
+def test_a_parked_asset_with_no_measurement_says_so():
+    text = wa.parked_watch({})
+    assert "nothing measurable this week" in text
