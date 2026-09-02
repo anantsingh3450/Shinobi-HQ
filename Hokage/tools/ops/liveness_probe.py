@@ -119,16 +119,25 @@ def in_market_hours(now: datetime) -> bool:
     return MARKET_OPEN <= now.time() < MARKET_CLOSE
 
 
-def mark_stopped(reason: str = "stopped on purpose", path: Path = STOP_MARKER) -> None:
+def mark_stopped(reason: str = "stopped on purpose", path: Path | None = None) -> None:
+    path = path or STOP_MARKER
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
         "at": datetime.now().isoformat(timespec="seconds"), "reason": reason,
     }, indent=2), encoding="utf-8")
 
 
-def deliberate_stop(path: Path = STOP_MARKER) -> str | None:
+def deliberate_stop(path: Path | None = None) -> str | None:
     """The recorded reason, or None. A corrupt marker counts as absent — a
-    monitor that crashes on its own state file is worse than no monitor."""
+    monitor that crashes on its own state file is worse than no monitor.
+
+    `path` is resolved at CALL time, not captured as a default argument. As a
+    default it froze the module global at import, so the reader here and the
+    `STOP_MARKER.unlink()` in main() could target DIFFERENT files the moment
+    anything reassigned it — the reader reporting "stopped on purpose" from a
+    stale path forever while the deleter cleared an empty one.
+    """
+    path = path or STOP_MARKER
     try:
         return str(json.loads(path.read_text(encoding="utf-8-sig")).get("reason") or "")
     except Exception:
@@ -253,7 +262,7 @@ def main() -> int:
     state = State.load()
     reachable = dashboard_answers()
     session = broker_session() if reachable else "UNKNOWN"
-    stopped = deliberate_stop()
+    stopped = deliberate_stop(STOP_MARKER)
 
     # Seeing him UP is what ends a deliberate stop. Clearing it here rather than
     # at boot means the alarm re-arms itself even if he is started by hand, by
