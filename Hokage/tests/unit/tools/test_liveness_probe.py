@@ -272,3 +272,46 @@ def test_a_corrupt_marker_counts_as_absent(tmp_path):
     bad = tmp_path / "bad.json"
     bad.write_text("{not json", encoding="utf-8")
     assert lp.deliberate_stop(bad) is None
+
+
+def test_boot_clears_the_marker_so_it_cannot_go_stale():
+    """2026-09-02: the marker written on 08-28 21:26 was STILL on disk when
+    Hokage was restarted at 08:33 after several days away, because only the
+    probe cleared it and the probe does not run before 09:00. Had he died at
+    08:40, the 09:00 check would have seen him down, found the marker, and said
+    nothing.
+
+    A stale marker masking a real death is the "permanently deaf" failure the
+    self-healing design exists to prevent, so boot clears it at the moment the
+    stop actually ends. The probe still clears it too, as the backstop for any
+    start path that bypasses boot."""
+    import ast
+    import inspect
+
+    from hokage.boot import HokageBootManager as BootManager
+
+    src = inspect.getsource(BootManager)
+    assert "_clear_deliberate_stop_marker" in src
+
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(
+        inspect.getsource(BootManager._clear_deliberate_stop_marker)))
+    assert any(getattr(n.func, "attr", None) == "unlink"
+               for n in ast.walk(tree) if isinstance(n, ast.Call)), \
+        "the boot hook must actually delete the marker"
+
+    # It must never be able to stop him booting.
+    assert any(isinstance(n, ast.Try) for n in ast.walk(tree))
+
+
+def test_boot_and_probe_agree_on_the_marker_path():
+    """Two clearers, one file. A path that drifts would leave the marker
+    uncleared by boot and the window open again."""
+    from hokage.boot import HokageBootManager as BootManager
+
+    assert BootManager._STOP_MARKER.replace("/", "\\").endswith(
+        "stopped_deliberately.json")
+    assert lp.STOP_MARKER.name == "stopped_deliberately.json"
+    assert lp.STOP_MARKER.parent.name == "state"
+    assert BootManager._STOP_MARKER.split("/")[0] == "state"

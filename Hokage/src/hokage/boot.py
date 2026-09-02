@@ -160,6 +160,21 @@ class HokageBootManager:
             app = create_dashboard_api(brain_root=self.brain_root, orchestrator=self.orchestrator)
             app.boot_manager = self
 
+            # A deliberate stop ends the moment he is back. Clear the marker
+            # that tells the external liveness watch to stay quiet.
+            #
+            # 2026-09-02: the marker written on 2026-08-28 21:26 was STILL on
+            # disk when Hokage was restarted at 08:33 after several days away —
+            # because only the liveness probe cleared it, and the probe does not
+            # run before 09:00. Had he died at 08:40, the 09:00 check would have
+            # seen him down, found the marker, and said nothing. A stale marker
+            # masking a real death is exactly the "permanently deaf" failure the
+            # self-healing design was supposed to prevent; clearing it here, at
+            # the moment the stop actually ends, closes the window. The probe
+            # still clears it too — that stays as the backstop for any start
+            # path that bypasses this one.
+            self._clear_deliberate_stop_marker()
+
             self.publish_state(LifecycleState.ONLINE)
             print("\n=========================================")
             print("             HOKAGE ONLINE               ")
@@ -179,6 +194,24 @@ class HokageBootManager:
             print(f"             BOOT FAILED: {exc}          ")
             print("=========================================")
             sys.exit(1)
+
+    #: Written by Stop-Hokage.ps1 / liveness_probe --stopped-on-purpose so the
+    #: external liveness watch stays quiet during a stop the commander ordered.
+    _STOP_MARKER = "state/stopped_deliberately.json"
+
+    def _clear_deliberate_stop_marker(self) -> None:
+        """Booting IS the end of a deliberate stop. Never fatal."""
+        try:
+            marker = Path(self.brain_root) / self._STOP_MARKER
+            if marker.exists():
+                marker.unlink()
+                logger.info(
+                    "Cleared the deliberate-stop marker — the liveness watch is "
+                    "armed again."
+                )
+        except Exception as exc:
+            # A monitor hint must never be able to stop Hokage booting.
+            logger.warning(f"Could not clear the deliberate-stop marker: {exc}")
 
     def _run_health_gate(self) -> bool:
         """Verify health of every critical subsystem before going online."""

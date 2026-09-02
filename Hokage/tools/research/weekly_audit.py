@@ -208,9 +208,16 @@ def measure_split(symbol: str, modules: dict) -> tuple[dict, dict, tuple]:
             # uses; they now mean the HOLD-OUT, measured with the stop.
             "n": hold["n"], "accuracy": hold["accuracy"],
             "edge_atr": hold["edge_atr"], "t": hold["t"],
-            "n_train": (train or {}).get("n", 0),
-            "edge_train": (train or {}).get("edge_atr", 0.0),
-            "t_train": (train or {}).get("t", 0.0),
+            # None, NOT 0.0, when the train half fell below MIN_N and was never
+            # summarised. RangeFade/NATURALGAS printed "TRn 0, tr_edge +0.000,
+            # tr_t +0.00" in the 2026-08-28 snapshot and read as "fired nothing
+            # and measured flat"; it had in fact fired 16 times, below the
+            # reporting floor of 30. Missing is not zero — the same rule that
+            # governs a missing ATR and a missing excursion.
+            "n_train": (train or {}).get("n"),
+            "edge_train": (train or {}).get("edge_atr"),
+            "t_train": (train or {}).get("t"),
+            "train_below_min_n": train is None,
             "confirmed": bool(train and train["t"] >= SHIP_BAR and hold["t"] >= SHIP_BAR),
         }
     return out, raw, (train_win, hold_win)
