@@ -356,6 +356,15 @@ class TelegramBotUplink:
         wants_simple = any(w in low for w in ("simple", "simply", "plain", "eli5", "basic"))
         audience = LEARNER if wants_simple else TRADER
 
+        # "Why NO trades?" is a question about the ABSENCE of trades, and it is
+        # answerable in detail — every refusal is recorded with its reason.
+        # Checked BEFORE the trade journal, because the old code read it as
+        # "explain a trade", found none, and replied "I have no trade recorded
+        # to explain yet." On 2026-09-02 the commander asked exactly this and
+        # got exactly that, while 75 recorded refusals sat in the journal.
+        if self._asks_about_absence(low):
+            return self._explain_no_trades()
+
         journal = list(self._journal)
         if not journal:
             return ("I have no trade recorded to explain yet. Ask me again after "
@@ -393,6 +402,113 @@ class TelegramBotUplink:
         tail = ("" if wants_simple else
                 "\n\n_Reply `why simple` for the same thing without the jargon._")
         return f"*{self.escape_markdown(head)}*\n\n{body}{tail}"
+
+    #: A negation plus a trading noun. Matched as two parts rather than as
+    #: whole phrases, because a phrase list is always one wording short: it had
+    #: "didn't trade" and missed "didn't YOU trade", which is how a person
+    #: actually types it.
+    _ABSENCE_NEGATIONS = ("no ", "not ", "n't", "nt ", "never", "zero", "without")
+    _ABSENCE_SUBJECTS = ("trade", "trading", "entry", "entries", "position",
+                         "signal", "buy", "bought", "bet")
+    #: Complete on their own — no trading noun required.
+    _ABSENCE_PHRASES = ("nothing", "so quiet", "idle", "sitting out",
+                        "stayed out", "doing nothing")
+
+    @classmethod
+    def _asks_about_absence(cls, low: str) -> bool:
+        if any(p in low for p in cls._ABSENCE_PHRASES):
+            return True
+        return (any(n in low for n in cls._ABSENCE_NEGATIONS)
+                and any(s in low for s in cls._ABSENCE_SUBJECTS))
+
+    #: Gates worth naming individually before the tally is summarised.
+    _EXPLAIN_TOP_GATES = 5
+
+    def _explain_no_trades(self) -> str:
+        """Why nothing traded, from the recorded refusals. Never the LLM.
+
+        2026-09-02, 12:50. The commander asked "Why no trades so far?" and was
+        told "I have no trade recorded to explain yet." Seventy-five refusals
+        were on record at that moment, each with its reason, and a gate
+        classifier already existed to rank them. The question was answerable in
+        detail and the answer was a shrug.
+
+        Same doctrine as handle_why: this reads what was RECORDED. Every number
+        below is counted, never estimated, and when there is no record it says
+        so instead of inventing a story.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        try:
+            from bots.autonomous.decision_journal import DecisionJournalSystem
+            from bots.autonomous.gate_analytics import tally_gate_rejections
+
+            decisions = list(DecisionJournalSystem().load_no_trade_decisions())
+        except Exception as exc:
+            logger.error(f"Could not read the no-trade journal: {exc}")
+            return ("I keep a record of every refusal, but I could not read it "
+                    "just now, so I will not guess at the reason.")
+
+        # Journal timestamps are UTC; "today" must be measured in IST or a
+        # question asked in the evening reads the wrong day entirely.
+        now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+        since = (now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+                 - timedelta(hours=5, minutes=30)).replace(tzinfo=timezone.utc)
+
+        tally = tally_gate_rejections(decisions, since=since)
+        looked = int(tally.get("decisions_analysed") or 0)
+        gates = list(tally.get("gates") or [])
+
+        if not looked:
+            return ("I have not refused anything today — which means I have not "
+                    "been scanning. That is usually a dead market-data feed or a "
+                    "session that never started, not a quiet market. Worth "
+                    "checking that I am actually running.")
+
+        total = int(tally.get("total_rejections") or 0)
+        lines = [
+            f"*No trades today, and here is exactly why.*",
+            "",
+            f"I looked at *{looked}* opportunities and turned down every one. "
+            f"Those refusals carried *{total}* separate reasons, which sort like this:",
+            "",
+        ]
+
+        for g in gates[: self._EXPLAIN_TOP_GATES]:
+            assets = ", ".join(g.get("assets") or []) or "—"
+            kind = str(g.get("kind", "")).upper()
+            note = " (safety — blocking is its job)" if kind == "SAFETY" else ""
+            lines.append(
+                f"• *{self.escape_markdown(str(g.get('label') or g.get('gate')))}* "
+                f"— {g.get('count')} times, {g.get('share_pct'):.0f}% of all refusals"
+                f"{note}\n   on {self.escape_markdown(assets)}"
+            )
+            sample = (g.get("samples") or [None])[0]
+            if sample:
+                lines.append(f"   _{self.escape_markdown(str(sample)[:160])}_")
+
+        rest = gates[self._EXPLAIN_TOP_GATES:]
+        if rest:
+            lines.append(
+                f"\n…and {len(rest)} smaller blockers accounting for "
+                f"{sum(int(g.get('count') or 0) for g in rest)} more refusals."
+            )
+
+        top = tally.get("top_gate")
+        if top:
+            lines.append(
+                f"\n*The bottleneck is {self.escape_markdown(str(top))}.* "
+                f"If you want more trades, that is the gate to argue with — but "
+                f"only against measurement, never because a day felt quiet."
+            )
+
+        unclassified = int(tally.get("unclassified_count") or 0)
+        if unclassified:
+            lines.append(
+                f"\n{unclassified} refusals did not match any gate I know. "
+                f"I am reporting that rather than filing them somewhere tidy."
+            )
+        return "\n".join(lines)
 
     @staticmethod
     def _instrument_line(symbol: str) -> str:

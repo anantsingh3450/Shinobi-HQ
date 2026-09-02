@@ -1216,6 +1216,42 @@ class AutonomousTradingBot:
             return "short"
         return "long" if str(pos.get("side", "BUY")).upper() == "BUY" else "short"
 
+    def _journal_no_trade(self, symbol: str, reasons: list[str]) -> None:
+        """Record an MCX refusal the way the index league already records its own.
+
+        2026-09-02: the commander asked Hokage on Telegram "Why no trades so
+        far?" and got "I have no trade recorded to explain yet." Chasing that
+        found this: `no_trade_decisions` held 75 rows for the day and EVERY ONE
+        was an index asset. The MCX league logged its stand-asides to the log
+        file, published them on the bus, and journaled NOTHING.
+
+        So the gate tally, the daily briefing and any answer about why nothing
+        traded were all structurally blind to the entire commodity arena — the
+        league holding most of the capital, and the one carrying the assets the
+        commander wants mastered. A refusal that is only ever printed is a
+        refusal nobody can count.
+
+        Never fatal: a journal write must not be able to stop a scan.
+        """
+        try:
+            from bots.autonomous.models import NoTradeDecision
+
+            journal = getattr(self, "journal", None)
+            if journal is None:
+                return
+            journal.record_no_trade_decision(NoTradeDecision(
+                asset=str(symbol).upper(),
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                decision="NO_TRADE",
+                confidence=0.0,
+                reasons=tuple(reasons),
+                supporting_evidence={"league": "MCX"},
+                invalidated_setups=(),
+                next_review_time="",
+            ))
+        except Exception as exc:
+            logger.debug(f"Could not journal the MCX no-trade for {symbol}: {exc}")
+
     def _entry_cluster_gate(
         self,
         symbol: str,
@@ -4516,6 +4552,7 @@ class AutonomousTradingBot:
                 reason_txt = "MCX league stand-aside on " + symbol + ": " + " | ".join(module_verdicts)
                 logger.info(reason_txt)
                 bus.publish("OPPORTUNITY_REJECTED", {"symbol": symbol, "reason": reason_txt, "timestamp": datetime.now(timezone.utc).isoformat()})
+                self._journal_no_trade(symbol, module_verdicts)
                 continue
 
             win_conf, selected_strat, signal = winner
@@ -4534,6 +4571,7 @@ class AutonomousTradingBot:
             )
             if not conduct_ok:
                 logger.info(f"MCX Arena entry blocked for {symbol}: {conduct_reason}")
+                self._journal_no_trade(symbol, [conduct_reason])
                 continue
 
             try:
@@ -4570,6 +4608,7 @@ class AutonomousTradingBot:
             )
             if not cluster_ok:
                 logger.info(f"MCX Arena entry blocked for {symbol}: {cluster_reason}")
+                self._journal_no_trade(symbol, [cluster_reason])
                 continue
 
             side = OrderSide.BUY if direction == "long" else OrderSide.SELL
