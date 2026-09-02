@@ -305,6 +305,55 @@ def test_boot_clears_the_marker_so_it_cannot_go_stale():
     assert any(isinstance(n, ast.Try) for n in ast.walk(tree))
 
 
+def test_the_boot_hook_actually_deletes_the_file(tmp_path, monkeypatch):
+    """RUN it, do not merely read its shape.
+
+    The first version of this hook used `self.brain_root`, which is None unless
+    a caller passes one — start.py does not — and died with "argument should be
+    a str or an os.PathLike object ... not 'NoneType'". The try/except kept
+    Hokage booting and the AST test above passed, so the marker survived a real
+    restart on 2026-09-02 and nothing said so.
+
+    Verifying the SHAPE of a call and never executing it is exactly how the
+    `_symbol` NameError reached production on 2026-08-24."""
+    from hokage.boot import HokageBootManager
+
+    marker = tmp_path / "state" / "stopped_deliberately.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text('{"reason": "stopped for the day"}', encoding="utf-8")
+
+    boot = object.__new__(HokageBootManager)
+    boot.brain_root = None          # exactly what start.py leaves it as
+
+    class _Resolver:
+        def __init__(self, _root=None):
+            pass
+
+        def resolve_brain_root(self):
+            return tmp_path
+
+    monkeypatch.setattr("hokage.boot.PathResolver", _Resolver)
+    HokageBootManager._clear_deliberate_stop_marker(boot)
+
+    assert not marker.exists(), "boot must delete the marker, not log a warning"
+
+
+def test_clearing_a_marker_that_is_not_there_is_silent(tmp_path, monkeypatch):
+    from hokage.boot import HokageBootManager
+
+    class _Resolver:
+        def __init__(self, _root=None):
+            pass
+
+        def resolve_brain_root(self):
+            return tmp_path
+
+    monkeypatch.setattr("hokage.boot.PathResolver", _Resolver)
+    boot = object.__new__(HokageBootManager)
+    boot.brain_root = None
+    HokageBootManager._clear_deliberate_stop_marker(boot)   # must not raise
+
+
 def test_boot_and_probe_agree_on_the_marker_path():
     """Two clearers, one file. A path that drifts would leave the marker
     uncleared by boot and the window open again."""

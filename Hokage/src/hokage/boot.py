@@ -200,9 +200,18 @@ class HokageBootManager:
     _STOP_MARKER = "state/stopped_deliberately.json"
 
     def _clear_deliberate_stop_marker(self) -> None:
-        """Booting IS the end of a deliberate stop. Never fatal."""
+        """Booting IS the end of a deliberate stop. Never fatal.
+
+        Resolves through PathResolver rather than `self.brain_root`, which is
+        None unless a caller passed one — start.py does not. The first version
+        of this used it directly and failed with "argument should be a str or an
+        os.PathLike object ... not 'NoneType'". The try/except kept Hokage
+        booting, and the guard test passed because it only walked the AST and
+        never executed the method.
+        """
         try:
-            marker = Path(self.brain_root) / self._STOP_MARKER
+            root = PathResolver(self.brain_root).resolve_brain_root()
+            marker = Path(root) / self._STOP_MARKER
             if marker.exists():
                 marker.unlink()
                 logger.info(
