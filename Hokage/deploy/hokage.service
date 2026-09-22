@@ -1,0 +1,61 @@
+# Hokage, as a service that survives the things a laptop does not.
+#
+# WHY THIS EXISTS, in numbers. Between 2026-09-02 and 2026-09-22 Hokage was
+# alive for 2 of 14 trading days — 14% uptime — and placed ONE trade. Not
+# because signals were scarce: the host suspended itself for 17.1 days
+# ("Loop gap of 24643 minutes detected"), the broker token died, and 471 auth
+# failures accumulated with nobody watching. Earlier the same month a
+# critical-battery sleep cost 7.5 hours with a position open, and a silent
+# death cost 3h39m.
+#
+# No edge compounds at 14% uptime. The commander's aim is ~20% annualised with
+# survival as the metric, and uptime is currently the binding constraint — not
+# the strategy, not the stop, not the gates.
+#
+# INSTALL
+#   sudo cp deploy/hokage.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now hokage
+#   journalctl -u hokage -f
+
+[Unit]
+Description=Hokage autonomous trading bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hokage
+WorkingDirectory=/opt/hokage
+ExecStart=/opt/hokage/.venv/bin/python start.py
+
+# THE WHOLE POINT. A crash-looping bot is a different failure from a dead one,
+# so restart always, but rate-limit it: 5 restarts in 5 minutes and systemd
+# gives up and leaves the unit failed, where the liveness probe will see the
+# dashboard down and say so. Infinite fast restarts would hide a boot fault
+# behind a process that is technically always "starting".
+Restart=always
+RestartSec=30
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Every window check in the codebase reads LOCAL time — market hours, the
+# liveness probe, the MCX session clock. A UTC server computes all of them
+# wrong, silently. This is not optional.
+Environment=TZ=Asia/Kolkata
+Environment=PYTHONUNBUFFERED=1
+
+# Journald captures stdout/stderr, so the Windows log-file juggling goes away.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hokage
+
+# Modest hardening. Hokage writes only to its own brain and logs.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/hokage/hokage_brain /opt/hokage/logs
+
+[Install]
+WantedBy=multi-user.target

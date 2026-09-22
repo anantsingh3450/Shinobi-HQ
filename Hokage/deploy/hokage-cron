@@ -1,0 +1,37 @@
+# Hokage's scheduled work, as cron. Replaces four Windows Task Scheduler jobs.
+#
+# INSTALL
+#   sudo cp deploy/hokage-cron /etc/cron.d/hokage
+#   sudo chmod 644 /etc/cron.d/hokage
+#   sudo systemctl restart cron
+#
+# EVERY LINE BELOW DEPENDS ON TZ. The Windows tasks fired on IST because the
+# laptop was IST. cron on a UTC box would run the "23:45 Friday" audit at 05:15
+# Saturday IST — by which time the Zerodha token is dead and the audit writes
+# nothing. That is not hypothetical: Run-WeeklyAudit.ps1 was deliberately
+# scheduled Friday 23:45 rather than Saturday morning for exactly this reason.
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+CRON_TZ=Asia/Kolkata
+MAILTO=""
+
+HOKAGE=/opt/hokage
+PY=/opt/hokage/.venv/bin/python
+
+# --- liveness: every 15 min during MCX hours, weekdays -----------------------
+# The probe decides for itself whether to speak: three consecutive bad checks,
+# in-hours only, once per outage, and silent when a deliberate-stop marker is
+# present. Running it more often than it can alarm is free.
+*/15 9-23 * * 1-5   hokage  cd $HOKAGE && $PY tools/ops/liveness_probe.py >> logs/liveness.log 2>&1
+
+# --- candle archive: daily after the MCX close -------------------------------
+# 23:40, ten minutes after MCX closes at 23:30, while the token is still alive.
+# This is what makes Hokage's measurable history GROW instead of shrinking as
+# futures contracts roll and Kite's 200-day window slides forward.
+40 23 * * 1-5       hokage  cd $HOKAGE && $PY tools/research/candle_archive.py sync >> logs/candle_sync.log 2>&1
+
+# --- weekly audit: Friday 23:45 ----------------------------------------------
+# NOT Saturday morning. Zerodha tokens expire around 07:30, so a Saturday run
+# would find no candles and skip every single week.
+45 23 * * 5         hokage  cd $HOKAGE && $PY tools/research/weekly_audit.py --telegram >> logs/weekly_audit.log 2>&1
