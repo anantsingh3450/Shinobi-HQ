@@ -57,18 +57,24 @@ def test_crude_is_parked_with_a_stated_reason():
 
 
 def test_the_live_lineup_no_longer_alarms_on_crude():
-    """The real post-park state: RangeFade on gas only, SessionShift on the
-    metals, crude parked."""
-    bot = _bot({
-        "r": _strat("RangeFade", "SHADOW_MODE", ["NATURALGAS"]),
-        "s": _strat("SessionShift", "ACTIVE", ["GOLDM", "SILVERM"]),
-    })
+    """The real post-park state, 2026-09-22: BOTH energies parked, SessionShift
+    alone on the metals. Neither park may raise an alarm."""
+    bot = _bot({"s": _strat("SessionShift", "ACTIVE", ["GOLDM", "SILVERM"])})
     assert bot.audit_asset_coverage() == []
 
 
-def test_an_unparked_orphan_still_screams():
-    """NATURALGAS dropped by accident must still be reported — the alarm has to
-    survive the exemption, or parking becomes a way to silence real faults."""
+def test_an_unparked_orphan_still_screams(monkeypatch):
+    """An asset dropped BY ACCIDENT must still be reported — the alarm has to
+    survive the exemption, or parking becomes a way to silence real faults.
+
+    Written with NATURALGAS as the example, which was itself parked on
+    2026-09-22 when the gas fade went negative out of sample. The test documents
+    the RULE, not that asset, so parking is lifted for gas here and CRUDEOIL —
+    parked for a different reason on a different date — carries the
+    still-exempt half of the assertion.
+    """
+    monkeypatch.setitem(Bot.PARKED_ASSETS, "NATURALGAS", None)
+    monkeypatch.delitem(Bot.PARKED_ASSETS, "NATURALGAS")
     bot = _bot({"s": _strat("SessionShift", "ACTIVE", ["GOLDM", "SILVERM"])})
     findings = bot.audit_asset_coverage()
     assert any("NATURALGAS" in f for f in findings)
@@ -76,8 +82,7 @@ def test_an_unparked_orphan_still_screams():
 
 
 def test_parking_does_not_silence_the_index_league():
-    bot = _bot({"r": _strat("RangeFade", "SHADOW_MODE", ["NATURALGAS"]),
-                "s": _strat("SessionShift", "ACTIVE", ["GOLDM", "SILVERM"])})
+    bot = _bot({"s": _strat("SessionShift", "ACTIVE", ["GOLDM", "SILVERM"])})
     bot.strategy_portfolio = _Manager({
         "a": _strat("MacroBreakout", "SHADOW_MODE", ["NIFTY", "BANKNIFTY"], 100000.0),
     })
@@ -85,9 +90,10 @@ def test_parking_does_not_silence_the_index_league():
     assert any("SENSEX" in f for f in findings)
 
 
-def test_a_broke_owner_is_still_reported_even_for_a_parked_asset_name():
+def test_a_broke_owner_is_still_reported_even_for_a_parked_asset_name(monkeypatch):
     """Parking suppresses the NO-STRATEGY finding only. A strategy that is
     scoped but cannot fill is a different fault and must still surface."""
+    monkeypatch.delitem(Bot.PARKED_ASSETS, "NATURALGAS")
     bot = _bot({
         "r": _strat("RangeFade", "SHADOW_MODE", ["NATURALGAS"], start=0.0, realized=-500.0),
         "s": _strat("SessionShift", "ACTIVE", ["GOLDM", "SILVERM"]),
@@ -96,8 +102,13 @@ def test_a_broke_owner_is_still_reported_even_for_a_parked_asset_name():
     assert any("NATURALGAS" in f and "no chest" in f for f in findings)
 
 
-def test_rangefade_is_scoped_to_gas_only_in_the_real_brain():
-    """The measurement is worthless if the lineup did not actually change."""
+def test_rangefade_is_archived_in_the_real_brain():
+    """The measurement is worthless if the lineup did not actually change.
+
+    Archived rather than emptied: an empty `supported_assets` FAILS OPEN in
+    `_strategy_supports`, so blanking the scope would arm a revived RangeFade
+    against the entire universe.
+    """
     import json
     from pathlib import Path
 
@@ -107,5 +118,6 @@ def test_rangefade_is_scoped_to_gas_only_in_the_real_brain():
         (root / "hokage_brain" / "portfolio" / "mcx_strategy_portfolio.json")
         .read_text(encoding="utf-8-sig")
     )
-    scope = book["strategies"]["strat-rangefade-mcx-v1"]["supported_assets"]
-    assert scope == ["NATURALGAS"], scope
+    rf = book["strategies"]["strat-rangefade-mcx-v1"]
+    assert rf["status"] == "ARCHIVED"
+    assert rf["supported_assets"] == ["NATURALGAS"], rf["supported_assets"]

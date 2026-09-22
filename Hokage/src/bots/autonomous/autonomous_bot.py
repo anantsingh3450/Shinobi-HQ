@@ -1882,8 +1882,11 @@ class AutonomousTradingBot:
     #: crude-specific idea is built and measured, not before. NATURALGAS on the
     #: identical signal measures +3.37 out of sample.
     PARKED_ASSETS: dict[str, str] = {
-        "CRUDEOIL": ("no measured edge in any configuration — 6 sweeps, all "
+        "CRUDEOIL": ("no measured edge in any configuration — 7 sweeps, all "
                      "failing out of sample; awaiting a crude-specific module"),
+        "NATURALGAS": ("the fade went NEGATIVE out of sample — hold-out +0.98 on "
+                       "2026-08-28 then -0.59 on 2026-09-22, below the bar two "
+                       "audits running; awaiting a gas idea that measures"),
     }
 
     def audit_asset_coverage(self) -> list[str]:

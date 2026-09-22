@@ -101,8 +101,24 @@ class _Journal:
         return self._rows
 
 
-def _row(asset, reason, ts="2026-09-02T09:16:04+00:00"):
-    return {"asset": asset, "timestamp": ts, "decision": "NO_TRADE",
+def _today_utc() -> str:
+    """A timestamp the explainer will count as TODAY.
+
+    It filters refusals to the current IST day, so a HARDCODED date makes these
+    tests pass on exactly one calendar day and fail silently forever after. The
+    default here used to be "2026-09-02T09:16:04+00:00" — the day the tests were
+    written. They passed that day and failed every day since; nobody ran the
+    suite for three weeks, so nobody found out.
+
+    A test whose truth depends on the wall clock is not testing the system.
+    """
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _row(asset, reason, ts=None):
+    return {"asset": asset, "timestamp": ts or _today_utc(), "decision": "NO_TRADE",
             "reasons": [reason]}
 
 

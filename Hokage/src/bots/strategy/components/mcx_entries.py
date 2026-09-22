@@ -68,6 +68,24 @@ class SessionShiftEntry:
     WINDOW_END_MIN = 630    # 19:30
     MIN_GAP_PCT = 0.05
 
+    #: Per asset, because the measurement was per asset.
+    #:
+    #: GOLDM 630 -> 570 (19:30 -> 18:30), proposed by Hokage's OWN knob sweep on
+    #: 2026-09-22 — the first proposal the loop has ever generated unaided — and
+    #: commander-approved the same day:
+    #:
+    #:   TRAIN n=94 edge=+2.956 t=+2.19   (incumbent +2.061)
+    #:   HOLD  n=94 edge=+0.439 t=+2.05   (incumbent +0.314)
+    #:
+    #: Clears t>=2 on BOTH halves and beats the incumbent on both, which is the
+    #: full ship bar. SILVERM is deliberately NOT moved: it was measured
+    #: separately and its own sweep proposed nothing, and edge does not travel
+    #: between assets. A class-level change here would have applied GOLDM's
+    #: evidence to SILVERM for free.
+    WINDOW_END_MIN_BY_ASSET: dict[str, int] = {
+        "GOLDM": 570,
+    }
+
     #: SHORT ONLY on both metals — see _direction_allowed for the measurement.
     #: The long side measured negative on both halves for GOLDM and out of
     #: sample for SILVERM, so this removes a loser rather than adding a winner.
@@ -98,6 +116,7 @@ class SessionShiftEntry:
         "WINDOW_END_MIN": {
             "values": (570, 630, 690, 750, 810),
             "tier": "propose",
+            "per_asset": "WINDOW_END_MIN_BY_ASSET",
         },
     }
 
@@ -105,9 +124,13 @@ class SessionShiftEntry:
         m = ctx.minutes_into_session
         if m is None:
             return EntrySignal.stand_aside("SessionShift: session clock unknown — cannot gate to the US overlap window.")
-        if not (self.WINDOW_START_MIN <= m < self.WINDOW_END_MIN):
+        asset = (ctx.symbol or "").upper()
+        window_end = self.WINDOW_END_MIN_BY_ASSET.get(asset, self.WINDOW_END_MIN)
+        if not (self.WINDOW_START_MIN <= m < window_end):
+            close_hhmm = "%02d:%02d" % (9 + window_end // 60, window_end % 60)
             return EntrySignal.stand_aside(
-                f"SessionShift: outside the 17:00-19:30 IST US-overlap window ({m}min into session)."
+                f"SessionShift: outside the 17:00-{close_hhmm} IST US-overlap window "
+                f"({m}min into session)."
             )
 
         gap = abs(ctx.ema9 - ctx.ema21)
@@ -115,7 +138,6 @@ class SessionShiftEntry:
         if gap_pct < self.MIN_GAP_PCT:
             return EntrySignal.stand_aside(f"SessionShift: EMA band flat ({gap_pct:.3f}%) — no directional wake-up yet.")
 
-        asset = (ctx.symbol or "").upper()
         if ctx.trend_up and ctx.above_vwap and not _direction_allowed(self, asset, "long"):
             return EntrySignal.stand_aside(
                 f"SessionShift: long side is not scoped on {asset} — it measured negative there."
