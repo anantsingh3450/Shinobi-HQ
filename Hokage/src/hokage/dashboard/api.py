@@ -33,7 +33,9 @@ import json
 import logging
 from pathlib import Path
 
-from flask import Blueprint, Flask, jsonify, render_template, request, redirect
+from flask import (
+    Blueprint, Flask, jsonify, render_template, request, redirect, session,
+)
 from werkzeug.exceptions import HTTPException
 
 from bots.execution.store.json_trade_store import JsonTradeStore
@@ -4036,6 +4038,93 @@ def create_dashboard_api(
             return jsonify({"success": True, "message": "Access token updated successfully."})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
+
+    # ------------------------------------------------------------------
+    # AUTHENTICATION. The dashboard can place trades, close positions and
+    # write the broker token; on a public server it is a stranger's trading
+    # terminal. See hokage/dashboard/auth.py for the full reasoning.
+    #
+    # Loopback stays open so the laptop and an `ssh -L 5000:...` tunnel keep
+    # working unchanged. Anything else needs a password — and a request that
+    # passed through a proxy is NEVER treated as loopback, because putting
+    # nginx in front for TLS would otherwise switch this off entirely.
+    # ------------------------------------------------------------------
+    from hokage.dashboard import auth as dash_auth
+
+    app.config["SECRET_KEY"] = dash_auth.session_secret()
+    app.config.update(
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        # Set only when TLS is actually in front; a Secure cookie over plain
+        # HTTP is never sent back and would lock the commander out of his own
+        # dashboard with no visible reason.
+        SESSION_COOKIE_SECURE=bool(os.environ.get("HOKAGE_DASHBOARD_HTTPS")),
+    )
+
+    @app.before_request
+    def _require_dashboard_auth():
+        if dash_auth.is_local_request(request.remote_addr, request.headers):
+            return None
+        if request.path in dash_auth.PUBLIC_PATHS or request.path.startswith("/static/"):
+            return None
+        if session.get("hokage_authenticated"):
+            return None
+        if not dash_auth.is_configured():
+            # FAIL CLOSED. Exposing the dashboard before setting a password
+            # must produce a refusal, never an open trading terminal.
+            logger.error(
+                "Remote dashboard request from %s refused: no password configured.",
+                request.remote_addr,
+            )
+            return jsonify({
+                "error": "Dashboard authentication is not configured.",
+                "fix": ("Run tools/ops/set_dashboard_password.py, put the printed "
+                        f"{dash_auth.PASSWORD_HASH_ENV} line in .env, and restart."),
+            }), 503
+        return jsonify({"error": "Authentication required.", "login": "/login"}), 401
+
+    @app.route("/healthz", methods=["GET"])
+    def healthz():
+        """Liveness only. Deliberately says nothing about the portfolio."""
+        return jsonify({"status": "ok", "auth_configured": dash_auth.is_configured()})
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        addr = request.remote_addr or "unknown"
+        if request.method == "GET":
+            return render_template("login.html") if _has_login_template() else (
+                jsonify({"login": "POST a JSON body {\"password\": \"...\"} here."})
+            )
+
+        remaining = dash_auth.locked_out(addr)
+        if remaining:
+            return jsonify({
+                "error": "Too many failed attempts.",
+                "retry_after_seconds": remaining,
+            }), 429
+
+        payload = request.get_json(silent=True) or request.form or {}
+        if dash_auth.check_password(str(payload.get("password") or "")):
+            dash_auth.clear_failures(addr)
+            session["hokage_authenticated"] = True
+            session.permanent = True
+            logger.info("Dashboard login succeeded from %s.", addr)
+            return jsonify({"success": True})
+
+        dash_auth.record_failure(addr)
+        logger.warning("Dashboard login FAILED from %s.", addr)
+        return jsonify({"error": "Incorrect password."}), 401
+
+    @app.route("/logout", methods=["GET", "POST"])
+    def logout():
+        session.pop("hokage_authenticated", None)
+        return jsonify({"success": True})
+
+    def _has_login_template() -> bool:
+        try:
+            return os.path.exists(os.path.join(template_dir, "login.html"))
+        except Exception:
+            return False
 
     # Register blueprint
     app.register_blueprint(dashboard_bp)

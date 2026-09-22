@@ -131,19 +131,46 @@ sudo chmod 644 /etc/cron.d/hokage
 journalctl -u hokage -f
 ```
 
-### 6. Secure the dashboard before exposing it
+### 6. Set the dashboard password
 
-It currently has **no authentication** and would be internet-facing. Needs a
-domain, TLS (Caddy or nginx + certbot), and a login in front of it.
+The dashboard can place trades, close positions and write the broker token.
+Authentication now ships with it, and it **fails closed**: a remote request with
+no password configured gets a 503, never an open terminal.
 
-Until that is done, reach it over an SSH tunnel:
+```bash
+sudo -u hokage .venv/bin/python tools/ops/set_dashboard_password.py
+```
+
+Type the password at the hidden prompt, put the printed
+`HOKAGE_DASHBOARD_PASSWORD_HASH=` line in `.env`, and restart. The password is
+never stored, logged, or shown to anyone — only its PBKDF2 hash.
+
+**Loopback stays exempt**, so this works untouched:
 
 ```bash
 ssh -L 5000:127.0.0.1:5000 hokage@<server>
 ```
 
-That is enough to do the daily Kite login safely, and it lets the move proceed
-without waiting on the auth work.
+That is the recommended way to do the daily Kite login, and it needs no TLS.
+
+#### If you put nginx or Caddy in front for TLS
+
+Requests then arrive from `127.0.0.1`, so the proxy **must** send a forwarding
+header — the auth layer treats the presence of `X-Forwarded-For` / `X-Real-IP`
+as proof a request is *not* local, precisely so that adding TLS cannot switch
+authentication off:
+
+```nginx
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+```
+
+Then, and **only** once TLS is genuinely in front, add `HOKAGE_DASHBOARD_HTTPS=1`
+to `.env`. It marks the session cookie Secure; setting it without TLS means the
+cookie is never sent back and you are locked out with no visible error.
+
+`/healthz` stays reachable without a session for uptime checks, and reports
+liveness only — nothing about the portfolio.
 
 ### 7. Run paper for a full week
 
