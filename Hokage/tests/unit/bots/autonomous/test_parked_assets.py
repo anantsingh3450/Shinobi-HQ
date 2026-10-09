@@ -110,12 +110,15 @@ def test_rangefade_is_archived_in_the_real_brain():
     against the entire universe.
     """
     import json
+    import os
     from pathlib import Path
 
-    here = Path(__file__).resolve()
-    root = next(a for a in here.parents if (a / 'hokage_brain').is_dir())
+    # The live brain, wherever it is. Published by conftest.py — it left the
+    # repo on 2026-10-09 and walking up for a `hokage_brain` directory now
+    # finds nothing.
+    brain = Path(os.environ["HOKAGE_PRODUCTION_BRAIN"])
     book = json.loads(
-        (root / "hokage_brain" / "portfolio" / "mcx_strategy_portfolio.json")
+        (brain / "portfolio" / "mcx_strategy_portfolio.json")
         .read_text(encoding="utf-8-sig")
     )
     rf = book["strategies"]["strat-rangefade-mcx-v1"]

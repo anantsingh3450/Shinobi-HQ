@@ -257,14 +257,28 @@ def plan(snapshots: list[dict]) -> list[Decision]:
         )
 
         # RAIL 2: never leave an asset with no live strategy.
+        #
+        # The CHECK is module-wide on purpose — `_assets_still_covered` asks
+        # what survives if this module were retired outright, not merely
+        # descoped from one asset. That is the conservative reading and it
+        # stays.
+        #
+        # The MESSAGE has to say so. It used to read "archiving this would
+        # leave <assets> with no live strategy", attached to a decision about
+        # one asset, so the 2026-10-09 audit told the commander that archiving
+        # MacroBreakout **on NIFTY** would orphan **BANKNIFTY** — a
+        # non-sequitur on the face of it, and the sentence he is meant to
+        # decide on. Name the module, and the sentence is true.
         remaining = _assets_still_covered(current, module)
         orphaned = [a for a in (info.get("scope") or []) if remaining.get(a, 0) == 0]
         if orphaned:
             decision.tier = TIER_PROPOSE
             decision.blocked_reason = (
-                f"archiving this would leave {', '.join(sorted(orphaned))} with no "
-                f"live strategy at all. Ceasing to trade an asset silently is a "
-                f"worse failure than trading it badly, so this needs a decision."
+                f"retiring {decision.strategy_name} outright would leave "
+                f"{', '.join(sorted(orphaned))} with no live strategy at all, and "
+                f"nothing else currently covers {'them' if len(orphaned) > 1 else 'it'}. "
+                f"Ceasing to trade an asset silently is a worse failure than trading "
+                f"it badly, so this needs a decision."
             )
         archives.append(decision)
 

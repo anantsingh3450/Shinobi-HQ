@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import os
 import pytest
 from pathlib import Path
 from bots.autonomous.knowledge import KnowledgeManager
@@ -8,7 +9,7 @@ from bots.autonomous.knowledge import KnowledgeManager
 # The six real production knowledge modules live in the repo's brain. The
 # suite's default brain root is a hermetic sandbox (HOKAGE_BRAIN_ROOT), so
 # these READ-ONLY library tests must point at the production root explicitly.
-_PRODUCTION_BRAIN = Path(__file__).resolve().parents[4] / "hokage_brain"
+_PRODUCTION_BRAIN = Path(os.environ["HOKAGE_PRODUCTION_BRAIN"])
 
 
 @pytest.fixture

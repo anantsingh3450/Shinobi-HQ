@@ -275,7 +275,7 @@ def test_the_task_scripts_write_utf8_logs(script):
     from pathlib import Path
 
     root = Path(__file__).resolve()
-    root = next(p for p in root.parents if (p / "hokage_brain").is_dir())
+    root = next(p for p in root.parents if (p / "pyproject.toml").is_file())
     text = (root / script).read_text(encoding="utf-8")
 
     for line in text.splitlines():

@@ -132,9 +132,8 @@ def test_every_key_matches_a_REAL_strategy_id_in_the_live_portfolios():
     import json
     from pathlib import Path
 
-    # tests/unit/bots/autonomous/<this file> -> parents[4] is the repo root.
-    root = Path(__file__).resolve().parents[4]
-    base = root / "hokage_brain" / "portfolio"
+    import os
+    base = Path(os.environ["HOKAGE_PRODUCTION_BRAIN"]) / "portfolio"
     if not base.exists():  # pragma: no cover - fresh checkout without state
         pytest.skip("no brain state in this checkout")
 
@@ -157,8 +156,8 @@ def test_every_scoped_asset_is_one_the_strategy_actually_trades():
     import json
     from pathlib import Path
 
-    root = Path(__file__).resolve().parents[4]
-    base = root / "hokage_brain" / "portfolio"
+    import os
+    base = Path(os.environ["HOKAGE_PRODUCTION_BRAIN"]) / "portfolio"
     if not base.exists():  # pragma: no cover - fresh checkout without state
         pytest.skip("no brain state in this checkout")
 

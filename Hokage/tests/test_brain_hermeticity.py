@@ -17,7 +17,13 @@ from pathlib import Path
 from hokage.memory.resolver import PathResolver
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_PRODUCTION_BRAIN = (_REPO_ROOT / "hokage_brain").resolve()
+
+#: Published by conftest.py, which reads it from .env before it switches
+#: CONSULT_DOTENV off. It is NOT `_REPO_ROOT / 'hokage_brain'` any more: the
+#: brain moved to C:/Hokage on 2026-10-09, and a guard pointing at a path
+#: that no longer exists would have gone on passing while forbidding
+#: nothing at all.
+_PRODUCTION_BRAIN = Path(os.environ["HOKAGE_PRODUCTION_BRAIN"]).resolve()
 
 
 def test_suite_brain_root_is_sandboxed():

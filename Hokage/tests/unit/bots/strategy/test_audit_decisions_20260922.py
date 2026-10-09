@@ -24,6 +24,7 @@ geometry both weeks, so these deltas are real rather than a change of ruler.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -31,11 +32,16 @@ import pytest
 from bots.autonomous.autonomous_bot import AutonomousTradingBot as Bot
 from bots.strategy.components.mcx_entries import SessionShiftEntry
 
-ROOT = next(p for p in Path(__file__).resolve().parents if (p / "hokage_brain").is_dir())
+# The repo root is found by pyproject.toml, NOT by a directory named
+# `hokage_brain` -- the brain is relocatable and left the repo on
+# 2026-10-09, which killed the whole suite at collection.
+ROOT = next(p for p in Path(__file__).resolve().parents if (p / "pyproject.toml").is_file())
 
 
 def _book(name: str) -> dict:
-    return json.loads((ROOT / "hokage_brain" / "portfolio" / name)
+    # The live portfolio, wherever it lives. Published by conftest.py.
+    brain = Path(os.environ["HOKAGE_PRODUCTION_BRAIN"])
+    return json.loads((brain / "portfolio" / name)
                       .read_text(encoding="utf-8-sig"))
 
 

@@ -40,6 +40,34 @@ _os.environ["HOKAGE_BRAIN_ROOT"] = _tempfile.mkdtemp(prefix="hokage_test_brain_"
 from hokage.memory import resolver as _resolver
 _resolver.CONSULT_DOTENV = False
 
+# Where the REAL brain lives, exported once for the handful of tests that
+# legitimately need it: the hermeticity guard (which must know the address it
+# is forbidding) and a few read-only tests that inspect live portfolio state.
+#
+# It has to be published here because the brain is relocatable. Those tests
+# used to find it by walking up for a directory literally named
+# `hokage_brain` — which stopped existing in the repo on 2026-10-09 when the
+# brain moved to C:/Hokage, out of OneDrive. The whole suite then died at
+# COLLECTION with a bare StopIteration, and the hermeticity guard would have
+# gone on "passing" against a path that was no longer anything.
+#
+# Read straight from .env, because CONSULT_DOTENV was just switched off and
+# HOKAGE_BRAIN_ROOT now points at the sandbox.
+from pathlib import Path as _Path
+
+_REPO_ROOT = _Path(__file__).resolve().parent.parent
+_env_file = _REPO_ROOT / ".env"
+_configured = ""
+if _env_file.exists():
+    _configured = _resolver._parse_brain_root(
+        _env_file.read_text(encoding="utf-8-sig")
+    )
+_os.environ["HOKAGE_PRODUCTION_BRAIN"] = str(
+    _Path(_configured).resolve() if _configured
+    else (_REPO_ROOT / "hokage_brain").resolve()
+)
+_os.environ["HOKAGE_REPO_ROOT"] = str(_REPO_ROOT)
+
 from dataclasses import dataclass
 from datetime import UTC, datetime
 

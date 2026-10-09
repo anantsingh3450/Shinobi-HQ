@@ -382,7 +382,7 @@ def test_the_audit_stamps_the_basis_it_actually_measured_with():
     from pathlib import Path
 
     root = next(p for p in Path(__file__).resolve().parents
-                if (p / "hokage_brain").is_dir())
+                if (p / "pyproject.toml").is_file())
     sys.path.insert(0, str(root / "tools" / "research"))
     spec = importlib.util.spec_from_file_location(
         "weekly_audit_probe", root / "tools" / "research" / "weekly_audit.py")
@@ -395,3 +395,67 @@ def test_the_audit_stamps_the_basis_it_actually_measured_with():
         "deliberate basis change should update both in the same commit"
     )
     assert wa.PROD_STOP_ATR == 1.25
+
+
+def test_the_orphan_reason_names_the_MODULE_not_the_decided_asset():
+    """RAIL 2 checks module-wide coverage, so its reason must say so.
+
+    The 2026-10-09 audit told the commander this, verbatim:
+
+        [archive] MacroBreakout on NIFTY
+            why not automatic: archiving this would leave BANKNIFTY with no
+            live strategy at all.
+
+    A decision about NIFTY, justified by a consequence for BANKNIFTY. The CHECK
+    was right -- _assets_still_covered asks what survives if the module were
+    retired outright, which is the conservative reading and stays. The SENTENCE
+    was a non-sequitur, and it is the sentence he is meant to decide on.
+    """
+    wide = {"mod-a": {"strategy_id": "s-a", "name": "MacroBreakout",
+                      "status": "SHADOW_MODE",
+                      "scope": ["NIFTY", "BANKNIFTY", "SENSEX"]}}
+    prev = _snap("2026-10-02", {("mod-a", "NIFTY"): 0.78}, wide)
+    now = _snap("2026-10-09", {("mod-a", "NIFTY"): 1.51}, wide)
+
+    d, = [x for x in ev.plan([now, prev]) if x.action == "archive"]
+    assert d.asset == "NIFTY"
+    assert d.tier == ev.TIER_PROPOSE
+
+    reason = d.blocked_reason
+    assert "MacroBreakout" in reason, (
+        "the reason must name the module whose retirement is being weighed, "
+        f"otherwise it reads as a non-sequitur: {reason}"
+    )
+    assert "BANKNIFTY" in reason, "the orphaned assets are still worth naming"
+    # The old wording. "archiving this" attached a module-wide consequence to a
+    # single-asset decision.
+    assert "archiving this would leave" not in reason
+
+
+def test_the_orphan_reason_reads_correctly_for_a_single_asset():
+    """Grammar is not a nicety here -- the commander acts on this sentence."""
+    only_live = {"mod-a": {"strategy_id": "s-a", "name": "Alpha",
+                           "status": "SHADOW_MODE", "scope": ["GOLDM"]}}
+    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): 1.8}, only_live)
+    now = _snap("2026-08-21", {("mod-a", "GOLDM"): 1.2}, only_live)
+    d, = [x for x in ev.plan([now, prev]) if x.action == "archive"]
+
+    assert "GOLDM with no live strategy" in d.blocked_reason
+    assert "covers it." in d.blocked_reason, "singular, for one orphaned asset"
+    assert "covers them" not in d.blocked_reason
+
+
+def test_rail_2_still_blocks_exactly_what_it_blocked_before():
+    """The wording changed; the RAIL must not have. A narrower check would let
+    more archives run autonomously -- loosening a safety rail, not fixing it."""
+    wide = {"mod-a": {"strategy_id": "s-a", "name": "MacroBreakout",
+                      "status": "SHADOW_MODE",
+                      "scope": ["NIFTY", "BANKNIFTY", "SENSEX"]}}
+    prev = _snap("2026-10-02", {("mod-a", "NIFTY"): 0.78}, wide)
+    now = _snap("2026-10-09", {("mod-a", "NIFTY"): 1.51}, wide)
+    d, = [x for x in ev.plan([now, prev]) if x.action == "archive"]
+
+    # Sole live module over three assets: retiring it orphans all three, so
+    # this must still be a proposal even though only NIFTY was measured.
+    assert not d.is_autonomous
+    assert d.tier == ev.TIER_PROPOSE
