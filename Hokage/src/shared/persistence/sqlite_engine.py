@@ -15,6 +15,15 @@ from datetime import datetime, timezone
 from hokage.memory.resolver import PathResolver
 
 logger = logging.getLogger("Hokage.SqliteEngine")
+
+#: The newest schema version run_migrations() knows how to apply. It exists so
+#: the engine can tell "already current" from "about to upgrade" and log at the
+#: right level. test_schema_version_constant_matches_the_migrations keeps it in
+#: step with the `if current_version < N` branches below — a stale constant
+#: would silence the one log line that reports a real migration.
+LATEST_SCHEMA_VERSION = 8
+
+
 class SqliteStorageEngine:
     """Manages the SQLite database connection, transactions, and migration lifecycle."""
 
@@ -580,7 +589,26 @@ class SqliteStorageEngine:
         """
         current_version = self.check_schema_version()
         if current_version >= 2:
-            logger.info(f"SQLite database schema is at version {current_version}. Applying any missing upgrades.")
+            # INFO only when there is actually an upgrade to apply.
+            #
+            # This line used to fire on every call, and run_migrations() is
+            # called from six places plus a ~60-second loop: 2026-10-09 saw 72
+            # copies of "schema is at version 8. Applying any missing upgrades."
+            # in three minutes of boot, announcing work it was not doing. Each
+            # upgrade below already logs itself when it genuinely runs, so the
+            # only thing this added was noise — and until the event-bus fix the
+            # same day, every one of those lines also became a permanent row in
+            # audit_trail.
+            if current_version < LATEST_SCHEMA_VERSION:
+                logger.info(
+                    f"SQLite database schema is at version {current_version}; "
+                    f"upgrading to {LATEST_SCHEMA_VERSION}."
+                )
+            else:
+                logger.debug(
+                    f"SQLite database schema is at version {current_version}; "
+                    f"nothing to upgrade."
+                )
             # Ensure all Component 3 & 4 tables exist defensively
             conn = self.get_connection()
             conn.execute("""

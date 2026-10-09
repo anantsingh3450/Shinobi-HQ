@@ -347,3 +347,74 @@ def test_a_human_override_clears_the_marker_rather_than_obeying_it():
         "the interactive path must clear the marker it overrides"
     )
     assert "Starting anyway" in interactive, "and say that it is overriding one"
+
+
+# -------------------------------------- a no-op that announced itself 72 times
+def test_schema_version_constant_matches_the_migrations():
+    """LATEST_SCHEMA_VERSION must equal the highest upgrade branch.
+
+    If a schema 9 is added and the constant is not bumped, run_migrations()
+    logs "nothing to upgrade" while it upgrades - losing the one line that
+    reports a real migration.
+    """
+    import ast
+    import pathlib
+    import re
+
+    from shared.persistence.sqlite_engine import LATEST_SCHEMA_VERSION
+
+    src = pathlib.Path("src/shared/persistence/sqlite_engine.py").read_text(encoding="utf-8")
+    fn = next(n for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.FunctionDef) and n.name == "run_migrations")
+    branches = {
+        n.comparators[0].value
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Compare)
+        and isinstance(n.ops[0], ast.Lt)
+        and getattr(n.left, "id", None) == "current_version"
+        and isinstance(n.comparators[0], ast.Constant)
+        and isinstance(n.comparators[0].value, int)
+    }
+    assert branches, "no `if current_version < N` branches found"
+    assert LATEST_SCHEMA_VERSION == max(branches), (
+        f"LATEST_SCHEMA_VERSION is {LATEST_SCHEMA_VERSION} but migrations go "
+        f"up to {max(branches)}"
+    )
+
+
+def test_a_current_schema_does_not_log_at_info():
+    """72 copies of "Applying any missing upgrades" in three minutes of boot,
+    for a database that needed no upgrade. run_migrations() is called from six
+    places plus a ~60-second loop, and until the event-bus fix every one of
+    those lines also became a permanent audit_trail row."""
+    import ast
+    import pathlib
+
+    src = pathlib.Path("src/shared/persistence/sqlite_engine.py").read_text(encoding="utf-8")
+    fn = next(n for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.FunctionDef) and n.name == "run_migrations")
+
+    # Find the version check and confirm the no-op branch logs at debug.
+    guard = next(
+        (n for n in ast.walk(fn)
+         if isinstance(n, ast.If)
+         and isinstance(n.test, ast.Compare)
+         and isinstance(n.test.ops[0], ast.Lt)
+         and getattr(n.test.left, "id", None) == "current_version"
+         and getattr(n.test.comparators[0], "id", None) == "LATEST_SCHEMA_VERSION"),
+        None,
+    )
+    assert guard is not None, (
+        "run_migrations must branch on current_version < LATEST_SCHEMA_VERSION"
+    )
+
+    def levels(body):
+        return {n.func.attr for n in ast.walk(ast.Module(body=body, type_ignores=[]))
+                if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute)
+                and getattr(n.func.value, "id", None) == "logger"}
+
+    assert "info" in levels(guard.body), "a real upgrade must still be announced"
+    assert levels(guard.orelse) == {"debug"}, (
+        "an already-current schema must not log at INFO"
+    )
