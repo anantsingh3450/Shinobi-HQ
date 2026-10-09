@@ -291,6 +291,26 @@ The docs at kite.trade do not mention this yet — only the console banner and
 the profile page do — so confirm the exact scope on the profile page before
 relying on any reading of it, including this one.
 
+**The profile form takes at most two IPs**, one per line, under a confirmation
+that reads *"I confirm that the above static IPs will be used exclusively by me
+and/or my immediate family."* Three consequences:
+
+- **Do not register the home address.** Checked 2026-10-09 it was 49.42.126.25
+  — routable, not CGNAT, so it would be accepted. It is also residential, and
+  therefore dynamic. It changes on a reconnect, and the entry then goes stale
+  SILENTLY: the symptom is rejected orders mid-session, not a warning. One of
+  only two slots, spent on a value with a shelf life.
+- **The VPS IPv4 must be dedicated**, not a shared or NAT address. A cheap
+  shared-IP plan cannot honour "used exclusively by me".
+- **On Oracle, reserve it first.** An instance's public IP is *ephemeral* by
+  default and can change when the instance is stopped and started. Convert it
+  to a Reserved Public IP before registering it, or the whitelist breaks the
+  first time the box cycles — again silently. DigitalOcean, Hetzner and Linode
+  hand out a static IPv4 by default; Oracle is the one with this trap.
+
+Use one slot for the server and keep the second spare for a failover or
+replacement box, so a migration never requires a live whitelist edit.
+
 ## Deploying changes afterwards
 
 Code does **not** propagate by itself:
