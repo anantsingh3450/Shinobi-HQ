@@ -25,8 +25,12 @@ def _load_project_dotenv() -> None:
 
 _load_project_dotenv()
 
+from hokage.memory.resolver import brain_root
+
 logger = logging.getLogger("Hokage.LLMProcessor")
-HISTORY_FILE = Path("hokage_brain/intelligence/conversation_history.json")
+#: Was a CWD-RELATIVE path, so this landed wherever the process happened to
+#: be started from and ignored HOKAGE_BRAIN_ROOT entirely.
+HISTORY_FILE = brain_root() / "intelligence" / "conversation_history.json"
 
 def get_ai_api_key_info() -> tuple[str | None, str | None]:
     """Scans environment variables and the root .env file to find an AI API key.

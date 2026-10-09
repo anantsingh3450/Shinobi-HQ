@@ -47,6 +47,7 @@ state) so it can be tested without a market, a broker, or a dead Hokage.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -57,7 +58,33 @@ from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[2]
 
-STATE_PATH = ROOT / "hokage_brain" / "state" / "liveness.json"
+
+sys.path.insert(0, str(ROOT / "src"))
+
+try:
+    # The ONE answer to "where is the brain". It reads HOKAGE_BRAIN_ROOT from
+    # the environment and, failing that, from `.env` — which matters here
+    # because this probe is launched by PowerShell and cron, never through
+    # the bot's entry point, so nothing has loaded `.env` for it.
+    #
+    # An earlier version of this file duplicated the lookup in three lines to
+    # stay independent of the package. It read the environment only, so on
+    # 2026-10-09 — minutes after the brain moved to C:/Hokage — it reported a
+    # deliberate stop from the stale marker still sitting in OneDrive, and
+    # deleting the real marker changed nothing.
+    from hokage.memory.resolver import brain_root as _brain_root
+except Exception:  # pragma: no cover - degraded, but still a watchdog
+    # A watchdog that cannot start because the code it watches fails to import
+    # is worse than no watchdog. This fallback is wrong whenever the brain has
+    # been relocated, so it is the last resort, not the design.
+    def _brain_root() -> Path:
+        configured = (os.environ.get("HOKAGE_BRAIN_ROOT") or "").strip()
+        return Path(configured).resolve() if configured else ROOT / "hokage_brain"
+
+
+BRAIN = _brain_root()
+
+STATE_PATH = BRAIN / "state" / "liveness.json"
 DASHBOARD = "http://127.0.0.1:5000/"
 
 #: Written when Hokage is stopped ON PURPOSE, so this probe stays quiet.
@@ -72,7 +99,7 @@ DASHBOARD = "http://127.0.0.1:5000/"
 #: SELF-HEALING BY DESIGN. The marker is cleared the moment Hokage is seen UP
 #: again, so a deliberate stop cannot leave the alarm permanently deaf — which
 #: would be a far worse failure than the false alarm it prevents.
-STOP_MARKER = ROOT / "hokage_brain" / "state" / "stopped_deliberately.json"
+STOP_MARKER = BRAIN / "state" / "stopped_deliberately.json"
 
 #: MCX runs 09:00-23:30 IST. Outside it, silence is correct behaviour.
 MARKET_OPEN = time(9, 0)
@@ -250,6 +277,22 @@ def send(message: str) -> bool:
 
 
 def main() -> int:
+    # Asked by Start-Hokage.ps1, so that PowerShell never has to know where the
+    # brain lives. It used to build the marker path itself from a hardcoded
+    # $Root\hokage_brain — which meant moving the brain would have left the
+    # launcher checking a directory Stop-Hokage.ps1 no longer wrote to, and the
+    # "a deliberate stop means stopped" guard would have silently stopped
+    # guarding anything. One owner of the path, asked over a process boundary.
+    #
+    # Exit 0 and print the reason when a deliberate stop is in force, exit 1
+    # when none is: the caller can branch on either.
+    if "--check-stopped" in sys.argv:
+        reason = deliberate_stop()
+        if reason is None:
+            return 1
+        print(reason or "stopped on purpose")
+        return 0
+
     if "--stopped-on-purpose" in sys.argv:
         reason = next((a for a in sys.argv[1:] if not a.startswith("--")),
                       "stopped on purpose")

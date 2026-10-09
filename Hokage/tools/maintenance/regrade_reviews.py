@@ -52,10 +52,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
+from hokage.memory.resolver import brain_root
+
+#: The active brain root. NOT `BRAIN` — that ignored
+#: HOKAGE_BRAIN_ROOT, so moving the brain gave Hokage one brain and this tool
+#: another, silently. See hokage.memory.resolver.brain_root.
+BRAIN = brain_root()
+
 from bots.autonomous.position_review import PositionReviewEngine  # noqa: E402
 
-REVIEWS = ROOT / "hokage_brain" / "reviews" / "position_reviews.jsonl"
-AUTOPSIES = ROOT / "hokage_brain" / "improvement" / "trade_autopsies.jsonl"
+REVIEWS = BRAIN / "reviews" / "position_reviews.jsonl"
+AUTOPSIES = BRAIN / "improvement" / "trade_autopsies.jsonl"
 
 #: The original lesson embeds the conviction score; the review record does not
 #: store it as a field. Recover it so the regenerated lesson keeps the same

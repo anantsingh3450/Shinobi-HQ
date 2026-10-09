@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import os
 import shutil
 import sqlite3
 import sys
@@ -40,8 +41,29 @@ PURGEABLE = (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-DB = ROOT / "hokage_brain" / "hokage.db"
-ARCHIVE_DIR = ROOT / "hokage_brain_archive"
+
+
+sys.path.insert(0, str(ROOT / "src"))
+
+try:
+    # Reads HOKAGE_BRAIN_ROOT from the environment and, failing that, from
+    # `.env`. This tool is run by hand and by cron, never through the bot's
+    # entry point, so nothing has loaded `.env` for it — and pruning the wrong
+    # database would mean deleting from a ledger nobody reads while the live
+    # one keeps growing.
+    from hokage.memory.resolver import brain_root as _brain_root
+except Exception:  # pragma: no cover - degraded, but still usable
+    def _brain_root() -> Path:
+        configured = (os.environ.get("HOKAGE_BRAIN_ROOT") or "").strip()
+        return Path(configured).resolve() if configured else ROOT / "hokage_brain"
+
+
+BRAIN = _brain_root()
+DB = BRAIN / "hokage.db"
+
+#: Sits beside the brain, not inside it, so a brain move takes its archives
+#: along instead of stranding them on the old disk.
+ARCHIVE_DIR = BRAIN.parent / "hokage_brain_archive"
 
 
 def _human(n: float) -> str:

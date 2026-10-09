@@ -32,20 +32,45 @@ $Root = 'C:\Users\anant\OneDrive\Documents\AI PROJECT\AI COMMAND CENTRE\Hokage'
 $Python = 'C:\Users\anant\AppData\Local\Python\pythoncore-3.14-64\python.exe'
 $Url = 'http://127.0.0.1:5000'
 $LoginWaitMinutes = 15
-$StopMarker = Join-Path $Root 'hokage_brain\state\stopped_deliberately.json'
-
 function Get-DeliberateStop {
-    # The reason recorded by Stop-Hokage.ps1, or $null. A corrupt marker counts
-    # as absent, matching tools/ops/liveness_probe.py: a launcher that refuses
-    # to run because of its own malformed state file is worse than no guard.
-    if (-not (Test-Path $StopMarker)) { return $null }
+    # The reason recorded by Stop-Hokage.ps1, or $null.
+    #
+    # ASKED, NOT COMPUTED. This used to build the path itself from a hardcoded
+    # $Root\hokage_brain. The brain is relocatable via HOKAGE_BRAIN_ROOT (it
+    # moved off OneDrive on 2026-10-09), and a launcher that looks in the old
+    # directory while Stop-Hokage.ps1 writes to the new one is a guard that has
+    # silently stopped guarding. liveness_probe.py owns the path; ask it.
+    #
+    # A corrupt or missing marker counts as absent, matching the probe: a
+    # launcher that refuses to run because of its own malformed state file is
+    # worse than no guard.
+    Push-Location $Root
     try {
-        $raw = Get-Content $StopMarker -Raw -Encoding UTF8
-        $reason = (ConvertFrom-Json $raw).reason
-        if ([string]::IsNullOrWhiteSpace($reason)) { return 'stopped on purpose' }
-        return $reason
+        $out = & $Python (Join-Path $Root 'tools\ops\liveness_probe.py') --check-stopped 2>$null
+        if ($LASTEXITCODE -ne 0) { return $null }
+        if ($out) { return ($out | Select-Object -Last 1).Trim() }
+        return 'stopped on purpose'
     } catch {
         return $null
+    } finally {
+        Pop-Location
+    }
+}
+
+function Clear-DeliberateStop {
+    # Clearing it needs the path, so ask Python for that too rather than
+    # rebuilding it here.
+    Push-Location $Root
+    try {
+        & $Python -c @'
+import sys
+sys.path.insert(0, "tools/ops")
+from liveness_probe import STOP_MARKER
+STOP_MARKER.unlink(missing_ok=True)
+'@ 2>$null
+    } catch {
+    } finally {
+        Pop-Location
     }
 }
 
@@ -174,7 +199,7 @@ if ($stopReason) {
     Write-Step "  $stopReason" 'DarkGray'
     Write-Step 'Starting anyway - you asked for it directly.' 'Cyan'
     Write-Host ''
-    Remove-Item $StopMarker -Force -ErrorAction SilentlyContinue
+    Clear-DeliberateStop
 }
 
 # --- 1. make sure exactly one Hokage is serving -----------------------------

@@ -51,13 +51,20 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from hokage.memory.resolver import brain_root
+
+#: The active brain root. NOT `BRAIN` — that ignored
+#: HOKAGE_BRAIN_ROOT, so moving the brain gave Hokage one brain and this tool
+#: another, silently. See hokage.memory.resolver.brain_root.
+BRAIN = brain_root()
+
 from signal_lab import Ctx, load_bars, _MCX_FUTURES  # noqa: E402
 from entry_module_lab import build_context  # noqa: E402
 
 from bots.strategy.components.entries import ENTRY_MODULES  # noqa: E402
 from bots.strategy.components.mcx_entries import MCX_ENTRY_MODULES  # noqa: E402
 
-PORTFOLIO_DIR = ROOT / "hokage_brain" / "portfolio"
+PORTFOLIO_DIR = BRAIN / "portfolio"
 
 #: 60 minutes, the horizon the other labs report as primary.
 HORIZON = 4

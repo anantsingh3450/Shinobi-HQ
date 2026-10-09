@@ -54,7 +54,14 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-DB = ROOT / "hokage_brain" / "candles.db"
+from hokage.memory.resolver import brain_root
+
+#: The active brain root. NOT `BRAIN` — that ignored
+#: HOKAGE_BRAIN_ROOT, so moving the brain gave Hokage one brain and this tool
+#: another, silently. See hokage.memory.resolver.brain_root.
+BRAIN = brain_root()
+
+DB = BRAIN / "candles.db"
 
 #: Assets worth keeping. Index symbols resolve to spot and never roll, so they
 #: do not strictly need this — but a gap in one league's history is just as

@@ -71,7 +71,7 @@ def test_explainability_aggregator(mock_orchestrator, mock_cache):
     assert "[CONVICTION]" in report["unified_narrative"]
 
 
-def test_questions_are_answered_from_real_state_not_canned_text(mock_orchestrator, mock_cache):
+def test_questions_are_answered_from_real_state_not_canned_text(mock_orchestrator, mock_cache, seeded_brain):
     """The 16-branch keyword cascade was deleted 2026-08-16.
 
     It was canned when a branch matched ("how's SessionShift's performance"

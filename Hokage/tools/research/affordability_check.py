@@ -27,6 +27,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
+from hokage.memory.resolver import brain_root
+
+#: The active brain root. NOT `BRAIN` — that ignored
+#: HOKAGE_BRAIN_ROOT, so moving the brain gave Hokage one brain and this tool
+#: another, silently. See hokage.memory.resolver.brain_root.
+BRAIN = brain_root()
+
 
 def main() -> int:
     from dotenv import load_dotenv
@@ -45,7 +52,7 @@ def main() -> int:
         return 1
     provider = KiteMarketDataProvider(manager)
 
-    base = ROOT / "hokage_brain" / "portfolio"
+    base = BRAIN / "portfolio"
     books = [
         ("Index Dojo", base / "strategy_portfolio.json"),
         ("MCX Arena", base / "mcx_strategy_portfolio.json"),

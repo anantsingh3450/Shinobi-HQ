@@ -34,8 +34,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from hokage.memory.resolver import brain_root
+
 ROOT = Path(__file__).resolve().parents[3]
-BRAIN = ROOT / "hokage_brain"
+
+#: NOT `ROOT / "hokage_brain"`. That ignored HOKAGE_BRAIN_ROOT, so moving
+#: the brain left this module reading a different one from the rest of Hokage.
+BRAIN = brain_root()
 DB_PATH = BRAIN / "hokage.db"
 PORTFOLIO_DIR = BRAIN / "portfolio"
 SNAPSHOT_DIR = BRAIN / "research" / "snapshots"

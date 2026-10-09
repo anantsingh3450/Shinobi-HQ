@@ -343,10 +343,27 @@ def test_a_human_override_clears_the_marker_rather_than_obeying_it():
 
     src = pathlib.Path("Start-Hokage.ps1").read_text(encoding="utf-8")
     interactive = src[src.index("Clear-Host"):]
-    assert "Remove-Item $StopMarker" in interactive, (
+    assert "Clear-DeliberateStop" in interactive, (
         "the interactive path must clear the marker it overrides"
     )
     assert "Starting anyway" in interactive, "and say that it is overriding one"
+
+
+def test_powershell_never_builds_the_brain_path_itself():
+    """The brain is relocatable (it moved off OneDrive on 2026-10-09). A
+    launcher that looks for the stop marker under a hardcoded
+    $Root\\hokage_brain while Stop-Hokage.ps1 writes to HOKAGE_BRAIN_ROOT is a
+    guard that has silently stopped guarding. liveness_probe.py owns the path.
+    """
+    import pathlib
+
+    for name in ("Start-Hokage.ps1", "Stop-Hokage.ps1"):
+        src = pathlib.Path(name).read_text(encoding="utf-8")
+        offenders = [
+            line for line in src.splitlines()
+            if "hokage_brain" in line and not line.strip().startswith("#")
+        ]
+        assert not offenders, f"{name} hardcodes a brain path: {offenders}"
 
 
 # -------------------------------------- a no-op that announced itself 72 times

@@ -16,6 +16,13 @@ from bots.autonomous import hokage_tools
 from bots.autonomous.grounded_chat import GroundedChat, GroundedAnswer
 
 
+@pytest.fixture(autouse=True)
+def _seed(seeded_brain):
+    """Every test in this file reads the ledger. `seeded_brain` lives in
+    conftest.py and explains why it has to exist at all: these assertions used
+    to pass by reading the commander's real production brain."""
+
+
 class _FakeChat:
     def __init__(self, reply: str, boom: bool = False):
         self._reply, self._boom = reply, boom

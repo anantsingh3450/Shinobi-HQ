@@ -132,23 +132,71 @@ above says to SEND that tree. Following the old step would have dragged 1.6 GB
 of July ledger history onto a 20 GB VPS and quietly made the transfer the
 longest part of migration day. Exclude by pattern, not by location:
 
+**The brain is no longer inside the repo.** Since 2026-10-09 it lives at
+`C:\Hokage\hokage_brain`, outside OneDrive, and `HOKAGE_BRAIN_ROOT` points at
+it. Copy from there, not from the working tree:
+
 ```bash
 rsync -av --progress \
   --exclude '*.bak' --exclude '*.bak.*' --exclude '*.bak.jsonl' \
   --exclude 'logs/' \
-  hokage_brain/ hokage@<server>:/opt/hokage/hokage_brain/
+  /c/Hokage/hokage_brain/ hokage@<server>:/opt/hokage/hokage_brain/
 ```
 
 Verify the size before you start, so a surprise is cheap:
 
 ```bash
-du -sh hokage_brain
-find hokage_brain -name '*.bak*' -printf '%s\n' | awk '{s+=$1} END {print s/1e9 " GB excluded"}'
+du -sh /c/Hokage/hokage_brain
+find /c/Hokage/hokage_brain -name '*.bak*' -printf '%s\n' | awk '{s+=$1} END {print s/1e9 " GB excluded"}'
 ```
+
+As of 2026-10-09 that is about **95 MB** — the 2.43 GB of pre-restructure `.bak`
+snapshots were deleted, and `hokage.db` went from 1.5 GB to 32 MB once the
+audit trail was pruned of dashboard telemetry.
 
 The `.bak` files are July/August ledger snapshots. Keep them on the laptop.
 
 **`.env` is credentials — you move it yourself, by hand.** I never touch it.
+
+#### One line in `.env` must change on the server
+
+Since 2026-10-09 the laptop's `.env` carries:
+
+```
+HOKAGE_BRAIN_ROOT=C:/Hokage/hokage_brain
+```
+
+The brain was moved out of `OneDrive\Documents\...` because a 1.5 GB SQLite
+file was being cloud-synced while Hokage wrote to it.
+
+**That path does not exist on Linux.** Copy `.env` across unchanged and
+`brain_root()` resolves `C:/Hokage/hokage_brain` relative to the server's
+filesystem — a directory that is not there — so Hokage boots, creates an empty
+brain, finds no portfolio, and starts from zero against the live market. The
+ledger you spent an evening migrating sits untouched next door.
+
+On the server, either set it to the real path or delete the line:
+
+```
+HOKAGE_BRAIN_ROOT=/opt/hokage/hokage_brain
+```
+
+Deleting it also works, because the fallback is `./hokage_brain` relative to
+the working directory and `hokage.service` sets `WorkingDirectory=/opt/hokage`.
+Setting it explicitly is better: it does not depend on who launched the process
+or from where, which is exactly the property a cron job needs.
+
+Verify before trusting anything else:
+
+```bash
+sudo -u hokage .venv/bin/python -c \
+  "import sys; sys.path.insert(0,'src'); \
+   from hokage.memory.resolver import brain_root; print(brain_root())"
+```
+
+It must print the directory that actually holds `hokage.db`. Every tool —
+the liveness probe, the candle archive, the weekly audit, the prune tool —
+reads this same variable, so getting it wrong splits them all at once.
 
 ### 5. Install the service and schedules
 

@@ -69,6 +69,13 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from hokage.memory.resolver import brain_root
+
+#: The active brain root. NOT `BRAIN` — that ignored
+#: HOKAGE_BRAIN_ROOT, so moving the brain gave Hokage one brain and this tool
+#: another, silently. See hokage.memory.resolver.brain_root.
+BRAIN = brain_root()
+
 from signal_lab import MIN_BARS_PER_HALF, Ctx, halves, load_bars  # noqa: E402
 from entry_module_lab import build_context  # noqa: E402
 from holdout_lab import live_pairs  # noqa: E402
@@ -76,7 +83,7 @@ from holdout_lab import live_pairs  # noqa: E402
 from bots.strategy.components.entries import ENTRY_MODULES  # noqa: E402
 from bots.strategy.components.mcx_entries import MCX_ENTRY_MODULES  # noqa: E402
 
-DB = ROOT / "hokage_brain" / "hokage.db"
+DB = BRAIN / "hokage.db"
 
 #: Bars held before the time exit. 4 x 15min = 1 hour, the horizon every other
 #: lab reports as primary.

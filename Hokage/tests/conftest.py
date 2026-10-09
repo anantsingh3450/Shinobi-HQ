@@ -28,6 +28,18 @@ _os.environ.pop("TELEGRAM_CHAT_ID", None)
 import tempfile as _tempfile
 _os.environ["HOKAGE_BRAIN_ROOT"] = _tempfile.mkdtemp(prefix="hokage_test_brain_")
 
+# And close the .env fallback. brain_root() reads HOKAGE_BRAIN_ROOT from `.env`
+# when the environment does not carry it, because the liveness probe, the prune
+# tool, the candle archive and the weekly audit are launched by PowerShell and
+# cron rather than through the bot's entry point. A test that clears the
+# variable set above would otherwise fall through to `.env` and resolve the
+# REAL brain -- the 2026-07-13 incident, reintroduced by another route.
+#
+# A config seam rather than environment detection inside src, which Project Law
+# forbids (tests/test_no_mock_sniffing_in_src.py).
+from hokage.memory import resolver as _resolver
+_resolver.CONSULT_DOTENV = False
+
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
