@@ -32,6 +32,22 @@ $Root = 'C:\Users\anant\OneDrive\Documents\AI PROJECT\AI COMMAND CENTRE\Hokage'
 $Python = 'C:\Users\anant\AppData\Local\Python\pythoncore-3.14-64\python.exe'
 $Url = 'http://127.0.0.1:5000'
 $LoginWaitMinutes = 15
+$StopMarker = Join-Path $Root 'hokage_brain\state\stopped_deliberately.json'
+
+function Get-DeliberateStop {
+    # The reason recorded by Stop-Hokage.ps1, or $null. A corrupt marker counts
+    # as absent, matching tools/ops/liveness_probe.py: a launcher that refuses
+    # to run because of its own malformed state file is worse than no guard.
+    if (-not (Test-Path $StopMarker)) { return $null }
+    try {
+        $raw = Get-Content $StopMarker -Raw -Encoding UTF8
+        $reason = (ConvertFrom-Json $raw).reason
+        if ([string]::IsNullOrWhiteSpace($reason)) { return 'stopped on purpose' }
+        return $reason
+    } catch {
+        return $null
+    }
+}
 
 function Write-Step {
     param([string]$Text, [string]$Colour = 'Gray')
@@ -95,6 +111,30 @@ function Wait-Dashboard {
 }
 
 if ($Unattended) {
+    # A DELIBERATE STOP MEANS STOPPED.
+    #
+    # 2026-10-09 18:36: Hokage was stopped on purpose to prune a 1.5 GB audit
+    # table. Forty-three seconds later this script relaunched him, because the
+    # weekday task repeats every 15 minutes and the logon trigger fires two
+    # minutes after sign-in. The liveness probe then saw him up and cleared the
+    # marker, so the restart left no trace at all.
+    #
+    # The two halves made each other worse: Stop-Hokage.ps1 writes the marker
+    # to MUTE the "HOKAGE IS NOT TRADING" alarm, so the one thing that would
+    # have reported the unwanted restart had been silenced by the stop itself.
+    # The commander believes Hokage is down; Hokage is up and writing to the
+    # files being edited. That is how the CRUDEOIL park got silently reverted
+    # on 2026-08-26.
+    #
+    # An unattended trigger therefore never overrides a human decision. Only a
+    # human does, by running this script interactively.
+    $stopReason = Get-DeliberateStop
+    if ($stopReason) {
+        Write-Step "Hokage was stopped on purpose - NOT starting." 'Yellow'
+        Write-Step "Reason: $stopReason" 'DarkGray'
+        Write-Step 'Run this shortcut yourself to start him again.' 'DarkGray'
+        exit 0
+    }
     if (Test-Dashboard) {
         Write-Step 'Hokage already running; nothing to do.' 'Green'
         exit 0
@@ -123,6 +163,19 @@ Write-Host ''
 Write-Host '  HOKAGE' -ForegroundColor Green
 Write-Host '  ------' -ForegroundColor DarkGray
 Write-Host ''
+
+# --- 0. a human overrides his own earlier stop, but is told about it ---------
+# Running this script by hand IS the intent to start, so the marker is cleared
+# rather than obeyed. It is still worth saying out loud: the reason shown here
+# may be work that is only half finished.
+$stopReason = Get-DeliberateStop
+if ($stopReason) {
+    Write-Step 'Hokage was stopped on purpose:' 'Yellow'
+    Write-Step "  $stopReason" 'DarkGray'
+    Write-Step 'Starting anyway - you asked for it directly.' 'Cyan'
+    Write-Host ''
+    Remove-Item $StopMarker -Force -ErrorAction SilentlyContinue
+}
 
 # --- 1. make sure exactly one Hokage is serving -----------------------------
 if (Test-Dashboard) {

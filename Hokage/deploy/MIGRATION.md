@@ -108,12 +108,42 @@ is a problem to solve *before* migration day, not during it.
 ### 4. Move the brain — and leave the backups behind
 
 ```
-SEND          hokage_brain/hokage.db            ~1.4 GB   the live ledger
-SEND          hokage_brain/candles.db                     the compounding asset
+SEND          hokage_brain/hokage.db             ~17 MB   the live ledger
+SEND          hokage_brain/candles.db            ~6 MB    the compounding asset
 SEND          hokage_brain/portfolio/  research/  journal/  state/
-DO NOT SEND   hokage_brain/*.bak                ~2.3 GB   pre-restructure copies
+DO NOT SEND   any *.bak, anywhere              ~2.43 GB   pre-restructure copies
 DO NOT SEND   hokage_brain_archive/             ~478 MB
 DO NOT SEND   logs/
+```
+
+**The `.bak` exclusion has to be recursive, and an earlier version of this
+runbook got it wrong.** It said `DO NOT SEND hokage_brain/*.bak`, a top-level
+glob that catches one 828 MB file and misses four more:
+
+```
+hokage_brain/portfolio/paper_zerodha/archive/hokage_db_20260812_pre_archive.bak            641 MB
+hokage_brain/portfolio/paper_zerodha/archive/hokage_db_20260731_pre_mcx_consolidation.bak  441 MB
+hokage_brain/portfolio/paper_zerodha/archive/hokage_db_20260718_013240_pre_mcx_seed.bak    286 MB
+hokage_brain/portfolio/paper_zerodha/archive/hokage_db_20260717_085438_pre_capital_...bak  229 MB
+```
+
+Those are **database** snapshots living inside the *portfolio* tree — a line
+above says to SEND that tree. Following the old step would have dragged 1.6 GB
+of July ledger history onto a 20 GB VPS and quietly made the transfer the
+longest part of migration day. Exclude by pattern, not by location:
+
+```bash
+rsync -av --progress \
+  --exclude '*.bak' --exclude '*.bak.*' --exclude '*.bak.jsonl' \
+  --exclude 'logs/' \
+  hokage_brain/ hokage@<server>:/opt/hokage/hokage_brain/
+```
+
+Verify the size before you start, so a surprise is cheap:
+
+```bash
+du -sh hokage_brain
+find hokage_brain -name '*.bak*' -printf '%s\n' | awk '{s+=$1} END {print s/1e9 " GB excluded"}'
 ```
 
 The `.bak` files are July/August ledger snapshots. Keep them on the laptop.
