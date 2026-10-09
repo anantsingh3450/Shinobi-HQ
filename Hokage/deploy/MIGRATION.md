@@ -261,6 +261,36 @@ All safeties ON. Wire `StrictPaperModeRiskRule` first — it refuses LIVE
 execution and is currently registered nowhere, which means the one guard written
 specifically for this moment is not connected.
 
+#### A registered static IP is now a hard prerequisite
+
+The Kite Connect console carries this banner, seen 2026-10-09:
+
+> Starting April 1, 2026, API orders not placed from a registered static IP
+> will be rejected as per SEBI regulations. You can now register your static IP
+> from your profile page.
+
+**That date is six months past.** The rule is live now, not upcoming.
+
+It says *orders*. Paper mode places none — Hokage only pulls quotes and
+historical candles — so nothing is blocked today, and this has no bearing on
+the paper week in step 7. It blocks step 8 completely.
+
+This is the second independent reason for the server, and it turns the move
+from a convenience into a requirement for ever trading real money:
+
+- Home broadband is almost always a **dynamic** IP. There is nothing to
+  register, and whatever you registered would stop matching after a reconnect.
+- A VPS has a **static** IP by default. Register that one on the profile page.
+
+So the order is: provision the server, let it run paper for a week from its
+fixed address, register that address, and only then consider the canary. Doing
+the canary from the laptop would be rejected by the exchange regardless of how
+correct the code is.
+
+The docs at kite.trade do not mention this yet — only the console banner and
+the profile page do — so confirm the exact scope on the profile page before
+relying on any reading of it, including this one.
+
 ## Deploying changes afterwards
 
 Code does **not** propagate by itself:
