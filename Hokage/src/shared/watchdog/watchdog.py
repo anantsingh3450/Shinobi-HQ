@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, time as dt_time, timezone
 from typing import Any
 
 from hokage.memory.resolver import PathResolver
@@ -98,6 +98,48 @@ class Watchdog:
     #: stamped by a timer (see start_subsystem_heartbeats) and proves only that
     #: the process is running.
     REAL_HEARTBEAT_SUBSYSTEMS = ("strategy_engine", "market_data")
+
+    #: The widest window in which a quote could come back: MCX trades
+    #: 09:00-23:30 IST and NSE/BSE 09:15-15:30 sits inside it. Mirrors the
+    #: canonical definition in integrations/brokers/session_manager.py, kept
+    #: local because core infrastructure must not depend on a broker
+    #: integration to decide whether to log.
+    FEED_WINDOW_START_IST = dt_time(9, 0)
+    FEED_WINDOW_END_IST = dt_time(23, 30)
+
+    @classmethod
+    def feed_expected_now(cls, now_local: datetime | None = None) -> bool:
+        """Whether a market_data heartbeat should exist at all right now.
+
+        `market_data` publishes ONLY after a quote actually comes back, so
+        outside trading hours it correctly goes quiet. The staleness check had
+        no idea, and logged an ERROR every six seconds for the whole of every
+        night and every weekend.
+
+        Measured 2026-10-12: 5,167 ERROR lines in one day's log, roughly 570
+        an hour from midnight to the open, every one of them
+        "Subsystem 'market_data' has a stale heartbeat" with an age that just
+        counted up through the weekend. Worse, each pass also wrote an
+        incident: `watchdog_incidents` held 47,457 rows and 100% of them were
+        heartbeat_freshness. The forensic journal of things going wrong
+        consisted entirely of one thing that was not wrong, and a real error
+        in that log was effectively invisible.
+
+        This narrows WHEN the alarm applies and never what it means. Inside
+        the window the check is untouched, and `strategy_engine` is untouched
+        in all cases — the scan loop beats whether or not the market is open,
+        which is exactly how it stayed healthy all weekend while market_data
+        did not. The seven-days-blind-on-a-dead-token case this check was
+        built for happened during market hours and is still caught.
+
+        A market holiday falls inside the window, so the alarm still fires on
+        one. That is the safe direction to be wrong in, and it is a handful of
+        days a year rather than every night.
+        """
+        now = now_local or datetime.now()
+        if now.weekday() >= 5:
+            return False
+        return cls.FEED_WINDOW_START_IST <= now.time() < cls.FEED_WINDOW_END_IST
 
     def start_subsystem_heartbeats(self) -> None:
         """Stamp a liveness heartbeat for subsystems that have no real publisher.
@@ -312,11 +354,25 @@ class Watchdog:
             since_boot = (now - self.process_started_at).total_seconds()
             from_this_run = bool(hb) and hb.timestamp >= self.process_started_at
 
+            # A quiet feed outside trading hours is correct, not a fault.
+            # Scoped to market_data: strategy_engine beats whether or not the
+            # market is open, which is why it stayed healthy all weekend while
+            # market_data did not. See feed_expected_now.
+            feed_quiet_is_expected = (
+                sub == "market_data" and not self.feed_expected_now()
+            )
+
             if not from_this_run:
                 if since_boot <= self.boot_grace_sec:
                     logger.debug(
                         f"Watchdog: Subsystem '{sub}' has not published yet "
                         f"({since_boot:.0f}s into boot, grace {self.boot_grace_sec:.0f}s)."
+                    )
+                    continue
+                if feed_quiet_is_expected:
+                    logger.debug(
+                        f"Watchdog: Subsystem '{sub}' has published nothing since "
+                        f"boot, but the market is closed — expected."
                     )
                     continue
                 stale_subsystems.append(sub)
@@ -327,6 +383,12 @@ class Watchdog:
             else:
                 age = (now - hb.timestamp).total_seconds()
                 if age > threshold:
+                    if feed_quiet_is_expected:
+                        logger.debug(
+                            f"Watchdog: Subsystem '{sub}' heartbeat is {age:.0f}s "
+                            f"old, but the market is closed — expected."
+                        )
+                        continue
                     stale_subsystems.append(sub)
                     logger.error(
                         f"Watchdog: Subsystem '{sub}' has a stale heartbeat "
