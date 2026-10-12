@@ -2,6 +2,7 @@ from __future__ import annotations
 import os
 import time
 import logging
+import re
 import threading
 from datetime import datetime, timezone
 from typing import Any
@@ -14,6 +15,34 @@ from integrations.brokers.session_manager import KolkataTime
 from integrations.llm.processor import LLMProcessor
 
 logger = logging.getLogger("Hokage.TelegramBot")
+
+#: Matches a Telegram bot token wherever it appears in a URL: the numeric bot
+#: id, a colon, then the secret.
+_TOKEN_IN_URL = re.compile(r"/bot\d+:[A-Za-z0-9_\-]+")
+
+
+def _scrub(text: object) -> str:
+    """Remove the bot token from anything about to be logged.
+
+    `requests` puts the FULL URL in its exception text, and the Telegram API
+    carries the bot token in the path. So a network failure logged the live
+    credential in plaintext:
+
+        Failed to send Telegram message: HTTPSConnectionPool(
+        host='api.telegram.org', ...) Max retries exceeded with url:
+        /bot<ID>:<SECRET>/sendMessage ...
+
+    Counted on 2026-10-12 after a brief DNS outage: 45 occurrences in the
+    current log, 485 across rotated logs, 527 more under logs/. Anyone with
+    read access to a log file had the token, and with it the ability to read
+    and send every message on the commander's Telegram channel.
+
+    `_audit` was already written never to log the token. This path bypassed
+    that care entirely, because nobody writes the credential here -- requests
+    does, inside an exception nobody reads until something breaks.
+    """
+    return _TOKEN_IN_URL.sub("/bot<REDACTED>", str(text))
+
 
 class TelegramBotUplink:
     """Manages Telegram bot communications, TOTP token requests, fills/exits and EOD updates."""
@@ -59,7 +88,7 @@ class TelegramBotUplink:
             if path.exists():
                 return json.loads(path.read_text(encoding="utf-8")).get("last_totp_request_date")
         except Exception as e:
-            logger.warning(f"Failed to load Telegram login-prompt state: {e}")
+            logger.warning(f"Failed to load Telegram login-prompt state: {_scrub(e)}")
         return None
 
     def _save_prompt_state(self, date_str: str) -> None:
@@ -69,7 +98,7 @@ class TelegramBotUplink:
                 json.dumps({"last_totp_request_date": date_str}), encoding="utf-8"
             )
         except Exception as e:
-            logger.warning(f"Failed to save Telegram login-prompt state: {e}")
+            logger.warning(f"Failed to save Telegram login-prompt state: {_scrub(e)}")
 
     def _mark_prompted(self, date_str: str) -> None:
         """Record that the day's login prompt is genuinely settled — either it
@@ -179,18 +208,18 @@ class TelegramBotUplink:
             # Ugly beats unsent.
             if res.status_code == 400 and "parse" in res.text.lower():
                 logger.warning(
-                    f"Telegram rejected Markdown ({res.text}); resending as plain text."
+                    f"Telegram rejected Markdown ({_scrub(res.text)}); resending as plain text."
                 )
                 payload.pop("parse_mode", None)
                 retry = requests.post(url, json=payload, timeout=10)
                 if retry.status_code == 200:
                     self._audit("sent", text, "plain-text fallback")
                     return True
-                logger.error(f"Telegram plain-text retry also failed {retry.status_code}: {retry.text}")
+                logger.error(f"Telegram plain-text retry also failed {_scrub(retry.status_code)}: {_scrub(retry.text)}")
                 return False
-            logger.error(f"Telegram API error {res.status_code}: {res.text}")
+            logger.error(f"Telegram API error {_scrub(res.status_code)}: {_scrub(res.text)}")
         except Exception as e:
-            logger.error(f"Failed to send Telegram message: {e}")
+            logger.error(f"Failed to send Telegram message: {_scrub(e)}")
         self._audit("NOT SENT", text)
         return False
 
@@ -395,7 +424,7 @@ class TelegramBotUplink:
         try:
             body = explain(chosen, audience)
         except Exception as exc:
-            logger.error(f"Explaining a trade failed: {exc}")
+            logger.error(f"Explaining a trade failed: {_scrub(exc)}")
             return "I could not put that trade into words just now."
 
         head = self._instrument_line(getattr(chosen, "tradingsymbol", ""))
@@ -445,7 +474,7 @@ class TelegramBotUplink:
 
             decisions = list(DecisionJournalSystem().load_no_trade_decisions())
         except Exception as exc:
-            logger.error(f"Could not read the no-trade journal: {exc}")
+            logger.error(f"Could not read the no-trade journal: {_scrub(exc)}")
             return ("I keep a record of every refusal, but I could not read it "
                     "just now, so I will not guess at the reason.")
 
@@ -560,7 +589,7 @@ class TelegramBotUplink:
             kite.profile()
             return True
         except Exception as e:
-            logger.warning(f"Broker session validation failed: {e}")
+            logger.warning(f"Broker session validation failed: {_scrub(e)}")
             return False
 
     def _run_loop(self) -> None:
@@ -616,7 +645,7 @@ class TelegramBotUplink:
                                         "Morning login prompt failed to send; will retry (day NOT marked as prompted)."
                                     )
                         except Exception as e:
-                            logger.error(f"Failed to generate morning login brief: {e}")
+                            logger.error(f"Failed to generate morning login brief: {_scrub(e)}")
 
                 # 1.5 Handle daily 09:00 AM IST Connection Confirmation
                 if ist_now.hour >= 9:
@@ -635,7 +664,7 @@ class TelegramBotUplink:
                     self._check_telegram_updates()
                     
             except Exception as e:
-                logger.error(f"Error in Telegram Uplink run loop: {e}")
+                logger.error(f"Error in Telegram Uplink run loop: {_scrub(e)}")
                 
             time.sleep(5.0)
 
@@ -659,7 +688,7 @@ class TelegramBotUplink:
             if answer.text.strip():
                 return answer.text
         except Exception as exc:
-            logger.error(f"Grounded chat failed on Telegram: {exc}")
+            logger.error(f"Grounded chat failed on Telegram: {_scrub(exc)}")
 
         handler = self.command_handler
         orch = getattr(handler, "orchestrator", None) if handler is not None else None
@@ -670,7 +699,7 @@ class TelegramBotUplink:
                 engine = CommanderConversationEngine(orch, IntelligenceCache(orch.resolver.resolve_brain_root()))
                 return engine.respond(text)
             except Exception as e:
-                logger.error(f"Conversation engine failed on Telegram, using LLM fallback: {e}")
+                logger.error(f"Conversation engine failed on Telegram, using LLM fallback: {_scrub(e)}")
         return self.llm_processor.generate_response(text)
 
     def _try_natural_trade(self, text: str) -> str | None:
@@ -784,7 +813,7 @@ class TelegramBotUplink:
                                 try:
                                     refreshed = manager.try_reconnect()
                                 except Exception as exc:
-                                    logger.error(f"Broker session refresh failed after /token: {exc}")
+                                    logger.error(f"Broker session refresh failed after /token: {_scrub(exc)}")
                             self.send_message(
                                 "✅ *Access Granted*. Vault updated. "
                                 + ("Live session refreshed — scanning has resumed."
@@ -822,7 +851,7 @@ class TelegramBotUplink:
                                 ack = self.command_handler.handle_remote_command(text)
                                 self.send_message(ack)
                             except Exception as e:
-                                logger.error(f"Control command {first} failed: {e}")
+                                logger.error(f"Control command {first} failed: {_scrub(e)}")
                                 self.send_message(
                                     f"❌ Command {self.escape_markdown(first)} failed: {self.escape_markdown(e)}"
                                 )
@@ -857,7 +886,7 @@ class TelegramBotUplink:
                             else:
                                 self.send_message(self._conversational_reply(text))
                         except Exception as e:
-                            logger.error(f"Failed to generate response for Telegram: {e}")
+                            logger.error(f"Failed to generate response for Telegram: {_scrub(e)}")
                             self.send_message("❌ Commander, I hit an error processing that. Try again?")
         except Exception as e:
             logger.debug(f"Failed to check Telegram updates: {e}")
