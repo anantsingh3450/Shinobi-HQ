@@ -11,6 +11,7 @@ Provides independent specialist engines to improve trade quality and risk manage
 """
 from __future__ import annotations
 
+import math
 import logging
 from datetime import datetime, timezone, time
 
@@ -148,9 +149,16 @@ class VolumeEngine:
     ) -> tuple[bool, str]:
         """Volume gate with entry-family-aware thresholds.
 
-        entry_family "breakout": requires a surge (>= 1.2x average) to reject
-        fake breakouts. Any other family (trend/pullback/mean-reversion):
-        requires only a live tape (>= 0.8x average).
+        entry_family "breakout": requires a surge of at least
+        BREAKOUT_MIN_RATIO to reject fake breakouts. Any other family
+        (trend/pullback/mean-reversion): requires only a live tape, at least
+        TREND_MIN_RATIO.
+
+        The thresholds are NAMED here, not written out as numbers. This
+        docstring used to say ">= 1.2x" and ">= 0.8x" while the constants
+        were 1.1 and 0.5 — both stale after the bar was lowered, and a
+        docstring that states the wrong threshold is how someone later
+        "corrects" a risk constant to match a comment.
         """
         if avg_volume <= 0:
             return True, "Volume baseline unavailable."
@@ -160,9 +168,23 @@ class VolumeEngine:
         min_ratio = self.BREAKOUT_MIN_RATIO if is_breakout else self.TREND_MIN_RATIO
         if volume_ratio < min_ratio:
             label = "FAKE_BREAKOUT" if is_breakout else "THIN_TAPE"
+            # TRUNCATE, do not round. The journal carried "Volume ratio 0.50x
+            # < required 0.50x" three times on 2026-10-12: the real ratio was
+            # a hair under 0.5 and .2f rounded both sides to the same number,
+            # so the refusal contradicted itself and read like a bug. The gate
+            # was correct; only the sentence was wrong.
+            #
+            # More decimals alone does not fix it -- 0.4996 rounds to 0.500 at
+            # three places and contradicts again, just more rarely. A number
+            # that failed a threshold has to be reported in the direction that
+            # PRESERVES the inequality, so the shown ratio is floored and can
+            # never read as greater than or equal to the bar it missed.
+            #
+            # Explaining the refusal is the whole point of writing one down.
+            shown = math.floor(volume_ratio * 1000) / 1000
             return False, (
-                f"{label}: Volume ratio {volume_ratio:.2f}x < required "
-                f"{min_ratio:.2f}x ({entry_family} entry)."
+                f"{label}: Volume ratio {shown:.3f}x < required "
+                f"{min_ratio:.3f}x ({entry_family} entry)."
             )
         if volume_ratio >= 2.0:
             return True, f"ABNORMAL_VOLUME: Entry confirmed by strong volume flow ({volume_ratio:.2f}x)."
