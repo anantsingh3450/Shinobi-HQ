@@ -32,7 +32,18 @@ try {
 
     & $Python (Join-Path $Root 'tools\research\candle_archive.py') sync 2>&1 |
         Out-File -FilePath $Log -Append -Encoding utf8
-    exit $LASTEXITCODE
+    $code = $LASTEXITCODE
+    if ($code -ne 0) {
+        "$(Get-Date -Format 'yyyy-MM-dd HH:mm') candle sync FAILED: exit $code" |
+            Out-File -FilePath $Log -Append -Encoding utf8
+    }
+    exit $code
+} catch {
+    # Without this a throw left no line at all and the archive simply stopped
+    # growing, which is the quietest way for Hokage to stop learning.
+    "$(Get-Date -Format 'yyyy-MM-dd HH:mm') candle sync FAILED before completion: $($_.Exception.Message)" |
+        Out-File -FilePath $Log -Append -Encoding utf8
+    exit 1
 } finally {
     Pop-Location
 }
