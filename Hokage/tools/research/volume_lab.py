@@ -61,6 +61,10 @@ from entry_module_lab import build_context  # noqa: E402
 
 from bots.autonomous.intelligence import VolumeEngine  # noqa: E402
 from bots.strategy.components.entries import ENTRY_MODULES  # noqa: E402
+from bots.strategy.components.mcx_entries import MCX_ENTRY_MODULES  # noqa: E402
+from hokage.memory.resolver import brain_root  # noqa: E402
+
+BRAIN = brain_root()
 
 #: Mirrors AutonomousTradingBot._VOLUME_PROFILE_LOOKBACK_DAYS / _MIN_PRIOR_SESSIONS.
 LOOKBACK_DAYS = 14
@@ -69,12 +73,97 @@ MIN_PRIOR_SESSIONS = 3
 HORIZON = 4          # 60 minutes, the primary horizon everywhere else
 MIN_N = 30
 
+#: Minimum n on ONE SIDE of the split before an edge or a t is printed.
+#:
+#: MIN_N guards the COMBINED count, which leaves a side free to be tiny. On
+#: 2026-10-12 NATURALGAS TRAIN printed:
+#:
+#:     entry-sessionshift-mcx-v1 blocked  2  +5.793  +5793103448.28
+#:
+#: a t-statistic of 5.8 billion from two observations with almost no variance
+#: between them. It formats like overwhelming significance and means nothing.
+#: The COUNT is still shown below this bar -- "blocked 2" is the useful fact,
+#: because it says the gate barely binds -- but the statistics are withheld.
+MIN_SIDE_N = 10
+
 TRAIN = ("2026-03-01", "2026-06-15")
 HOLDOUT = ("2026-06-16", "2026-08-13")
 
 #: Only the futures-backed underlyings can be measured: SENSEX has no volume
 #: series at all, which is the finding rather than a limitation of this tool.
-SYMBOLS = ("NIFTY", "BANKNIFTY")
+SYMBOLS = ("NIFTY", "BANKNIFTY", "GOLDM", "SILVERM", "CRUDEOIL", "NATURALGAS")
+
+#: Symbols read from the candle archive instead of Kite.
+#:
+#: Kite DELISTS an expired futures contract along with its history, which is
+#: why every TRAIN window in this lab came back "0 bars": the 2026-03..06
+#: front-month contracts no longer exist to serve. The archive keeps every
+#: candle forever and still holds them -- GOLDM26SEPFUT (6,946 bars, expired
+#: 2026-09-01) and SILVERM26AUGFUT (7,924 bars, expired 2026-08-28) among
+#: them. That is the roll problem it was built for.
+#:
+#: The INDICES ARE NOT HERE, and that is deliberate. The archive stores the
+#: index itself (contract "NIFTY 50", "SENSEX"), and an index has no traded
+#: volume of its own: all 4,028 NIFTY rows and all 4,028 SENSEX rows carry
+#: volume 0.0. Reading them would compute a ratio out of zeros and print
+#: numbers that look real. Production reads index volume from the NFO
+#: front-month future, so this lab must too -- the same trap the module
+#: docstring records for SENSEX.
+ARCHIVE_SYMBOLS = ("GOLDM", "SILVERM", "CRUDEOIL", "NATURALGAS")
+
+
+def load_archive_bars(symbol: str, start: str, end: str) -> list[dict]:
+    """Candles from the archive, which keeps expired contracts Kite deletes.
+
+    Returns the same shape as load_futures_bars so split_by_gate cannot tell
+    them apart: dicts with date/open/high/low/close/volume.
+
+    REFUSES a symbol whose volume is entirely zero. Measuring a volume gate
+    against a series with no volume produces a ratio of zeros that formats
+    like a real number and means nothing, and that is exactly how an index
+    would slip in here.
+    """
+    import sqlite3
+
+    db = BRAIN / "candles.db"
+    if not db.exists():
+        raise ValueError("no candle archive at " + str(db))
+
+    conn = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)
+    try:
+        rows = conn.execute(
+            "SELECT ts, open, high, low, close, volume FROM candles "
+            "WHERE symbol = ? AND ts >= ? AND ts <= ? ORDER BY ts",
+            (symbol, start + " 00:00:00", end + " 23:59:59"),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        raise ValueError("archive has no " + symbol + " bars in " + start + ".." + end)
+
+    total_volume = sum((r[5] or 0.0) for r in rows)
+    if total_volume <= 0:
+        raise ValueError(
+            symbol + " has zero volume across all " + str(len(rows)) +
+            " archived bars — this series cannot measure a volume gate"
+        )
+
+    return [
+        {
+            "date": datetime.fromisoformat(r[0]),
+            "open": r[1], "high": r[2], "low": r[3], "close": r[4],
+            "volume": r[5] or 0.0,
+        }
+        for r in rows
+    ]
+
+
+def load_bars(symbol: str, start: str, end: str) -> list[dict]:
+    """Archive for MCX, Kite front-month futures for the indices."""
+    if symbol in ARCHIVE_SYMBOLS:
+        return load_archive_bars(symbol, start, end)
+    return load_futures_bars(symbol, start, end)
 
 
 def load_futures_bars(symbol: str, start: str, end: str) -> list[dict]:
@@ -170,8 +259,24 @@ def _stats(edges: list[float]) -> tuple[int, float, float]:
     return n, mean, mean / (math.sqrt(var / n) or 1e-9)
 
 
-def split_by_gate(symbol: str, bars: list[dict], module) -> dict[str, list[float]]:
-    """Forward edge of the signals the gate PASSES vs the ones it BLOCKS."""
+def split_by_gate(symbol: str, bars: list[dict], module,
+                  family: str = "breakout") -> dict[str, list[float]]:
+    """Forward edge of the signals the gate PASSES vs the ones it BLOCKS.
+
+    `family` decides WHICH BAR is being measured, and that was the hole here.
+    This function used to hardcode "breakout", so every run in this lab's life
+    measured BREAKOUT_MIN_RATIO (1.10x) and nothing ever measured
+    TREND_MIN_RATIO (0.50x) -- the bar that production actually applies to
+    trend/pullback/mean-reversion entries.
+
+    That matters because the trend bar is the one doing the blocking. On
+    2026-10-12 the index league produced seven signals and the gate refused
+    all seven at 0.31x-0.50x against the 0.50x trend bar, while the breakout
+    bar was never reached. The docstring above already notes the trend
+    threshold moved 0.8 -> 0.5 "argued from an incident rather than from a
+    measurement"; the instrument built to settle that question was only ever
+    pointed at the other one.
+    """
     engine = VolumeEngine()
     out = {"passed": [], "blocked": []}
     for i in range(42, len(bars) - HORIZON):
@@ -193,7 +298,7 @@ def split_by_gate(symbol: str, bars: list[dict], module) -> dict[str, list[float
         ratio = volume_ratio_at(bars, i)
         if ratio is None:
             continue  # production skips the gate here; not evidence either way
-        ok, _ = engine.validate_breakout(ratio, 1.0, "breakout")
+        ok, _ = engine.validate_breakout(ratio, 1.0, family)
         call = 1 if sig.direction == "long" else -1
         edge = ((bars[i + HORIZON]["close"] - ctx.price) * call) / ctx.atr
         out["passed" if ok else "blocked"].append(edge)
@@ -203,37 +308,50 @@ def split_by_gate(symbol: str, bars: list[dict], module) -> dict[str, list[float
 def main() -> int:
     print("=" * 88)
     print("  VOLUME LAB — does the gate add edge or remove it?")
-    print("  Breakout bar is " + format(VolumeEngine.BREAKOUT_MIN_RATIO, ".2f")
-          + "x of the time-of-day-normalised baseline.")
+    print("  BOTH bars, against the time-of-day-normalised baseline:")
+    print("    breakout " + format(VolumeEngine.BREAKOUT_MIN_RATIO, ".2f")
+          + "x   trend " + format(VolumeEngine.TREND_MIN_RATIO, ".2f") + "x")
+    print("  The trend bar is what production applies to trend/pullback/")
+    print("  mean-reversion entries, and it had never been measured.")
     print("  Measured on FRONT-MONTH FUTURES, the series production reads volume from.")
-    print("  SENSEX is absent because it has no volume series — see the docstring.")
+    print("  MCX reads the ARCHIVE (expired contracts Kite deletes); indices read")
+    print("  Kite front-month futures. SENSEX and the raw indices are absent from")
+    print("  the archive path: an index carries no volume of its own.")
     print("=" * 88)
 
-    modules = {getattr(m, "module_id", k): m for k, m in ENTRY_MODULES.items()}
+    index_modules = {getattr(m, "module_id", k): m for k, m in ENTRY_MODULES.items()}
+    mcx_modules = {getattr(m, "module_id", k): m for k, m in MCX_ENTRY_MODULES.items()}
     for symbol in SYMBOLS:
+        modules = mcx_modules if symbol in ARCHIVE_SYMBOLS else index_modules
+        source = "archive" if symbol in ARCHIVE_SYMBOLS else "kite futures"
         for label, (a, b) in (("TRAIN   ", TRAIN), ("HOLD-OUT", HOLDOUT)):
             try:
-                bars = load_futures_bars(symbol, a, b)
+                bars = load_bars(symbol, a, b)
             except Exception as exc:
                 print("  " + symbol + ": could not load bars (" + str(exc) + ")")
                 continue
             print("")
             print("  " + symbol + "  " + label + "  " + a + ".." + b
-                  + "   (" + str(len(bars)) + " bars)")
+                  + "   (" + str(len(bars)) + " bars, " + source + ")")
             print("      " + "module".ljust(26) + "gate".ljust(9)
                   + "n".rjust(5) + "edge_atr".rjust(11) + "t".rjust(8))
-            for mid in sorted(modules):
-                res = split_by_gate(symbol, bars, modules[mid])
-                if len(res["passed"]) + len(res["blocked"]) < MIN_N:
-                    continue
-                for side in ("passed", "blocked"):
-                    n, mean, t = _stats(res[side])
-                    if n < 2:
-                        print("      " + mid.ljust(26) + side.ljust(9)
-                              + str(n).rjust(5) + "  too few")
+            for family, bar in (("breakout", VolumeEngine.BREAKOUT_MIN_RATIO),
+                                ("trend", VolumeEngine.TREND_MIN_RATIO)):
+                print("      --- " + family + " bar " + format(bar, ".2f") + "x ---")
+                for mid in sorted(modules):
+                    res = split_by_gate(symbol, bars, modules[mid], family)
+                    if len(res["passed"]) + len(res["blocked"]) < MIN_N:
                         continue
-                    print("      " + mid.ljust(26) + side.ljust(9) + str(n).rjust(5)
-                          + format(mean, "+.3f").rjust(11) + format(t, "+.2f").rjust(8))
+                    for side in ("passed", "blocked"):
+                        n, mean, t = _stats(res[side])
+                        if n < MIN_SIDE_N:
+                            # Count shown, statistics withheld. See MIN_SIDE_N.
+                            print("      " + mid.ljust(26) + side.ljust(9)
+                                  + str(n).rjust(5)
+                                  + "   (n < " + str(MIN_SIDE_N) + ", no edge/t)")
+                            continue
+                        print("      " + mid.ljust(26) + side.ljust(9) + str(n).rjust(5)
+                              + format(mean, "+.3f").rjust(11) + format(t, "+.2f").rjust(8))
     print("")
     return 0
 
