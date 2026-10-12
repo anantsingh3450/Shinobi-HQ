@@ -58,6 +58,7 @@ from hokage.memory.resolver import (
 FALLBACK_ALLOWED = {
     "tools/ops/liveness_probe.py": "the watchdog must run when src does not import",
     "tools/ops/prune_audit_trail.py": "an ops tool must run on a broken tree",
+    "tools/ops/job_watch.py": "the staleness watch must run when src does not import",
 }
 
 
