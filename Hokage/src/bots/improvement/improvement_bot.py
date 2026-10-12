@@ -10,7 +10,7 @@ import json
 import logging
 import uuid
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from hokage.memory.resolver import PathResolver
@@ -579,7 +579,11 @@ class ImprovementBot:
             
             if count > 0 and count % 5 == 0:
                 logger.info(f"Autopsy threshold reached ({count}). Writing journal entry.")
-                patterns = self.detect_patterns("strat-autotrend-equities-v1")
+                # No strategy id. Autopsies do not carry one (absent in all
+                # 122 records on 2026-10-12), so the old argument
+                # "strat-autotrend-equities-v1" -- an id in neither
+                # portfolio -- was a label on pooled data, not a filter.
+                patterns = self.detect_patterns()
                 if patterns:
                     from integrations.llm.processor import LLMProcessor
                     llm = LLMProcessor()
@@ -595,41 +599,134 @@ class ImprovementBot:
         except Exception as e:
             logger.error(f"Failed to process TradeAutopsy: {e}")
 
-    def detect_patterns(self, strategy_id: str) -> dict[str, Any]:
-        """Analyze recent autopsies to find statistical edge patterns."""
+    #: Autopsies an ASSET needs before any rate is reported for it. Below this
+    #: the cell carries its count and nothing else — a win rate over three
+    #: trades is a coin, and printing one invites acting on it.
+    MIN_AUTOPSIES_PER_ASSET = 8
+
+    #: How far back to look. Autopsies go back to July; a regime from three
+    #: months ago should not dilute what is happening now.
+    PATTERN_WINDOW_DAYS = 90
+
+    def detect_patterns(self, window_days: int | None = None) -> dict[str, Any]:
+        """Win rate and stop behaviour PER UNDERLYING, never pooled.
+
+        WHAT THIS USED TO DO. It accepted a `strategy_id`, ignored it, pooled
+        every autopsy ever written across every strategy and every symbol, and
+        returned one blended win rate with the ignored id attached as a label.
+        `process_autopsy` passed "strat-autotrend-equities-v1", an id in
+        neither portfolio, and the result was fed to an LLM that wrote the
+        commander a confident journal entry about it.
+
+        Measured on the live file, 2026-10-12, 122 autopsies:
+
+            pooled        28.7%
+            CRUDEOIL      10.6%   (47 autopsies)
+            SILVERM       52.9%   (17)
+            GOLDM         43.5%   (23)
+
+        A fivefold spread flattened into one number, and the pooled figure was
+        dominated by CRUDEOIL — an asset PARKED weeks ago for having no
+        measurable edge. So the "insight" was mostly the failure of something
+        already retired, burying the fact that the metals are the one
+        confirmed edge in the system. That is the same mistake the arena
+        already learned once: when strategies trade different markets, a
+        pooled figure measures the market, not the strategy.
+
+        `symbol` is the full option contract (CRUDEOIL26JUL7750CE), so
+        grouping on it raw yields sixty cells of n=1. Group on the underlying.
+
+        MISSING IS NOT A VALUE. The old code read `vix_at_entry` with a
+        default of 15, so an absent measurement became a plausible number
+        indistinguishable from a real one. Missing fields are counted and
+        excluded here — max_adverse_excursion_pct is absent in 35 of 122
+        records, which is worth knowing rather than papering over.
+        """
         if not self._autopsies_file.exists():
             return {}
-        
+
         try:
-            autopsies = []
+            from shared.instrument import underlying_of
+
+            cutoff = datetime.now(timezone.utc) - timedelta(
+                days=window_days if window_days is not None else self.PATTERN_WINDOW_DAYS
+            )
+
+            autopsies: list[dict[str, Any]] = []
+            skipped_undated = 0
             with self._autopsies_file.open("r", encoding="utf-8") as fh:
                 for line in fh:
-                    if line.strip():
-                        autopsies.append(json.loads(line.strip()))
-            
-            if len(autopsies) < 5:
-                return {}
-            
-            # Basic pattern detection
-            wins = [a for a in autopsies if a.get("pnl", 0) > 0]
-            losses = [a for a in autopsies if a.get("pnl", 0) <= 0]
-            
-            win_rate = len(wins) / len(autopsies)
-            avg_win_vix = sum(w.get("vix_at_entry", 15) for w in wins) / max(1, len(wins))
-            avg_loss_vix = sum(l.get("vix_at_entry", 15) for l in losses) / max(1, len(losses))
-            
-            # Identify if stop losses are too tight (many losses with max_favorable > 0 but max_adverse hitting stop)
-            premature_stops = len([l for l in losses if l.get("max_favorable_excursion_pct", 0) > 1.0])
-            stop_tightness_issue = premature_stops > len(losses) * 0.5
-            
+                    if not line.strip():
+                        continue
+                    rec = json.loads(line.strip())
+                    stamp = rec.get("timestamp")
+                    if not stamp:
+                        skipped_undated += 1
+                        continue
+                    try:
+                        when = datetime.fromisoformat(str(stamp))
+                        if when.tzinfo is None:
+                            when = when.replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        skipped_undated += 1
+                        continue
+                    if when >= cutoff:
+                        autopsies.append(rec)
+
+            by_asset: dict[str, list[dict[str, Any]]] = {}
+            for rec in autopsies:
+                by_asset.setdefault(underlying_of(rec.get("symbol", "")), []).append(rec)
+
+            assets: dict[str, Any] = {}
+            for asset, rows in sorted(by_asset.items()):
+                cell: dict[str, Any] = {"n": len(rows)}
+
+                if len(rows) < self.MIN_AUTOPSIES_PER_ASSET:
+                    # Counted, but no rate. Absence announces itself.
+                    cell.update({
+                        "win_rate": None,
+                        "stop_tightness_issue": None,
+                        "insufficient": True,
+                        "needs": self.MIN_AUTOPSIES_PER_ASSET,
+                    })
+                    assets[asset] = cell
+                    continue
+
+                wins = [r for r in rows if (r.get("pnl") or 0) > 0]
+                losses = [r for r in rows if (r.get("pnl") or 0) <= 0]
+                cell["wins"] = len(wins)
+                cell["win_rate"] = round(len(wins) / len(rows), 4)
+                cell["insufficient"] = False
+
+                def _mean(records, field):
+                    vals = [r[field] for r in records
+                            if isinstance(r.get(field), (int, float))]
+                    return (round(sum(vals) / len(vals), 4) if vals else None), len(records) - len(vals)
+
+                cell["avg_win_vix"], cell["avg_win_vix_missing"] = _mean(wins, "vix_at_entry")
+                cell["avg_loss_vix"], cell["avg_loss_vix_missing"] = _mean(losses, "vix_at_entry")
+
+                # Stops cutting winners short: a loss that had been meaningfully
+                # in profit first. Reported per asset, because one percentage
+                # threshold cannot mean the same thing on NIFTY and NATURALGAS.
+                measurable = [r for r in losses
+                              if isinstance(r.get("max_favorable_excursion_pct"), (int, float))]
+                premature = [r for r in measurable
+                             if r["max_favorable_excursion_pct"] > 1.0]
+                cell["premature_stops"] = len(premature)
+                cell["losses_with_excursion"] = len(measurable)
+                cell["losses_missing_excursion"] = len(losses) - len(measurable)
+                cell["stop_tightness_issue"] = (
+                    len(premature) > len(measurable) * 0.5 if measurable else None
+                )
+                assets[asset] = cell
+
             return {
-                "strategy_id": strategy_id,
-                "win_rate": win_rate,
-                "avg_win_vix": avg_win_vix,
-                "avg_loss_vix": avg_loss_vix,
-                "stop_tightness_issue": stop_tightness_issue,
-                "recent_trades": len(autopsies),
-                "premature_stops": premature_stops
+                "window_days": window_days if window_days is not None else self.PATTERN_WINDOW_DAYS,
+                "autopsies_in_window": len(autopsies),
+                "skipped_undated": skipped_undated,
+                "min_per_asset": self.MIN_AUTOPSIES_PER_ASSET,
+                "assets": assets,
             }
         except Exception as e:
             logger.error(f"Failed to detect patterns: {e}")
@@ -673,36 +770,109 @@ class ImprovementBot:
             "changes come from tools/research/sweep_lab.py as PENDING proposals."
         )
 
+    #: Trades and win rate a PROBATION strategy needs before promotion is even
+    #: PROPOSED. Deliberately unchanged from when promotion was automatic — the
+    #: bar was never the problem, acting on it alone was.
+    PROMOTION_MIN_TRADES = 10
+    PROMOTION_MIN_WIN_RATE = 55.0
+
     def evaluate_promotions(self) -> None:
-        """Evaluate probation strategies for promotion to LIVE/ACTIVE."""
+        """PROPOSE promotion of probation strategies. Never perform one.
+
+        THIS USED TO PROMOTE BY ITSELF. A PROBATION strategy with
+        trade_count >= 10 and win_rate >= 55% was flipped to ACTIVE, written to
+        disk and announced as "Automatically promoted to ACTIVE/LIVE mode",
+        with no commander in the loop. It is reached from `process_autopsy`,
+        which runs it every five trades.
+
+        Promotion RAISES RISK. An ACTIVE strategy takes real entries and
+        competes for a chest; a PROBATION one does not. The evolution policy
+        has exactly one rule about that — reducing risk may act alone, raising
+        risk always asks — and it is the same line the commander's standing
+        instruction draws around his capital. Retirement stayed autonomous
+        because an archived strategy cannot open anything. This is the mirror
+        case and it was on the wrong side of the line.
+
+        THE EVIDENCE WAS ALSO WRONG. `win_rate["DEFAULT"]` is pooled across
+        every asset a strategy trades, and win rate does not track
+        profitability. Measured in this very portfolio on 2026-10-12:
+
+            strat-trendrider-mcx-v1   win_rate 60.0%   realized -17,502
+            strat-macrobreakout-...   win_rate 100.0%  trade_count 1
+
+        TrendRider would have cleared a 55% bar while having lost seventeen
+        thousand rupees. Ten pooled trades is also far below the MIN_N the
+        weekly audit requires, and carries no hold-out split, no production
+        stop and no t-statistic — the three things that make a number mean
+        anything here.
+
+        So: still measured, still reported, still at the same bar. Written as
+        a PENDING_APPROVAL proposal that only `apply_improvement_proposal` can
+        act on, and that requires an explicit commander name.
+        """
         strategies = self.portfolio_manager.portfolio.get("strategies", {})
-        promoted = False
+
+        existing = self.load_proposals()
+        existing_keys = {
+            (p["strategy_id"], p["asset"], p["action"]): p["proposal_id"]
+            for p in existing if p.get("status") == "PENDING_APPROVAL"
+        }
+        new_proposals: list[dict[str, Any]] = []
+
         for s_id, strat in strategies.items():
-            if strat.get("status") == "PROBATION":
-                # Check metrics
-                wr = strat.get("win_rate", {}).get("DEFAULT", 0)
-                tc = strat.get("trade_count", {}).get("DEFAULT", 0)
-                
-                if tc >= 10 and wr >= 55.0:
-                    strat["status"] = "ACTIVE"
-                    strat["history"].append({
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "event": "Promoted to ACTIVE due to proven paper/shadow performance."
-                    })
-                    promoted = True
-                    
-                    try:
-                        from integrations.notifications.telegram_bot import TelegramBotUplink
-                        tb = TelegramBotUplink()
-                        tb.send_message(
-                            f"🚀 *STRATEGY PROMOTION* 🚀\n"
-                            f"Strategy `{strat.get('name')}` ({s_id}) has proven itself in Shadow/Paper trading.\n"
-                            f"• Trades: {tc}\n"
-                            f"• Win Rate: {wr}%\n"
-                            f"Automatically promoted to ACTIVE/LIVE mode."
-                        )
-                    except Exception as e:
-                        logger.error(f"Error sending promotion alert: {e}")
-                        
-        if promoted:
-            self.portfolio_manager.save()
+            if strat.get("status") != "PROBATION":
+                continue
+
+            wr = (strat.get("win_rate") or {}).get("DEFAULT", 0)
+            tc = (strat.get("trade_count") or {}).get("DEFAULT", 0)
+            if tc < self.PROMOTION_MIN_TRADES or wr < self.PROMOTION_MIN_WIN_RATE:
+                continue
+
+            self._create_proposal_record(
+                strat_id=s_id,
+                strat_name=strat.get("name", s_id),
+                asset="DEFAULT",
+                action="promote_to_active",
+                prev_values={"status": "PROBATION"},
+                new_values={"status": "ACTIVE"},
+                rationale=(
+                    f"{tc} paper/shadow trades at a {wr}% win rate, clearing the "
+                    f"{self.PROMOTION_MIN_TRADES}-trade / "
+                    f"{self.PROMOTION_MIN_WIN_RATE}% bar. NOTE: this win rate is "
+                    f"pooled across every asset and win rate does not track "
+                    f"profitability — TrendRider showed 60% while losing 17,502. "
+                    f"Confirm against the weekly audit's hold-out edge before "
+                    f"approving."
+                ),
+                expected_imp="Strategy begins taking real entries and competing for a chest.",
+                proposals=new_proposals,
+                existing_keys=existing_keys,
+            )
+
+        if not new_proposals:
+            return
+
+        self._save_proposals_atomic(existing + new_proposals)
+        logger.info(
+            "Proposed %d promotion(s) for commander approval; none applied.",
+            len(new_proposals),
+        )
+
+        try:
+            from integrations.notifications.telegram_bot import TelegramBotUplink
+
+            tb = TelegramBotUplink()
+            if tb.enabled:
+                lines = "\n".join(
+                    f"- {p['strategy_name']} ({p['strategy_id']})"
+                    for p in new_proposals
+                )
+                tb.send_message(
+                    "PROMOTION PROPOSED - not applied\n\n" + lines +
+                    "\n\nPromotion raises risk, so it is never automatic. "
+                    "The win rate behind it is pooled across assets and does "
+                    "not track profitability. Check the weekly audit's "
+                    "hold-out edge, then approve from the dashboard."
+                )
+        except Exception as e:
+            logger.error(f"Error sending promotion proposal alert: {e}")

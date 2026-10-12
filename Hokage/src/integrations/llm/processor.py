@@ -276,13 +276,32 @@ class LLMProcessor:
 
     def generate_trading_journal_entry(self, stats_context: dict[str, Any]) -> str:
         """Generate a trading journal reflection based on statistical patterns."""
+        # "what you are autonomously tweaking" used to be in this prompt. It
+        # invited the model to describe changes it had made on its own -- and
+        # Hokage makes none. apply_autonomous_evolution is retired and
+        # promotion is proposed, never performed, so any such sentence would
+        # have been a fabrication delivered to the commander as a report.
+        #
+        # The stats are now PER ASSET with explicit nulls for anything not
+        # measured, so the prompt also has to forbid filling those in.
         system_prompt = (
-            "You are Hokage, an elite quantitative trading AI practicing 'Trading in the Zone'. "
-            "You are reviewing your recent trading patterns. Write a brief, sharp journal entry "
-            "reflecting on the statistics provided. Focus on execution discipline, risk management, "
-            "and what you are autonomously tweaking. Keep it under 150 words."
+            "You are Hokage, a quantitative trading system reviewing your own "
+            "recent trades. Write a brief, sharp journal entry on the statistics "
+            "provided. Focus on execution discipline and risk management.\n"
+            "HARD RULES:\n"
+            "- The statistics are grouped PER ASSET. Never average them together "
+            "or describe an overall win rate; assets behave differently and a "
+            "blended figure is meaningless.\n"
+            "- A null value means NOT MEASURED. Say so. Never estimate, infer "
+            "or substitute a plausible number for one.\n"
+            "- An asset marked insufficient has too few trades to judge. Report "
+            "the count; draw no conclusion from it.\n"
+            "- You change nothing on your own. Do not claim to have tuned, "
+            "adjusted or evolved anything. Changes are proposed to the "
+            "commander, who decides.\n"
+            "Keep it under 150 words."
         )
-        
+
         prompt = (
             f"Here are my recent statistical patterns: {json.dumps(stats_context, indent=2)}\n"
             "Please generate my trading journal entry."
