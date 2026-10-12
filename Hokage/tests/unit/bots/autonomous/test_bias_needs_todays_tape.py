@@ -38,6 +38,11 @@ def _bot(candles):
     price_source.get_historical_candles.return_value = res
     bot = SimpleNamespace(
         orchestrator=SimpleNamespace(price_source=price_source),
+        # Mirrors every class constant the bias engine reads. A missing one
+        # does not fail loudly: the engine's broad except turns the
+        # AttributeError into a debug line and a None verdict, which reads
+        # exactly like 'no opinion'.
+        _INTRADAY_LOOKBACK_DAYS=AutonomousTradingBot._INTRADAY_LOOKBACK_DAYS,
         _BIAS_MIN_SESSION_BARS=AutonomousTradingBot._BIAS_MIN_SESSION_BARS,
         _BIAS_VWAP_ATR_FRACTION=AutonomousTradingBot._BIAS_VWAP_ATR_FRACTION,
         _BIAS_RULE_BY_SYMBOL=AutonomousTradingBot._BIAS_RULE_BY_SYMBOL,

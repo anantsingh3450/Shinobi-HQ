@@ -994,7 +994,7 @@ class AutonomousTradingBot:
             instrument = self.orchestrator.price_source.resolve_instrument(symbol)
             req = HistoricalDataRequest(
                 instrument=instrument,
-                start=datetime.now(UTC) - timedelta(days=2),
+                start=datetime.now(UTC) - timedelta(days=self._INTRADAY_LOOKBACK_DAYS),
                 end=datetime.now(UTC),
                 interval=CandleInterval.FIFTEEN_MINUTES
             )
@@ -1123,6 +1123,29 @@ class AutonomousTradingBot:
     _REENTRY_COOLDOWN_MINUTES = 15
     #: India VIX percentile above which BUYING options is blocked — premium is
     #: statistically rich and the move must beat an inflated price (Natenberg).
+    #: Calendar days of 15-minute history to request for ATR, the bias engine
+    #: and MarketContext.
+    #:
+    #: CALENDAR DAYS ARE NOT TRADING DAYS, and that was the bug. ATR asked for
+    #: 2 days and needed 14 bars; the bias engine and MarketContext asked for 3
+    #: and needed 21. On a MONDAY, "now - 2 days" reaches back to Saturday, the
+    #: market was shut, and the window holds only Monday's own bars. The 14th
+    #: fifteen-minute bar does not exist until three and a half hours after the
+    #: open.
+    #:
+    #: Measured 2026-10-12, a Monday: ATR was unavailable for all seven assets
+    #: from 10:00 to 12:15, and NIFTY reached the SIZING stage three times in
+    #: that window and stood down -- "Cannot size NIFTY: ATR unavailable" at
+    #: 10:31, 10:45 and 11:00. Three entries that had already passed every gate
+    #: were lost to a lookback, not to a judgement.
+    #:
+    #: Ten days always contains several trading sessions, even across a long
+    #: weekend or a Diwali-length holiday cluster. One prior session alone
+    #: supplies 25 bars on NSE and 58 on MCX, so this is generous on purpose:
+    #: the cost is a slightly larger history fetch, and the alternative is
+    #: Hokage being structurally unable to size a trade every Monday morning.
+    _INTRADAY_LOOKBACK_DAYS = 10
+
     _VIX_PERCENTILE_BLOCK = 0.80
     _VIX_LOOKBACK_DAYS = 60
 
@@ -1402,7 +1425,7 @@ class AutonomousTradingBot:
             instrument = self.orchestrator.price_source.resolve_instrument(symbol)
             req = HistoricalDataRequest(
                 instrument=instrument,
-                start=datetime.now(timezone.utc) - timedelta(days=3),
+                start=datetime.now(timezone.utc) - timedelta(days=self._INTRADAY_LOOKBACK_DAYS),
                 end=datetime.now(timezone.utc),
                 interval=CandleInterval.FIFTEEN_MINUTES,
             )
@@ -1491,7 +1514,7 @@ class AutonomousTradingBot:
             instrument = self.orchestrator.price_source.resolve_instrument(symbol)
             req = HistoricalDataRequest(
                 instrument=instrument,
-                start=datetime.now(timezone.utc) - timedelta(days=3),
+                start=datetime.now(timezone.utc) - timedelta(days=self._INTRADAY_LOOKBACK_DAYS),
                 end=datetime.now(timezone.utc),
                 interval=CandleInterval.FIFTEEN_MINUTES,
             )
