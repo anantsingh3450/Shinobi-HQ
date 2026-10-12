@@ -263,19 +263,45 @@ class HokageOrchestrator:
         from shared.watchdog import Watchdog
         self.watchdog = Watchdog(self.resolver, self)
 
-        # Bot health metrics initialization
-        from datetime import datetime, timezone
-        now_str = datetime.now(timezone.utc).isoformat()
+        # Bot health metrics.
+        #
+        # NAMES ONLY. Every measured field starts as None and is filled from
+        # the real watchdog heartbeat store by _refresh_bot_health() in
+        # dashboard/api.py, on each request.
+        #
+        # This used to be a dict literal of invented numbers — health_score
+        # 100, cpu 0.5, memory 45.0, latency 0.05, current_task "IDLE" — with
+        # `heartbeat` stamped at construction and never updated again. The
+        # status endpoint recomputed health_score and current_task from real
+        # heartbeats and served the rest of the literal untouched beside them,
+        # so on 2026-10-12 one payload carried a correct `current_task:
+        # ACTIVE` next to a `heartbeat` twelve minutes stale, for a subsystem
+        # that had beaten four seconds earlier.
+        #
+        # None is the point. A fabricated number cannot be told apart from a
+        # measurement; a missing one announces itself. If the refresh ever
+        # fails, the dashboard shows blanks rather than a confident 100.
+        _BOT_NAMES = (
+            "research_bot", "strategy_bot", "risk_bot", "execution_bot",
+            "portfolio_bot", "improvement_bot", "shadow_bot",
+            "market_intelligence", "voice_commander",
+        )
         self.bot_health_metrics = {
-            "research_bot": {"health_score": 100, "heartbeat": now_str, "cpu": 0.5, "memory": 45.0, "latency": 0.05, "queue_size": 0, "last_execution": now_str, "current_task": "IDLE", "failure_count": 0, "recovery_count": 0, "average_runtime": 0.05},
-            "strategy_bot": {"health_score": 100, "heartbeat": now_str, "cpu": 0.8, "memory": 55.0, "latency": 0.08, "queue_size": 0, "last_execution": now_str, "current_task": "IDLE", "failure_count": 0, "recovery_count": 0, "average_runtime": 0.08},
-            "risk_bot": {"health_score": 100, "heartbeat": now_str, "cpu": 0.4, "memory": 35.0, "latency": 0.03, "queue_size": 0, "last_execution": now_str, "current_task": "IDLE", "failure_count": 0, "recovery_count": 0, "average_runtime": 0.03},
-            "execution_bot": {"health_score": 100, "heartbeat": now_str, "cpu": 0.6, "memory": 40.0, "latency": 0.06, "queue_size": 0, "last_execution": now_str, "current_task": "IDLE", "failure_count": 0, "recovery_count": 0, "average_runtime": 0.06},
-            "portfolio_bot": {"health_score": 100, "heartbeat": now_str, "cpu": 0.3, "memory": 30.0, "latency": 0.02, "queue_size": 0, "last_execution": now_str, "current_task": "IDLE", "failure_count": 0, "recovery_count": 0, "average_runtime": 0.02},
-            "improvement_bot": {"health_score": 100, "heartbeat": now_str, "cpu": 0.2, "memory": 25.0, "latency": 0.04, "queue_size": 0, "last_execution": now_str, "current_task": "IDLE", "failure_count": 0, "recovery_count": 0, "average_runtime": 0.04},
-            "shadow_bot": {"health_score": 100, "heartbeat": now_str, "cpu": 0.5, "memory": 50.0, "latency": 0.07, "queue_size": 0, "last_execution": now_str, "current_task": "IDLE", "failure_count": 0, "recovery_count": 0, "average_runtime": 0.07},
-            "market_intelligence": {"health_score": 100, "heartbeat": now_str, "cpu": 0.7, "memory": 60.0, "latency": 0.12, "queue_size": 0, "last_execution": now_str, "current_task": "IDLE", "failure_count": 0, "recovery_count": 0, "average_runtime": 0.12},
-            "voice_commander": {"health_score": 100, "heartbeat": now_str, "cpu": 0.2, "memory": 20.0, "latency": 0.01, "queue_size": 0, "last_execution": now_str, "current_task": "IDLE", "failure_count": 0, "recovery_count": 0, "average_runtime": 0.01}
+            name: {
+                "health_score": None,
+                "heartbeat": None,
+                "last_execution": None,
+                "heartbeat_age_seconds": None,
+                "subsystem": None,
+                "cpu": None,
+                "memory": None,
+                "latency": None,
+                "current_task": "UNKNOWN",
+                "queue_size": 0,
+                "failure_count": 0,
+                "recovery_count": 0,
+            }
+            for name in _BOT_NAMES
         }
 
         # Command Queue Integration

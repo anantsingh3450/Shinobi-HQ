@@ -2959,45 +2959,100 @@ def create_dashboard_api(
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
+    def _subsystem_for(bot_name: str) -> str:
+        """The watchdog subsystem that actually beats for a dashboard bot.
+
+        One copy. This mapping used to be written out separately in
+        /commander/status, in the SSE publisher and nowhere in
+        /orchestrator/nodes, which is how the three drifted into showing
+        different things about the same bot.
+        """
+        if bot_name == "market_intelligence":
+            return "surveillance_loop"
+        if bot_name == "voice_commander":
+            return "voice_commander"
+        return bot_name.replace("_bot", "_engine")
+
+    def _refresh_bot_health() -> dict:
+        """Rebuild every bot's metrics from the REAL heartbeat store, now.
+
+        WHY THIS EXISTS. `bot_health_metrics` is created in pipeline.py as a
+        dict literal full of invented numbers — health_score 100, cpu 0.5,
+        memory 45.0, latency 0.05, current_task IDLE — and a `heartbeat`
+        stamped at construction. /commander/status recomputed health_score and
+        current_task from real heartbeats and left everything else exactly as
+        the literal had it.
+
+        So on 2026-10-12 the endpoint reported, in one payload, a live and
+        correct `current_task: ACTIVE` sitting next to `heartbeat:
+        2026-10-12T03:41:01` — the boot timestamp, twelve minutes stale, for a
+        subsystem that had in fact beaten four seconds earlier. The field a
+        human reads to answer "is it alive" was the one telling the oldest
+        lie, and `cpu`/`memory`/`latency` were never measurements at all.
+
+        A fabricated number is worse than a missing one: it cannot be
+        distinguished from a real reading. Anything without a live source is
+        None here, never a plausible-looking default.
+        """
+        now = datetime.now(timezone.utc)
+        heartbeats = orchestrator.watchdog.store.load_heartbeats()
+
+        for bot_name, metrics in orchestrator.bot_health_metrics.items():
+            subsystem_name = _subsystem_for(bot_name)
+            hb = heartbeats.get(subsystem_name)
+
+            metrics["subsystem"] = subsystem_name
+
+            if hb is None:
+                # No such publisher. Report absence; do not invent a reading.
+                metrics.update({
+                    "health_score": 0, "current_task": "OFFLINE",
+                    "heartbeat": None, "last_execution": None,
+                    "heartbeat_age_seconds": None,
+                    "cpu": None, "memory": None, "latency": None,
+                })
+                continue
+
+            age = (now - hb.timestamp).total_seconds()
+            # Real publishers tick on their work cadence (the scan loop every
+            # 60s), not on the 15s liveness timer, so a flat 30s would show a
+            # perfectly healthy engine as OFFLINE most of the time. Use the
+            # watchdog's own per-subsystem thresholds.
+            limit = orchestrator.watchdog.heartbeat_stale_threshold_overrides.get(
+                subsystem_name, 30.0
+            )
+
+            # The timestamp is reported whether the beat is fresh or stale —
+            # a stale one is exactly what the reader needs to see.
+            metrics["heartbeat"] = hb.timestamp.isoformat()
+            metrics["last_execution"] = (
+                hb.last_successful_cycle.isoformat()
+                if getattr(hb, "last_successful_cycle", None) else hb.timestamp.isoformat()
+            )
+            metrics["heartbeat_age_seconds"] = round(age, 1)
+            metrics["cpu"] = getattr(hb, "cpu_usage", None)
+            metrics["memory"] = getattr(hb, "memory_usage", None)
+            metrics["latency"] = getattr(hb, "execution_latency", None)
+
+            if age > limit:
+                metrics["health_score"] = 0
+                metrics["current_task"] = "OFFLINE"
+            else:
+                metrics["health_score"] = 100 if hb.status == "HEALTHY" else 50
+                metrics["current_task"] = "ACTIVE"
+
+        return orchestrator.bot_health_metrics
+
     # 2. Commander Bot Status
     @dashboard_bp.route("/commander/status", methods=["GET"])
     def commander_status() -> dict:
         """Get status and metrics for all bots."""
         try:
-            now = datetime.now(timezone.utc)
-            heartbeats = orchestrator.watchdog.store.load_heartbeats()
-            
-            for bot_name, metrics in orchestrator.bot_health_metrics.items():
-                subsystem_name = bot_name.replace("_bot", "_engine")
-                if subsystem_name == "market_intelligence":
-                    subsystem_name = "surveillance_loop"
-                elif subsystem_name == "voice_commander":
-                    subsystem_name = "voice_commander"
-                    
-                hb = heartbeats.get(subsystem_name)
-                if hb:
-                    age = (now - hb.timestamp).total_seconds()
-                    # Real publishers tick on their work cadence (the scan loop
-                    # every 60s), not on the 15s liveness timer, so a flat 30s
-                    # would show a perfectly healthy engine as OFFLINE most of
-                    # the time. Use the watchdog's own per-subsystem thresholds.
-                    limit = orchestrator.watchdog.heartbeat_stale_threshold_overrides.get(
-                        subsystem_name, 30.0
-                    )
-                    if age > limit:
-                        metrics["health_score"] = 0
-                        metrics["current_task"] = "OFFLINE"
-                    else:
-                        metrics["health_score"] = 100 if hb.status == "HEALTHY" else 50
-                        metrics["current_task"] = "ACTIVE"
-                else:
-                    metrics["health_score"] = 0
-                    metrics["current_task"] = "OFFLINE"
-                    
+            bots = _refresh_bot_health()
             health_score = orchestrator.watchdog.check_system_health()
             return jsonify({
                 "hokage_health_score": health_score,
-                "bots": orchestrator.bot_health_metrics
+                "bots": bots
             })
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -3007,8 +3062,11 @@ def create_dashboard_api(
     def orchestrator_nodes() -> dict:
         """Get bot nodes and connection topology."""
         try:
+            # Same live source as /commander/status. This route used to
+            # serve the boot-time literal verbatim, so the topology view
+            # and the status view disagreed about the same bot.
             nodes = []
-            for bot_name, metrics in orchestrator.bot_health_metrics.items():
+            for bot_name, metrics in _refresh_bot_health().items():
                 nodes.append({
                     "id": bot_name,
                     "label": bot_name.replace("_", " ").title(),
@@ -3119,12 +3177,18 @@ def create_dashboard_api(
                 "ram": ram,
                 "disk": disk_pct,
                 "database_status": "OK" if orchestrator.watchdog._check_database_lock() else "LOCKED",
-                "broker_latency": 45.0,
-                "market_data_latency": 12.0,
-                "sse_latency": 5.0,
-                "api_latency": 8.0,
+                # None, not a number. These four latencies and the decision
+                # time were hardcoded to 45.0 / 12.0 / 5.0 / 8.0 / 1.25 and
+                # presented as measurements on the health panel. Nothing
+                # measures them, so nothing should claim to: a fabricated
+                # reading cannot be told apart from a real one, which is how
+                # a panel of invented constants reads as a healthy system.
+                "broker_latency": None,
+                "market_data_latency": None,
+                "sse_latency": None,
+                "api_latency": None,
                 "queue_depth": orchestrator.command_queue.queue.qsize(),
-                "average_decision_time": 1.25,
+                "average_decision_time": None,
                 "errors_today": len([i for i in orchestrator.get_watchdog_incidents() if i["severity"] == "CRITICAL"]),
                 "warnings_today": len([i for i in orchestrator.get_watchdog_incidents() if i["severity"] == "WARNING"]),
                 "health_score": health_score,
@@ -3340,6 +3404,22 @@ def create_dashboard_api(
     # Start a background thread to publish periodic health and heartbeat events
     import threading
     import time
+    try:
+        import psutil as _psutil
+    except Exception:  # pragma: no cover - psutil is a declared dependency
+        _psutil = None
+
+    def _disk_percent():
+        """Disk use of the volume the brain actually lives on, or None."""
+        try:
+            import shutil
+            total, used, _free = shutil.disk_usage(
+                str(orchestrator.resolver.resolve_brain_root())
+            )
+            return round(used / total * 100, 1) if total else None
+        except Exception:
+            return None
+
     def sse_health_publisher():
         from hokage.dashboard.event_bus import EventBus
         from datetime import datetime, timezone
@@ -3354,44 +3434,23 @@ def create_dashboard_api(
                 now = datetime.now(timezone.utc)
                 heartbeats = orchestrator.watchdog.store.load_heartbeats()
                 
-                for bot_name, metrics in orchestrator.bot_health_metrics.items():
-                    subsystem_name = bot_name.replace("_bot", "_engine")
-                    if subsystem_name == "market_intelligence":
-                        subsystem_name = "surveillance_loop"
-                    elif subsystem_name == "voice_commander":
-                        subsystem_name = "voice_commander"
-                        
-                    hb = heartbeats.get(subsystem_name)
-                    if hb:
-                        age = (now - hb.timestamp).total_seconds()
-                        # Same per-subsystem thresholds as /commander/status.
-                        limit = orchestrator.watchdog.heartbeat_stale_threshold_overrides.get(
-                            subsystem_name, 30.0
-                        )
-                        if age > limit:
-                            metrics["health_score"] = 0
-                            metrics["current_task"] = "OFFLINE"
-                        else:
-                            metrics["health_score"] = 100 if hb.status == "HEALTHY" else 50
-                            metrics["current_task"] = "ACTIVE"
-                            metrics["cpu"] = hb.cpu_usage
-                            metrics["memory"] = hb.memory_usage
-                            metrics["latency"] = hb.execution_latency
-                    else:
-                        metrics["health_score"] = 0
-                        metrics["current_task"] = "OFFLINE"
-                
+                # One source of truth, shared with /commander/status.
+                _refresh_bot_health()
+
                 health_data = {
-                    "cpu": 12.5,
-                    "ram": 45.2,
-                    "disk": 28.5,
+                    # Measured, not invented. These were 12.5 / 45.2 / 28.5,
+                    # fixed constants that never moved however loaded the
+                    # machine was.
+                    "cpu": _psutil.cpu_percent() if _psutil else None,
+                    "ram": _psutil.virtual_memory().percent if _psutil else None,
+                    "disk": _disk_percent(),
                     "database_status": "OK" if orchestrator.watchdog._check_database_lock() else "LOCKED",
-                    "broker_latency": 45.0,
-                    "market_data_latency": 12.0,
-                    "sse_latency": 5.0,
-                    "api_latency": 8.0,
+                    "broker_latency": None,
+                    "market_data_latency": None,
+                    "sse_latency": None,
+                    "api_latency": None,
                     "queue_depth": orchestrator.command_queue.queue.qsize(),
-                    "average_decision_time": 1.25,
+                    "average_decision_time": None,
                     "errors_today": len([i for i in orchestrator.get_watchdog_incidents() if i["severity"] == "CRITICAL"]),
                     "warnings_today": len([i for i in orchestrator.get_watchdog_incidents() if i["severity"] == "WARNING"]),
                     "health_score": health_score,
