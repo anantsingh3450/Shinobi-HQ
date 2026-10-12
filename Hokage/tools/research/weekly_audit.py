@@ -107,7 +107,18 @@ PROD_STOP_ATR = 1.25
 #: week's no-stop pooled t against this week's hold-out-with-stop t and called
 #: the difference a decline in edge. So the basis is STAMPED, and a change to it
 #: RESETS the consecutive-week evidence rather than continuing it.
-GEOMETRY = "holdout-split+stop1.25"
+#: Bumped 2026-10-12: entries on bars that never traded are now excluded
+#: (signal_lab.measurable). Zero-volume bars are 13.5% of GOLDM, 13.0% of
+#: CRUDEOIL and 12.2% of NATURALGAS, and a flat run of them yields a tiny
+#: ATR that turns the gap to the next real trade into a huge edge_atr --
+#: one bucket read +7.545 with t=+2.22 off four such bars.
+#:
+#: This is a BASIS CHANGE, so evolution._same_geometry will refuse to
+#: compare these snapshots with the older ones and the retirement clock
+#: RESTARTS. That is the intended consequence: there is no trend across a
+#: change of instrument, and the two pending MacroBreakout proposals were
+#: built on the contaminated basis.
+GEOMETRY = "holdout-split+stop1.25+tradedbars"
 
 UNIVERSE = ["NIFTY", "BANKNIFTY", "SENSEX", "CRUDEOIL", "NATURALGAS", "GOLDM", "SILVERM"]
 

@@ -42,7 +42,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from signal_lab import Ctx, load_bars, _MCX_FUTURES  # noqa: E402
+from signal_lab import Ctx, measurable, load_bars, _MCX_FUTURES  # noqa: E402
 from entry_module_lab import build_context  # noqa: E402
 
 from bots.strategy.components.entries import ENTRY_MODULES  # noqa: E402
@@ -113,7 +113,9 @@ def evaluate(symbol: str, bars: list[dict], modules: dict) -> dict:
             if bars[i + HORIZON]["date"].date() != day:
                 continue
             ctx = Ctx(window, session)
-            if not ctx.atr:
+            # A bar that did not trade is not an entry point, and an ATR
+            # built from a run of them is fiction. See signal_lab.measurable.
+            if not measurable(ctx, window[-1]):
                 continue
             mkt = build_context(symbol, window, ctx, session)
             minutes = mkt.minutes_into_session

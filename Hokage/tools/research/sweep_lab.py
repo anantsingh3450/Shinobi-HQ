@@ -76,7 +76,7 @@ from hokage.memory.resolver import brain_root
 #: another, silently. See hokage.memory.resolver.brain_root.
 BRAIN = brain_root()
 
-from signal_lab import MIN_BARS_PER_HALF, Ctx, halves, load_bars  # noqa: E402
+from signal_lab import MIN_BARS_PER_HALF, Ctx, halves, load_bars, measurable# noqa: E402, measurable
 from entry_module_lab import build_context  # noqa: E402
 from holdout_lab import live_pairs  # noqa: E402
 
@@ -234,7 +234,9 @@ def measure_all(symbol: str, bars: list[dict], cells: list[tuple]) -> dict:
         if len(session) < 6 or bars[i + HORIZON]["date"].date() != day:
             continue
         ctx = Ctx(window, session)
-        if not ctx.atr:
+        # A bar that did not trade is not an entry point, and an ATR
+        # built from a run of them is fiction. See signal_lab.measurable.
+        if not measurable(ctx, window[-1]):
             continue
         mkt = build_context(symbol, window, ctx, session)
         for key, module in cells:

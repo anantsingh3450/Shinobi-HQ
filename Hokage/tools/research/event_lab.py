@@ -47,7 +47,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from signal_lab import MAX_HISTORY_DAYS, Ctx, load_bars  # noqa: E402
+from signal_lab import MAX_HISTORY_DAYS, Ctx, load_bars, measurable# noqa: E402, measurable
 from entry_module_lab import build_context  # noqa: E402
 from sweep_lab import HORIZON, PROD_STOP_ATR, _stats, realised  # noqa: E402
 
@@ -105,7 +105,9 @@ def baseline(asset: str, bars: list[dict]) -> list[tuple]:
         if len(session) < 6:
             continue
         ctx = Ctx(window, session)
-        if not ctx.atr:
+        # A bar that did not trade is not an entry point, and an ATR
+        # built from a run of them is fiction. See signal_lab.measurable.
+        if not measurable(ctx, window[-1]):
             continue
         move = bars[i]["close"] - bars[i - 1]["close"]
         # What the hour after the release bar did, signed the same way as the
@@ -136,7 +138,9 @@ def module_events(asset: str, bars: list[dict], module) -> list[tuple]:
             if len(session) < 6:
                 break
             ctx = Ctx(window, session)
-            if not ctx.atr:
+            # A bar that did not trade is not an entry point, and an ATR
+            # built from a run of them is fiction. See signal_lab.measurable.
+            if not measurable(ctx, window[-1]):
                 break
             sig = module.evaluate(build_context(asset, window, ctx, session))
             if not sig.should_enter:

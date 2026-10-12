@@ -109,6 +109,50 @@ class Ctx:
         self.ema21 = ema(closes[-42:], 21)
 
 
+#: Smallest ATR, as a fraction of price, a context may carry and still be
+#: measured. Edge is reported in ATR units, so a near-zero ATR divides a normal
+#: price move by almost nothing and the ratio is unbounded.
+MIN_ATR_FRACTION_OF_PRICE = 0.0001   # 1 basis point
+
+
+def measurable(ctx: "Ctx", entry_bar: dict) -> bool:
+    """Whether this bar is a legitimate place to measure an entry FROM.
+
+    WHY THIS EXISTS, AND IT IS NOT THEORETICAL
+    2026-10-12, iv_lab reported SessionShift BLOCKED on GOLDM train at +7.545
+    edge_atr, t=+2.22, n=36 — a mean realised edge of seven and a half ATR over
+    four bars against a 1.25 ATR stop, which is not a thing that happens. Four
+    identical observations carried the whole bucket:
+
+        2026-03-18 16:30  o=h=l=c=167,373.00  vol=0   GOLDM26SEPFUT
+        ... six identical bars, a far-month contract ...
+        2026-03-18 18:00  o=167,373  l=164,485  vol=1
+
+    The contract had not traded for hours. Kite repeats the last price when
+    nothing trades, the archive stores that verbatim, and every lab treated
+    them as entry points: ATR computed across flat bars is tiny, the "forward
+    move" is really the gap to the next genuine trade, and each scored +63.97
+    ATR. Removing them dropped that bucket from n=36 to n=6 — 83% of it was
+    fiction.
+
+    Zero-volume bars are 13.5% of GOLDM, 13.0% of CRUDEOIL, 12.2% of
+    NATURALGAS and 4.7% of SILVERM. `if not ctx.atr` only ever rejected an ATR
+    of EXACTLY zero, which is why a decade of near-zero ones went through.
+
+    YOU CANNOT ENTER ON A BAR THAT DID NOT TRADE. That is the whole rule.
+    """
+    if not ctx.atr or not ctx.price:
+        return False
+    if ctx.atr / ctx.price < MIN_ATR_FRACTION_OF_PRICE:
+        return False
+    # volume may be absent on a series that carries none (an index); only a
+    # value that is PRESENT and zero proves the bar did not trade.
+    volume = entry_bar.get("volume")
+    if volume is not None and volume <= 0:
+        return False
+    return True
+
+
 # ----------------------------------------------------------------- candidates
 # Each returns +1 (expect up), -1 (expect down) or 0 (stand aside).
 
@@ -415,7 +459,9 @@ def evaluate(bars: list[dict], horizon: int) -> dict[str, dict]:
         if bars[i + horizon]["date"].date() != day:
             continue
         ctx = Ctx(window, session)
-        if not ctx.atr:
+        # A bar that did not trade is not an entry point, and an ATR
+        # built from a run of them is fiction. See signal_lab.measurable.
+        if not measurable(ctx, window[-1]):
             continue
         forward = bars[i + horizon]["close"] - ctx.price
         for name, fn in CANDIDATES.items():
