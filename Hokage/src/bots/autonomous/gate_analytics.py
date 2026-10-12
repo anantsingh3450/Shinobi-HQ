@@ -41,6 +41,7 @@ class GateId(StrEnum):
     LIQUIDITY = "LIQUIDITY"
     BIAS = "BIAS"
     IV_PREMIUM = "IV_PREMIUM"
+    STRATEGY_SCOPE = "STRATEGY_SCOPE"
     ENTRY_SIGNAL = "ENTRY_SIGNAL"
     OPTIONS_ROUTING = "OPTIONS_ROUTING"
     WAR_CHEST = "WAR_CHEST"
@@ -64,11 +65,21 @@ class GateKind(StrEnum):
         a tally shows it is starving a strategy it was never meant to bind.
     INFRA: something upstream failed (no contract, no quote). Neither a safety
         rule nor a preference — a bug signal.
+    COVERAGE: not a gate at all. The lineup simply has no strategy for this
+        asset, or none whose window is open yet. Nothing was judged and no
+        threshold can change it — only changing the lineup can. Separated
+        because it was drowning the tally: on 2026-10-12, 57% of the day's
+        stand-asides were SessionShift being asked about CRUDEOIL and
+        NATURALGAS (which it does not cover) and about hours before its 17:00
+        window, all counted as ENTRY_SIGNAL. That read as "the entry modules
+        are the bottleneck, tune them" when the only actionable signal of the
+        day was seven index entries killed by thin volume.
     """
 
     SAFETY = "SAFETY"
     QUALITY = "QUALITY"
     INFRA = "INFRA"
+    COVERAGE = "COVERAGE"
 
 
 #: Ordered (substring, gate) rules. Order matters: the first match wins, so
@@ -90,6 +101,11 @@ _RULES: tuple[tuple[str, GateId], ...] = (
     ("liquidity_trap", GateId.LIQUIDITY),
     ("bias engine", GateId.BIAS),
     ("iv premium guard", GateId.IV_PREMIUM),
+    # These two must precede the generic "entrysignal" rule: the messages all
+    # begin "EntrySignal: ...", so without them a coverage fact and a closed
+    # time window both tally as a judged stand-aside. Order matters here.
+    ("not scoped to", GateId.STRATEGY_SCOPE),
+    ("overlap window", GateId.SESSION_TIME),
     ("entrysignal", GateId.ENTRY_SIGNAL),
     ("optionsrouter", GateId.OPTIONS_ROUTING),
     ("war chest exhausted", GateId.WAR_CHEST),
@@ -120,6 +136,7 @@ GATE_KINDS: Mapping[GateId, GateKind] = {
     GateId.LIQUIDITY: GateKind.SAFETY,
     GateId.BIAS: GateKind.QUALITY,
     GateId.IV_PREMIUM: GateKind.SAFETY,
+    GateId.STRATEGY_SCOPE: GateKind.COVERAGE,
     GateId.ENTRY_SIGNAL: GateKind.QUALITY,
     GateId.OPTIONS_ROUTING: GateKind.INFRA,
     GateId.WAR_CHEST: GateKind.SAFETY,
@@ -147,6 +164,7 @@ GATE_LABELS: Mapping[GateId, str] = {
     GateId.LIQUIDITY: "Liquidity trap (spread / book depth)",
     GateId.BIAS: "Underlying bias alignment",
     GateId.IV_PREMIUM: "IV premium guard (VIX percentile)",
+    GateId.STRATEGY_SCOPE: "No live strategy covers this asset",
     GateId.ENTRY_SIGNAL: "Entry modules stood aside (league)",
     GateId.OPTIONS_ROUTING: "Options contract routing failure",
     GateId.WAR_CHEST: "Strategy war chest exhausted",
