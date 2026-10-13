@@ -32,6 +32,16 @@ $Root = 'C:\Users\anant\OneDrive\Documents\AI PROJECT\AI COMMAND CENTRE\Hokage'
 $Python = 'C:\Users\anant\AppData\Local\Python\pythoncore-3.14-64\python.exe'
 $Url = 'http://127.0.0.1:5000'
 $LoginWaitMinutes = 15
+# How long to let the running process pick up a new token on its own before
+# resorting to a restart. The callback refreshes it in the same request, so
+# this is normally satisfied on the first poll; the window only has to be wide
+# enough for one slow Kite round trip.
+$HealGraceSeconds = 45
+
+# Shared with Stop-Hokage.ps1 so that "what counts as Hokage" has exactly one
+# definition. Loud if it is missing, which is correct: without it this script
+# cannot tell Hokage apart from any other python and must not guess.
+. (Join-Path $Root 'tools\ops\HokageProcess.ps1')
 function Get-DeliberateStop {
     # The reason recorded by Stop-Hokage.ps1, or $null.
     #
@@ -90,6 +100,26 @@ function Test-Dashboard {
     }
 }
 
+function Test-ProcessSeesMarket {
+    # Does the RUNNING process see the market?
+    #
+    # Get-BrokerState below answers a different question: is the token on disk
+    # valid? A fresh token is valid the instant it is written and says nothing
+    # about whether any running object has read it - that gap is the whole
+    # reason this launcher restarts anything.
+    #
+    # $false on any doubt. This gates a restart, and an unnecessary restart is
+    # recoverable while skipping a necessary one leaves Hokage blind all day.
+    try {
+        $r = Invoke-WebRequest -Uri "$Url/api/v1/broker/zerodha/status" -TimeoutSec 5 -UseBasicParsing
+        if ($r.StatusCode -ne 200) { return $false }
+        $j = $r.Content | ConvertFrom-Json
+        return ($j.process_sees_market -eq $true)
+    } catch {
+        return $false
+    }
+}
+
 function Get-BrokerState {
     # Returns LIVE / EXPIRED / UNREACHABLE / NO_CREDENTIALS
     Push-Location $Root
@@ -108,8 +138,9 @@ function Get-BrokerState {
 function Stop-Hokage {
     # Two instances would both trade the same paper account, so never leave a
     # stray behind.
-    Get-Process python -ErrorAction SilentlyContinue | ForEach-Object {
-        try { Stop-Process -Id $_.Id -Force -ErrorAction Stop } catch { }
+    $ids = @(Get-HokageProcess)
+    foreach ($id in $ids) {
+        try { Stop-Process -Id $id -Force -ErrorAction Stop } catch { }
     }
     Start-Sleep -Seconds 4
 }
@@ -164,8 +195,8 @@ if ($Unattended) {
         Write-Step 'Hokage already running; nothing to do.' 'Green'
         exit 0
     }
-    if (Get-Process python -ErrorAction SilentlyContinue) {
-        Write-Step 'Stray python process with no dashboard - clearing.' 'Yellow'
+    if (@(Get-HokageProcess).Count -gt 0) {
+        Write-Step 'Stray Hokage process with no dashboard - clearing.' 'Yellow'
         Stop-Hokage
     }
     [void](Start-Hokage)
@@ -206,8 +237,8 @@ if ($stopReason) {
 if (Test-Dashboard) {
     Write-Step 'Hokage is already running.' 'Green'
 } else {
-    if (Get-Process python -ErrorAction SilentlyContinue) {
-        Write-Step 'Found a python process but no dashboard - clearing it first.' 'Yellow'
+    if (@(Get-HokageProcess).Count -gt 0) {
+        Write-Step 'Found a Hokage process but no dashboard - clearing it first.' 'Yellow'
         Stop-Hokage
     }
     Write-Step 'Starting Hokage...' 'Cyan'
@@ -274,18 +305,43 @@ if (-not $loggedIn) {
 
 Write-Host ''
 Write-Step 'Login detected.' 'Green'
-Write-Step 'Restarting so Hokage picks up the new token (it only reads it at boot)...' 'Cyan'
-Stop-Hokage
-[void](Start-Hokage)
-if (-not (Wait-Dashboard)) {
-    Write-Host ''
-    Write-Step 'Restart failed to come up. Check the newest *_err.log.' 'Red'
-    Write-Host ''
-    Read-Host '  Press Enter to close'
-    exit 1
+
+# --- 5. THE RESTART IS A FALLBACK, NOT A STEP -------------------------------
+# This used to restart unconditionally, and on 2026-10-13 06:22 that restart
+# killed the very request that had just logged in. The dashboard callback
+# writes the token, refreshes the live session in place and THEN answers the
+# browser; this loop was polling for the token and shot the process in the
+# 0.3s between those two. The commander got "Authentication failed" in red for
+# a login that had entirely succeeded, and a Hokage that had been online for
+# eleven seconds.
+#
+# Hokage heals himself now - the callback calls refresh_broker_session() and
+# his own feed probe retries. So ask him, and only restart if he is still
+# blind. The restart stays because the self-heal is a code path like any
+# other: if it ever stops working, a blind Hokage all day is the cost.
+$grace = (Get-Date).AddSeconds($HealGraceSeconds)
+$healed = $false
+while ((Get-Date) -lt $grace) {
+    if (Test-ProcessSeesMarket) { $healed = $true; break }
+    Start-Sleep -Seconds 3
 }
 
-Start-Process $Url
+if ($healed) {
+    Write-Step 'Hokage picked the new token up himself - no restart needed.' 'Green'
+} else {
+    Write-Step "Still blind ${HealGraceSeconds}s after the login - restarting." 'Yellow'
+    Stop-Hokage
+    [void](Start-Hokage)
+    if (-not (Wait-Dashboard)) {
+        Write-Host ''
+        Write-Step 'Restart failed to come up. Check the newest *_err.log.' 'Red'
+        Write-Host ''
+        Read-Host '  Press Enter to close'
+        exit 1
+    }
+    Start-Process $Url
+}
+
 Write-Host ''
 Write-Step 'Hokage is online and connected. Hunting.' 'Green'
 Write-Host ''

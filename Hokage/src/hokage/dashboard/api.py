@@ -112,6 +112,70 @@ def refresh_broker_session(orchestrator) -> bool:
         return False
 
 
+def _process_sees_market(orchestrator) -> bool:
+    """Can THIS process, as it stands right now, see the market?
+
+    Both halves must be live: 'kite_main' fills orders, and
+    orchestrator.kite_connection is what every scan reads quotes through. A
+    yes from one of them is the 2026-08-05 failure, where the venue was
+    connected, the data session was not, and Hokage stood aside all day
+    looking healthy.
+
+    Deliberately asks the live objects and not the .env. The token on disk
+    being valid says nothing about whether anything running has read it -
+    that gap is the entire reason refresh_broker_session() exists.
+
+    Never raises: every caller is deciding how to word a message or whether to
+    kill a process, and neither is improved by a traceback.
+    """
+    try:
+        venue = orchestrator.registry.get_venue("kite_main")
+        if venue.get_status().state.name != "CONNECTED":
+            return False
+    except Exception:
+        return False
+    try:
+        manager = getattr(orchestrator, "kite_connection", None)
+        return manager is not None and manager.connection_state.name == "CONNECTED"
+    except Exception:
+        return False
+
+
+def describe_spent_login_link(orchestrator, exchange_error: str) -> tuple[str, int]:
+    """What to tell the commander when a request_token will not exchange.
+
+    A REQUEST TOKEN IS SINGLE USE, SO A SECOND DELIVERY OF ONE IS NOT A FAILED
+    LOGIN. Kite replays this callback URL whenever a tab is reopened or an old
+    link is pasted, and on 2026-10-13 06:22 it was replayed by a browser retry
+    after Start-Hokage.ps1 killed the process mid-request: the launcher had
+    been polling for exactly the token this handler had just written, and
+    restarted Hokage in the 0.3s between the write and the reply. The commander
+    was shown "Authentication failed" in red for a login that had entirely
+    succeeded, about a Hokage that had been online for eleven seconds.
+
+    The distinction is not knowable from the exchange error - it is identical
+    either way - so ask the running process instead. Live session: the login
+    worked, say so. No live session: he genuinely needs a fresh link.
+
+    Returns (body, http_status). Never 500: a spent link is an expected event
+    on a path whose whole job is telling him whether he can trade today, and a
+    red error page there teaches him to distrust the one screen that matters.
+    """
+    if _process_sees_market(orchestrator):
+        return (
+            "Already connected. This login link had already been used (they "
+            "are single-use), but Hokage has a live Zerodha session and can "
+            "see the market. Nothing to do - you can close this window.",
+            200,
+        )
+    return (
+        "This login link has already been used or has expired, and Hokage "
+        "still has no live session. Click Login to Zerodha again to get a "
+        f"fresh link. ({exchange_error})",
+        400,
+    )
+
+
 def try_manual_trade_execution(message: str, orchestrator) -> str | None:
     """Parses a manual trade execution intent (e.g. 'buy 10 TCS' or 'sell 5 INFY') and executes it.
     
@@ -917,16 +981,53 @@ def create_dashboard_api(
     # =====================================================================
     @dashboard_bp.route("/broker/zerodha/status", methods=["GET"])
     def get_zerodha_status() -> dict:
-        """Query connectivity status of live Zerodha Kite Connect venue."""
+        """Connectivity of the live Zerodha venue AND of the running data session.
+
+        TWO OBJECTS, NOT ONE. 'kite_main' is the execution venue. The quotes
+        every scan reads come through orchestrator.kite_connection, which holds
+        its own client built from the token it saw inside connect(). On
+        2026-08-05 the venue was connected and the data session was not, and
+        Hokage stood aside all day while every panel read healthy.
+
+        'connected' keeps its old meaning so existing callers are unaffected.
+        'data_feed_connected' is the half that was invisible, and
+        'process_sees_market' is the question a launcher actually wants
+        answered: can THIS process, as it stands, see the market? A launcher
+        that asks the .env instead gets a yes from a token no running object
+        has read.
+
+        Each half is reported independently, and a half that cannot be
+        determined is None rather than False - 'unknown' must not read as
+        'broken' to something deciding whether to kill the process.
+        """
+        venue_connected = None
+        message = ""
+        errors = {}
         try:
-            venue = orchestrator.registry.get_venue("kite_main")
-            status = venue.get_status()
-            return jsonify({
-                "connected": status.state.name == "CONNECTED",
-                "message": status.message or ""
-            })
+            status = orchestrator.registry.get_venue("kite_main").get_status()
+            venue_connected = status.state.name == "CONNECTED"
+            message = status.message or ""
         except Exception as e:
-            return jsonify({"connected": False, "error": str(e)})
+            errors["venue"] = str(e)
+            venue_connected = False
+
+        data_connected = None
+        try:
+            manager = getattr(orchestrator, "kite_connection", None)
+            if manager is not None:
+                data_connected = manager.connection_state.name == "CONNECTED"
+        except Exception as e:
+            errors["data_feed"] = str(e)
+
+        payload = {
+            "connected": bool(venue_connected),
+            "message": message,
+            "data_feed_connected": data_connected,
+            "process_sees_market": bool(venue_connected) and data_connected is True,
+        }
+        if errors:
+            payload["error"] = "; ".join(f"{k}: {v}" for k, v in errors.items())
+        return jsonify(payload)
 
     @dashboard_bp.route("/broker/zerodha/login", methods=["GET"])
     def zerodha_login():
@@ -963,7 +1064,15 @@ def create_dashboard_api(
                 return "Zerodha API credentials not configured in secrets/env wrapper.", 400
                 
             kite = KiteConnect(api_key=api_key)
-            session = kite.generate_session(request_token, api_secret=api_secret)
+            try:
+                session = kite.generate_session(request_token, api_secret=api_secret)
+            except Exception as exchange_err:
+                # A spent link is not a failed login. The reasoning, and the
+                # incident that forced it, live in describe_spent_login_link.
+                body, code = describe_spent_login_link(
+                    orchestrator, str(exchange_err)
+                )
+                return body, code
             access_token = session["access_token"]
             
             # Secure the working access_token in the SecretManager and .env file
