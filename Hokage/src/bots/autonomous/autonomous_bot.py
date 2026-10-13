@@ -431,6 +431,39 @@ class AutonomousTradingBot:
             return True
         return symbol.upper() in {str(a).upper() for a in assets}
 
+    @staticmethod
+    def _no_verdict_reason(
+        symbol: str, scoped_count: int, out_of_scope: list[str]
+    ) -> str:
+        """Why nothing judged this symbol, when nothing judged this symbol.
+
+        A SCOPE IS CONFIGURATION, NOT A VERDICT, so the scan loops no longer
+        journal "{name}: not scoped to {symbol}." every pass. That can leave
+        the verdict list empty, and a no-trade carrying no reason at all reads
+        as "nothing was even considered" - indistinguishable from a scan that
+        crashed before it started.
+
+        The two causes are different problems and must not share a message:
+        nothing is scoped to this asset (a coverage gap - it cannot be traded
+        at all, and that is the failure the boot audit exists to catch), or
+        strategies are scoped but none has an entry module registered (a
+        wiring fault). Named, with the out-of-scope strategies listed, so the
+        gap is readable without the portfolio JSON in hand.
+
+        The wording keeps "scoped to" so gate_analytics tallies it as
+        STRATEGY_SCOPE/COVERAGE rather than UNCLASSIFIED.
+        """
+        if scoped_count == 0:
+            listed = ", ".join(out_of_scope) if out_of_scope else "none live"
+            return (
+                f"StrategyScope: no live strategy is scoped to {symbol} "
+                f"(out of scope: {listed}). This asset cannot be traded."
+            )
+        return (
+            f"StrategyScope: {scoped_count} strategies are scoped to {symbol} "
+            f"but none has an entry module registered."
+        )
+
     def _is_counter_trend_strategy(self, strategy_id: str | None) -> bool:
         """True when this strategy's entry module bets AGAINST the prevailing
         move, and must therefore skip the trend-alignment gate."""
@@ -4603,14 +4636,31 @@ class AutonomousTradingBot:
 
             module_verdicts: list[str] = []
             winner = None  # (confidence, strategy_dict, signal)
+            out_of_scope: list[str] = []
+            scoped_count = 0
+            # A SCOPE IS CONFIGURATION, NOT A VERDICT.
+            #
+            # This used to append "{name}: not scoped to {symbol}." to the
+            # journal on every pass. On 2026-10-13 that was 19 of 98 entries,
+            # all of them "MeanReversion: not scoped to BANKNIFTY" - and
+            # MeanReversion is scoped to NIFTY and SENSEX by deliberate
+            # decision, so the answer could not change between cycles. 19% of
+            # the day's record restating a settled choice, which is the same
+            # defect as the parked-asset lines removed a day earlier: it buries
+            # the entries that carry information.
+            #
+            # Quiet, never invisible. audit_asset_coverage still names every
+            # asset and its strategies once per boot, and if a symbol reaches
+            # this loop with nothing scoped to it, the no-trade reason says so
+            # explicitly below - "ceasing to trade an asset silently is a worse
+            # failure than trading it badly".
             for sid, strat in self.mcx_strategy_portfolio.portfolio.get("strategies", {}).items():
                 if strat.get("status") == "ARCHIVED":
                     continue
                 if not self._strategy_supports(strat, symbol):
-                    module_verdicts.append(
-                        f"EntrySignal: {strat.get('name', sid)}: not scoped to {symbol}."
-                    )
+                    out_of_scope.append(str(strat.get("name", sid)))
                     continue
+                scoped_count += 1
                 module = MCX_ENTRY_MODULES.get(sid)
                 if module is None:
                     continue
@@ -4624,6 +4674,13 @@ class AutonomousTradingBot:
                     winner = (conf, strat, sig)
 
             if winner is None:
+                # A NO-TRADE WITH NO REASON IS WORSE THAN A NOISY ONE.
+                # Dropping the scope lines above can empty this list, and an
+                # empty reason reads as "nothing was even considered". Say
+                # which of the two it was, by name.
+                if not module_verdicts:
+                    module_verdicts.append(self._no_verdict_reason(
+                        symbol, scoped_count, out_of_scope))
                 reason_txt = "MCX league stand-aside on " + symbol + ": " + " | ".join(module_verdicts)
                 logger.info(reason_txt)
                 bus.publish("OPPORTUNITY_REJECTED", {"symbol": symbol, "reason": reason_txt, "timestamp": datetime.now(timezone.utc).isoformat()})
@@ -5778,14 +5835,31 @@ class AutonomousTradingBot:
                     continue
                 _module_verdicts: list[str] = []
                 _winner = None  # (confidence, strategy_dict, signal)
+                _out_of_scope: list[str] = []
+                _scoped_count = 0
+                # A SCOPE IS CONFIGURATION, NOT A VERDICT.
+                #
+                # This used to append "{name}: not scoped to {symbol}." to the
+                # journal on every pass. On 2026-10-13 that was 19 of 98 entries,
+                # all of them "MeanReversion: not scoped to BANKNIFTY" - and
+                # MeanReversion is scoped to NIFTY and SENSEX by deliberate
+                # decision, so the answer could not change between cycles. 19% of
+                # the day's record restating a settled choice, which is the same
+                # defect as the parked-asset lines removed a day earlier: it buries
+                # the entries that carry information.
+                #
+                # Quiet, never invisible. audit_asset_coverage still names every
+                # asset and its strategies once per boot, and if a symbol reaches
+                # this loop with nothing scoped to it, the no-trade reason says so
+                # explicitly below - "ceasing to trade an asset silently is a worse
+                # failure than trading it badly".
                 for _sid, _strat in self.strategy_portfolio.portfolio.get("strategies", {}).items():
                     if _strat.get("status") == "ARCHIVED":
                         continue
                     if not self._strategy_supports(_strat, symbol):
-                        _module_verdicts.append(
-                            f"EntrySignal: {_strat.get('name', _sid)}: not scoped to {symbol}."
-                        )
+                        _out_of_scope.append(str(_strat.get("name", _sid)))
                         continue
+                    _scoped_count += 1
                     _module = ENTRY_MODULES.get(_sid)
                     if _module is None:
                         continue
@@ -5801,6 +5875,10 @@ class AutonomousTradingBot:
                         _winner = (_conf, _strat, _sig)
 
                 if _winner is None:
+                    # Same rail as the MCX loop: see _no_verdict_reason.
+                    if not _module_verdicts:
+                        _module_verdicts.append(self._no_verdict_reason(
+                            symbol, _scoped_count, _out_of_scope))
                     reason_txt = "League stand-aside on " + symbol + ": " + " | ".join(_module_verdicts)
                     logger.info(reason_txt)
                     eval_results[symbol] = {

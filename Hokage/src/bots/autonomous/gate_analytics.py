@@ -105,6 +105,12 @@ _RULES: tuple[tuple[str, GateId], ...] = (
     # begin "EntrySignal: ...", so without them a coverage fact and a closed
     # time window both tally as a judged stand-aside. Order matters here.
     ("not scoped to", GateId.STRATEGY_SCOPE),
+    # The coverage GAP message, emitted only when nothing at all judged a
+    # symbol. Phrased "is scoped to", not "not scoped to", so it needs its own
+    # rule; without it a total loss of coverage would tally as UNCLASSIFIED,
+    # which is the one blocker that must never be hard to see.
+    ("no live strategy is scoped to", GateId.STRATEGY_SCOPE),
+    ("strategies are scoped to", GateId.STRATEGY_SCOPE),
     ("overlap window", GateId.SESSION_TIME),
     ("entrysignal", GateId.ENTRY_SIGNAL),
     ("optionsrouter", GateId.OPTIONS_ROUTING),
