@@ -51,6 +51,13 @@ def _stub(price_error: Exception | None = None, send_ok: bool = True) -> SimpleN
     # Bind the real classifier; tests that need the ambiguous path override it
     # so no test ever reaches out to Kite.
     bot._diagnose_feed_failure = lambda reason: AutonomousTradingBot._diagnose_feed_failure(bot, reason)
+    # And the real recorder, not a no-op. Added 2026-10-13: the outcome of this
+    # probe is now the only non-stale answer to "can Hokage see the market",
+    # because a connection flag stays CONNECTED after the token dies - on that
+    # date /broker/zerodha/status answered connected: true for thirteen minutes
+    # while this alarm fired every sixty seconds. Stubbing it out here would
+    # leave the thing those readers depend on untested.
+    bot._record_feed_probe = lambda ok, reason: AutonomousTradingBot._record_feed_probe(bot, ok, reason)
     return bot
 
 
@@ -179,3 +186,38 @@ def test_gateway_errors_all_read_as_network_not_auth():
     for err in ("503 Service Unavailable", "504 Gateway Time-out",
                 "Unknown Content-Type (text/html)"):
         assert AutonomousTradingBot._diagnose_feed_failure(bot, err) == "network", err
+
+
+# ----------------------------------------------------------------------------
+# What the probe leaves behind
+#
+# /broker/zerodha/status and Start-Hokage.ps1 both decide from this. The flag
+# they used to read said CONNECTED from 06:22:44 on 2026-10-13 and never
+# changed when the token was invalidated around 06:33 - so a launcher would
+# have skipped the restart it needed and the dashboard showed a blind Hokage
+# as healthy.
+# ----------------------------------------------------------------------------
+def test_a_failed_probe_is_recorded_with_its_reason():
+    bot = _stub(price_error=Exception("Incorrect `api_key` or `access_token`."))
+    _PROBE(bot)
+
+    assert bot._feed_probe_ok is False
+    assert "access_token" in bot._feed_probe_reason
+    assert bot._feed_probe_at is not None
+
+
+def test_a_successful_probe_is_recorded_as_ok():
+    bot = _stub()
+    _PROBE(bot)
+
+    assert bot._feed_probe_ok is True
+    assert bot._feed_probe_reason == ""
+
+
+def test_the_recorded_time_is_timezone_aware():
+    """A naive timestamp subtracted from an aware now() raises, and the reader
+    turns that into "unknown" - which would silently disable the freshness
+    check that makes this record worth anything."""
+    bot = _stub()
+    _PROBE(bot)
+    assert bot._feed_probe_at.tzinfo is not None

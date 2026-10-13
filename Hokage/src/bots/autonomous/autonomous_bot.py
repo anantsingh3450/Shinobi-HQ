@@ -2389,6 +2389,28 @@ class AutonomousTradingBot:
         ):
             self._battery_warning_sent = True
 
+    def _record_feed_probe(self, ok: bool, reason: str) -> None:
+        """Remember the outcome of the quote probe, and when.
+
+        CONNECTION STATE IS NOT EVIDENCE. KiteConnectionManager.get_status()
+        returns the state stored the last time connect() ran, and nothing
+        updates it when the token dies underneath. On 2026-10-13 the token was
+        invalidated at about 06:33, the feed logged CRITICAL every minute from
+        06:33:24, and /broker/zerodha/status went on answering
+        connected: true for another thirteen minutes - because the venue had
+        connected successfully at 06:22:44 and nothing had told it otherwise.
+
+        This is the one fact that cannot be stale in that way: a quote either
+        came back or it did not, and the timestamp says how long ago. Anything
+        asked to decide whether Hokage can see the market should ask here.
+
+        Set by _check_data_feed_session only, which runs at the top of every
+        loop iteration - roughly once a minute.
+        """
+        self._feed_probe_ok = ok
+        self._feed_probe_at = datetime.now(timezone.utc)
+        self._feed_probe_reason = reason
+
     def _check_data_feed_session(self) -> None:
         """Probe the Kite market-data feed and alert once per IST date if blind.
 
@@ -2401,8 +2423,10 @@ class AutonomousTradingBot:
         try:
             self.orchestrator.price_source.get_price("NIFTY 50")
             self._consecutive_network_failures = 0
+            self._record_feed_probe(True, "")
         except Exception as exc:
             reason = str(exc)
+            self._record_feed_probe(False, reason)
             today = self._now_ist().strftime("%Y-%m-%d")
             kind = self._diagnose_feed_failure(reason)
 

@@ -181,3 +181,18 @@ def test_the_field_the_launcher_reads_is_the_field_the_api_publishes():
         "/api/v1/broker/zerodha/status; the route no longer publishes it"
     )
     assert '"data_feed_connected"' in api
+    assert '"last_quote_ok"' in api
+
+def test_the_grace_window_covers_one_full_probe_cycle():
+    """process_sees_market waits for a quote that actually came back, and that
+    probe runs about once a minute. A window shorter than one cycle restarts a
+    Hokage who was simply about to answer - the same unnecessary restart, just
+    arrived at more honestly."""
+    code = live_code(START)
+    line = next(
+        l for l in code.splitlines() if l.strip().startswith("$HealGraceSeconds")
+    )
+    seconds = int(line.split("=")[1].strip())
+    assert seconds >= 90, (
+        f"the heal grace is {seconds}s, shorter than the ~60s probe cycle"
+    )

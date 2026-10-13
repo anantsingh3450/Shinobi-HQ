@@ -33,10 +33,16 @@ $Python = 'C:\Users\anant\AppData\Local\Python\pythoncore-3.14-64\python.exe'
 $Url = 'http://127.0.0.1:5000'
 $LoginWaitMinutes = 15
 # How long to let the running process pick up a new token on its own before
-# resorting to a restart. The callback refreshes it in the same request, so
-# this is normally satisfied on the first poll; the window only has to be wide
-# enough for one slow Kite round trip.
-$HealGraceSeconds = 45
+# resorting to a restart.
+#
+# process_sees_market will not say yes on a connection flag - it waits for a
+# quote that actually came back, because a flag stays "connected" after the
+# token dies (2026-10-13: thirteen minutes of connected: true while the feed
+# logged CRITICAL every minute). That probe runs at the top of the bot's loop,
+# about once a minute, so this window must cover one full cycle with room for
+# a slow iteration. Shorter and the launcher restarts a Hokage who was simply
+# about to answer.
+$HealGraceSeconds = 100
 
 # Shared with Stop-Hokage.ps1 so that "what counts as Hokage" has exactly one
 # definition. Loud if it is missing, which is correct: without it this script

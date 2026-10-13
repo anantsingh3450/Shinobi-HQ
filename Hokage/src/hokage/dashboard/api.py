@@ -112,33 +112,62 @@ def refresh_broker_session(orchestrator) -> bool:
         return False
 
 
-def _process_sees_market(orchestrator) -> bool:
-    """Can THIS process, as it stands right now, see the market?
+def verify_session_live(orchestrator) -> bool:
+    """ACTIVELY test whether the stored token still works, right now.
 
-    Both halves must be live: 'kite_main' fills orders, and
-    orchestrator.kite_connection is what every scan reads quotes through. A
-    yes from one of them is the 2026-08-05 failure, where the venue was
-    connected, the data session was not, and Hokage stood aside all day
-    looking healthy.
+    CONNECTION STATE IS NOT EVIDENCE. KiteConnectionManager.get_status() and
+    the venue's get_status() both return the state stored the last time
+    connect() ran, and nothing updates them when the token dies underneath. On
+    2026-10-13 the token was invalidated at about 06:33, the feed logged
+    CRITICAL every minute from 06:33:24, and this endpoint went on answering
+    connected: true for thirteen more minutes.
 
-    Deliberately asks the live objects and not the .env. The token on disk
-    being valid says nothing about whether anything running has read it -
-    that gap is the entire reason refresh_broker_session() exists.
+    So re-read the stored credentials and reconnect. try_reconnect() is the
+    existing recovery path, it never raises, and it returns True only if the
+    session is genuinely live afterwards - which also means a caller on the
+    login page heals the process for free.
 
-    Never raises: every caller is deciding how to word a message or whether to
-    kill a process, and neither is improved by a traceback.
+    Only for RARE paths. This is a round trip to Kite; never call it from
+    something the dashboard polls.
     """
     try:
-        venue = orchestrator.registry.get_venue("kite_main")
-        if venue.get_status().state.name != "CONNECTED":
-            return False
-    except Exception:
-        return False
-    try:
         manager = getattr(orchestrator, "kite_connection", None)
-        return manager is not None and manager.connection_state.name == "CONNECTED"
+        if manager is None or not hasattr(manager, "try_reconnect"):
+            return False
+        return bool(manager.try_reconnect())
     except Exception:
         return False
+
+
+def last_quote_probe(orchestrator) -> tuple[bool | None, float | None, str]:
+    """The bot's last market-data probe: did a quote come back, and how long ago.
+
+    Returns (ok, age_seconds, reason). ok is None when no probe has run yet -
+    'I have not looked' must stay distinguishable from 'I looked and it was
+    broken', because something deciding whether to kill the process reads this.
+
+    A quote either came back or it did not; unlike a connection flag, that
+    cannot go quietly out of date. The probe runs at the top of every loop
+    iteration, about once a minute.
+    """
+    try:
+        bot = getattr(orchestrator, "autonomous_bot", None)
+        if bot is None:
+            return (None, None, "no autonomous bot in this process")
+        ok = getattr(bot, "_feed_probe_ok", None)
+        at = getattr(bot, "_feed_probe_at", None)
+        if ok is None or at is None:
+            return (None, None, "no feed probe has run yet")
+        age = (datetime.now(timezone.utc) - at).total_seconds()
+        return (bool(ok), age, getattr(bot, "_feed_probe_reason", "") or "")
+    except Exception as exc:
+        return (None, None, f"could not read the feed probe: {exc}")
+
+
+#: A probe older than this says nothing about now. The loop runs it about once
+#: a minute; three minutes allows a slow iteration without ever presenting a
+#: reading from a previous market condition as current.
+MAX_QUOTE_PROBE_AGE_SECONDS = 180
 
 
 def describe_spent_login_link(orchestrator, exchange_error: str) -> tuple[str, int]:
@@ -161,7 +190,7 @@ def describe_spent_login_link(orchestrator, exchange_error: str) -> tuple[str, i
     on a path whose whole job is telling him whether he can trade today, and a
     red error page there teaches him to distrust the one screen that matters.
     """
-    if _process_sees_market(orchestrator):
+    if verify_session_live(orchestrator):
         return (
             "Already connected. This login link had already been used (they "
             "are single-use), but Hokage has a live Zerodha session and can "
@@ -1019,11 +1048,29 @@ def create_dashboard_api(
         except Exception as e:
             errors["data_feed"] = str(e)
 
+        # THE ONLY NON-STALE FACT HERE. The two states above are whatever
+        # connect() stored last; this is whether a quote actually came back.
+        quote_ok, quote_age, quote_reason = last_quote_probe(orchestrator)
+        quote_is_current = (
+            quote_ok is True
+            and quote_age is not None
+            and quote_age <= MAX_QUOTE_PROBE_AGE_SECONDS
+        )
+
         payload = {
             "connected": bool(venue_connected),
             "message": message,
             "data_feed_connected": data_connected,
-            "process_sees_market": bool(venue_connected) and data_connected is True,
+            "last_quote_ok": quote_ok,
+            "last_quote_age_seconds": (
+                round(quote_age, 1) if quote_age is not None else None
+            ),
+            "last_quote_reason": quote_reason,
+            # Requires evidence, not a flag. On 2026-10-13 this would have
+            # said false from 06:33 instead of true until 06:46.
+            "process_sees_market": (
+                bool(venue_connected) and data_connected is True and quote_is_current
+            ),
         }
         if errors:
             payload["error"] = "; ".join(f"{k}: {v}" for k, v in errors.items())
