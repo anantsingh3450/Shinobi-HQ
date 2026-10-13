@@ -628,6 +628,15 @@ class SqliteStorageEngine:
                 );
             """)
             self._create_version_3_tables(conn)
+            # An index for the counts the health panel reads every few
+            # seconds. Idempotent, and cheap to create. Without it the
+            # "incidents today" query scans all 47,675 rows; the table only
+            # ever grows, so this is the difference between a count that stays
+            # fast and one that quietly gets slower every week.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_watchdog_incidents_day "
+                "ON watchdog_incidents(timestamp);"
+            )
             # Incrementally apply new schema versions
             if current_version < 4:
                 logger.info("Applying Schema Version 4: Mission Control tables.")

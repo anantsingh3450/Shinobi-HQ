@@ -380,8 +380,23 @@ class HokageOrchestrator:
         return hb.to_dict()
 
     def get_watchdog_incidents(self) -> list[dict[str, Any]]:
-        """Load all recorded incidents."""
+        """Load all recorded incidents.
+
+        EXPENSIVE, AND IT LOADS EVERYTHING. 47,675 rows and 343 ms as measured
+        on 2026-10-13. Use incident_counts_for_day() for counts; this is for
+        callers that genuinely need the records.
+        """
         return [i.to_dict() for i in self.watchdog.store.load_incidents()]
+
+    def incident_counts_for_day(self, day: str | None = None) -> dict[str, int]:
+        """Incident counts by severity for one IST-naive date, counted in SQL.
+
+        Defaults to today. See WatchdogStore.count_incidents_for_day for why
+        this replaced two full-table loads per five seconds.
+        """
+        if day is None:
+            day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        return self.watchdog.store.count_incidents_for_day(day)
 
     def acknowledge_watchdog_incident(self, incident_id: str) -> bool:
         """Acknowledge a specific incident."""

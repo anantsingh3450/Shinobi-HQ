@@ -3327,7 +3327,9 @@ def create_dashboard_api(
             disk_pct = (used / total) * 100
             
             health_score = orchestrator.watchdog.check_system_health()
-            
+            # Once, not once per field.
+            _err_today, _warn_today = _incident_counts()
+
             health_data = {
                 "cpu": cpu,
                 "ram": ram,
@@ -3345,8 +3347,13 @@ def create_dashboard_api(
                 "api_latency": None,
                 "queue_depth": orchestrator.command_queue.queue.qsize(),
                 "average_decision_time": None,
-                "errors_today": len([i for i in orchestrator.get_watchdog_incidents() if i["severity"] == "CRITICAL"]),
-                "warnings_today": len([i for i in orchestrator.get_watchdog_incidents() if i["severity"] == "WARNING"]),
+                # Counted in SQL and scoped to today - see the health
+                # publisher. Each of these two list comprehensions loaded all
+                # 47,675 incident rows and built a dict per row, so one
+                # request to this endpoint cost ~690 ms and read the whole
+                # table twice to produce two integers.
+                "errors_today": _err_today,
+                "warnings_today": _warn_today,
                 "health_score": health_score,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
@@ -3576,6 +3583,24 @@ def create_dashboard_api(
         except Exception:
             return None
 
+    def _incident_counts() -> tuple[int, int]:
+        """(errors_today, warnings_today), counted in SQL, scoped to today.
+
+        One definition so the SSE panel and the HTTP endpoint can never
+        disagree about what "today" or "error" means - they previously used
+        the same wrong filter in two places, which is how a wrong number
+        survives being noticed in one of them.
+        """
+        try:
+            counts = orchestrator.incident_counts_for_day()
+            errors = sum(
+                counts.get(sev, 0)
+                for sev in orchestrator.watchdog.store.ERROR_SEVERITIES
+            )
+            return errors, counts.get("WARNING", 0)
+        except Exception:
+            return 0, 0
+
     def sse_health_publisher():
         from hokage.dashboard.event_bus import EventBus
         from datetime import datetime, timezone
@@ -3583,6 +3608,21 @@ def create_dashboard_api(
         bus = EventBus()
         while True:
             time.sleep(5.0)
+
+            # NOBODY WATCHING, NOTHING TO COMPUTE.
+            #
+            # This snapshot exists to feed an open dashboard over SSE. It was
+            # gathered every five seconds regardless, and on a headless host
+            # no browser is EVER open. Measured 2026-10-13: Hokage burned 23%
+            # of a core continuously, 95.6% of it in this one thread, while
+            # serving 1.9 HTTP requests a minute. The planned Oracle VPS is
+            # one or two cores.
+            #
+            # /commander/status calls _refresh_bot_health() itself, so nothing
+            # downstream goes stale when this tick is skipped.
+            if bus.listener_count() == 0:
+                continue
+
             try:
                 health_score = orchestrator.watchdog.check_system_health()
                 
@@ -3592,6 +3632,16 @@ def create_dashboard_api(
                 
                 # One source of truth, shared with /commander/status.
                 _refresh_bot_health()
+
+                # COUNTED IN SQL, AND ACTUALLY SCOPED TO TODAY. This was two
+                # get_watchdog_incidents() calls - 47,675 rows loaded and
+                # turned into dicts, twice, 687 ms of every 5 s - filtered in
+                # Python to produce two integers. Worse, the filter was on
+                # severity alone, so "today" counted all history: the panel
+                # read 47,548 warnings when the day's true figure was 214.
+                # And it matched only CRITICAL, which nothing writes, pinning
+                # "errors today" to 0 forever.
+                errors_today, warnings_today = _incident_counts()
 
                 health_data = {
                     # Measured, not invented. These were 12.5 / 45.2 / 28.5,
@@ -3607,8 +3657,8 @@ def create_dashboard_api(
                     "api_latency": None,
                     "queue_depth": orchestrator.command_queue.queue.qsize(),
                     "average_decision_time": None,
-                    "errors_today": len([i for i in orchestrator.get_watchdog_incidents() if i["severity"] == "CRITICAL"]),
-                    "warnings_today": len([i for i in orchestrator.get_watchdog_incidents() if i["severity"] == "WARNING"]),
+                    "errors_today": errors_today,
+                    "warnings_today": warnings_today,
                     "health_score": health_score,
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }

@@ -99,6 +99,18 @@ class EventBus:
             if q in self._listeners:
                 self._listeners.remove(q)
 
+    def listener_count(self) -> int:
+        """How many clients are currently subscribed.
+
+        Exists so a producer can decline to compute what nobody will read.
+        The dashboard's health publisher gathered a full system snapshot every
+        five seconds whether a browser was open or not - and on a VPS none ever
+        is. Measured 2026-10-13: 23% of a core, continuously, for a panel with
+        no viewer.
+        """
+        with self._listener_lock:
+            return len(self._listeners)
+
     def publish(self, event_type: str, data: dict[str, Any]) -> None:
         """Publish an event to all active subscribers.
 
