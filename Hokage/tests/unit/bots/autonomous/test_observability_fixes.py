@@ -243,18 +243,39 @@ def test_the_audit_truncates_and_never_dumps_a_whole_payload(caplog):
 
 def test_every_send_outcome_is_audited():
     """Success, the plain-text fallback, and failure. A log that records only
-    failures cannot answer 'did he tell me?'."""
+    failures cannot answer 'did he tell me?'.
+
+    Checks the whole send path, not one method. The raw POST was split out of
+    send_message on 2026-10-13 so the deferred-alert queue could retry without
+    recursing, and this assertion used to read send_message alone - it passed
+    for the wrong reason before the split and failed for the wrong reason
+    after it. What matters is that no OUTCOME goes unrecorded, wherever the
+    sending lives.
+    """
     import ast
     import inspect
     import textwrap
 
     from integrations.notifications.telegram_bot import TelegramBotUplink
 
-    tree = ast.parse(textwrap.dedent(
-        inspect.getsource(TelegramBotUplink.send_message)))
-    audits = [n for n in ast.walk(tree)
-              if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "_audit"]
-    assert len(audits) >= 3, "expected success, fallback and failure to be audited"
+    outcomes = set()
+    total = 0
+    for name in ("send_message", "_post", "_flush_deferred"):
+        method = getattr(TelegramBotUplink, name, None)
+        if method is None:
+            continue
+        tree = ast.parse(textwrap.dedent(inspect.getsource(method)))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call)
+                    and getattr(node.func, "attr", None) == "_audit"):
+                continue
+            total += 1
+            if node.args and isinstance(node.args[0], ast.Constant):
+                outcomes.add(node.args[0].value)
+
+    assert total >= 3, f"only {total} audited outcomes across the send path"
+    assert "sent" in outcomes, "a successful send is not recorded"
+    assert "NOT SENT" in outcomes, "a failed send is not recorded"
 
 
 def test_the_audit_never_touches_the_token():

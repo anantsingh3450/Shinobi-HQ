@@ -73,6 +73,11 @@ class TelegramBotUplink:
         # Control-command handler (set by AutonomousTradingBot). Must expose
         # handle_remote_command(command: str) -> str.
         self.command_handler = None
+        # Alerts the network swallowed, keyed by text so identical alarms
+        # collapse. See _defer: on 2026-10-13 a 27-minute DNS outage dropped 26
+        # of them and the commander was never told.
+        self._deferred: dict[str, dict] = {}
+        self._deferred_lock = threading.Lock()
 
     def _prompt_state_path(self):
         from pathlib import Path
@@ -180,12 +185,146 @@ class TelegramBotUplink:
                     "..." if len(str(text)) > self._AUDIT_PREVIEW_CHARS else "",
                     f" [{extra}]" if extra else "")
 
+    #: Distinct alerts held while the network is unreachable. Bounded, because
+    #: an outage lasting hours must not grow without limit; identical texts
+    #: collapse into one entry, so the real bound is on DISTINCT alerts.
+    _DEFERRED_MAX_ENTRIES = 40
+
+    #: An alert older than this describes a world that no longer exists. Two
+    #: hours after the fact, "HOKAGE IS BLIND" is archaeology, not an alarm.
+    _DEFERRED_MAX_AGE_SECONDS = 7200
+
+    #: Sent per flush. A drain of twenty messages at a 10s timeout each would
+    #: stall whichever loop happened to trigger it.
+    _DEFERRED_FLUSH_BATCH = 5
+
+    def _defer(self, text: str) -> None:
+        """Hold an alert the network swallowed, to send when it comes back.
+
+        THE ALARM ABOUT THE NETWORK CANNOT TRAVEL OVER THE NETWORK.
+
+        2026-10-13 14:51:58 the host stopped resolving DNS - api.kite.trade and
+        api.telegram.org alike. Hokage went blind for 27 minutes, said
+        "Market data feed is DOWN (network)" 26 times, and tried to tell the
+        commander 26 times. Every one failed with getaddrinfo and was audited
+        "NOT SENT" and dropped. He was never going to learn about those 27
+        minutes; the only record was a log file.
+
+        IDENTICAL TEXTS COLLAPSE. Flushing 26 copies of the same alarm would
+        be its own failure - an alarm that arrives 26 times teaches him to mute
+        the channel, which is the same ending by a different road. One entry
+        per distinct text, carrying how many times it was raised and over what
+        span.
+        """
+        now = time.time()
+        with self._deferred_lock:
+            entry = self._deferred.get(text)
+            if entry is None:
+                if len(self._deferred) >= self._DEFERRED_MAX_ENTRIES:
+                    logger.warning(
+                        "Deferred Telegram queue is full (%d distinct alerts); "
+                        "dropping the oldest to make room.",
+                        self._DEFERRED_MAX_ENTRIES,
+                    )
+                    oldest = min(self._deferred, key=lambda k: self._deferred[k]["first"])
+                    self._deferred.pop(oldest, None)
+                self._deferred[text] = {"first": now, "last": now, "count": 1}
+            else:
+                entry["last"] = now
+                entry["count"] += 1
+
+    def _deferred_preamble(self, entry: dict, now: float) -> str:
+        """Say that this alert is OLD, and how old, before its own words.
+
+        A replayed alarm presented as current is worse than silence: he would
+        read "HOKAGE IS BLIND" while the feed was live and act on a condition
+        that had already cleared.
+        """
+        first = datetime.fromtimestamp(entry["first"], tz=timezone.utc).astimezone(
+            KolkataTime()
+        )
+        age_min = max(0, int((now - entry["first"]) / 60))
+        head = (
+            f"⏱ *DELAYED ALERT* - raised {first.strftime('%H:%M')} IST, "
+            f"{age_min} min ago, undeliverable until now"
+        )
+        if entry["count"] > 1:
+            last = datetime.fromtimestamp(entry["last"], tz=timezone.utc).astimezone(
+                KolkataTime()
+            )
+            head += (
+                f"\n_Raised {entry['count']} times, "
+                f"{first.strftime('%H:%M')}-{last.strftime('%H:%M')} IST._"
+            )
+        return head + "\n\n"
+
+    def _flush_deferred(self) -> int:
+        """Try to deliver what the network ate. Returns how many went out.
+
+        Called at the top of every send, because a send being attempted at all
+        is the cheapest signal available that something might work again.
+        Never raises and never recurses into the queue.
+        """
+        with self._deferred_lock:
+            if not self._deferred:
+                return 0
+            now = time.time()
+            stale = [
+                t for t, e in self._deferred.items()
+                if now - e["first"] > self._DEFERRED_MAX_AGE_SECONDS
+            ]
+            for t in stale:
+                e = self._deferred.pop(t)
+                logger.warning(
+                    "Dropping a deferred Telegram alert raised %d min ago "
+                    "(%dx), too old to be worth sending: %s",
+                    int((now - e["first"]) / 60), e["count"],
+                    " ".join(t.split())[:self._AUDIT_PREVIEW_CHARS],
+                )
+            batch = sorted(self._deferred.items(), key=lambda kv: kv[1]["first"])
+            batch = batch[: self._DEFERRED_FLUSH_BATCH]
+
+        sent = 0
+        for text, entry in batch:
+            body = self._deferred_preamble(entry, time.time()) + text
+            if not self._post(body):
+                # Still down. Leave the rest queued; do not spend the loop's
+                # time on messages that will fail the same way.
+                break
+            with self._deferred_lock:
+                self._deferred.pop(text, None)
+            sent += 1
+        if sent:
+            logger.info("Delivered %d deferred Telegram alert(s).", sent)
+        return sent
+
     def send_message(self, text: str) -> bool:
-        """Send a message to the configured Telegram chat."""
+        """Send a message to the configured Telegram chat.
+
+        Anything the network swallows is queued by _defer and delivered when
+        the link returns, stamped with its real age.
+        """
         if not self.enabled:
             logger.info(f"[MOCK TELEGRAM OUTBOX]: {text}")
             return True
-            
+
+        # Before this message, settle the debt from the last outage.
+        self._flush_deferred()
+
+        ok, unreachable = self._post(text, report_reachability=True)
+        if not ok and unreachable:
+            self._defer(text)
+        return ok
+
+    def _post(self, text: str, report_reachability: bool = False):
+        """The raw send. No queueing, so _flush_deferred cannot recurse.
+
+        Returns bool, or (bool, unreachable) when report_reachability is set.
+        `unreachable` is True ONLY when the request never reached Telegram -
+        a DNS failure, a timeout, a dead link. An HTTP response, even a
+        rejection, proves the network works, and queueing a message Telegram
+        has already refused would retry it forever.
+        """
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
         payload = {
             "chat_id": self.chat_id,
@@ -196,7 +335,7 @@ class TelegramBotUplink:
             res = requests.post(url, json=payload, timeout=10)
             if res.status_code == 200:
                 self._audit("sent", text)
-                return True
+                return (True, False) if report_reachability else True
             # Telegram rejects the WHOLE message when an interpolated value
             # opens a Markdown entity it cannot close — an underscore in
             # CRUDE_OIL, a backtick in Kite's "Incorrect `api_key`" error. The
@@ -214,14 +353,20 @@ class TelegramBotUplink:
                 retry = requests.post(url, json=payload, timeout=10)
                 if retry.status_code == 200:
                     self._audit("sent", text, "plain-text fallback")
-                    return True
+                    return (True, False) if report_reachability else True
                 logger.error(f"Telegram plain-text retry also failed {_scrub(retry.status_code)}: {_scrub(retry.text)}")
-                return False
+                self._audit("NOT SENT", text)
+                # Telegram answered. The network is fine and it refused this
+                # payload; queueing it would retry a rejection forever.
+                return (False, False) if report_reachability else False
             logger.error(f"Telegram API error {_scrub(res.status_code)}: {_scrub(res.text)}")
+            self._audit("NOT SENT", text)
+            return (False, False) if report_reachability else False
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {_scrub(e)}")
-        self._audit("NOT SENT", text)
-        return False
+        # Nothing came back at all - DNS, timeout, dead link. Worth holding.
+        self._audit("NOT SENT", text, "queued for retry")
+        return (False, True) if report_reachability else False
 
     def notify_fill(self, trade_details: dict) -> None:
         """Push a real-time order fill notification."""
