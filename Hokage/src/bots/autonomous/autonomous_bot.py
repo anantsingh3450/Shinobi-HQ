@@ -1912,6 +1912,26 @@ class AutonomousTradingBot:
                        "audits running; awaiting a gas idea that measures"),
     }
 
+    def is_parked(self, symbol: str) -> bool:
+        """Whether this asset is a standing DECISION not to trade.
+
+        Parked assets are skipped by the scan loop entirely. They were being
+        evaluated every cycle and refused every cycle: on 2026-10-12, 108 of
+        294 journal entries were "SessionShift: not scoped to CRUDEOIL" and
+        "... to NATURALGAS", 37% of the day's record spent restating a choice
+        already made. That buried the 16 IV-guard refusals and the 7 volume
+        refusals, which were the only decisions that carried information.
+
+        THIS DOES NOT MAKE THEM INVISIBLE, which is the thing that would make
+        it dangerous. audit_asset_coverage still names each one at EVERY boot
+        with its full reason, and the weekly audit's parked_watch still scores
+        them from the candle archive, which keeps syncing them (they are in
+        candle_archive.ASSETS and weekly_audit.UNIVERSE). The route back to
+        trading them is measurement, and that route is untouched — only the
+        per-cycle repetition is gone.
+        """
+        return symbol.upper() in self.PARKED_ASSETS
+
     def audit_asset_coverage(self) -> list[str]:
         """Name every asset in the universe that no live strategy can trade.
 
@@ -4532,6 +4552,11 @@ class AutonomousTradingBot:
         for symbol in MCX_UNIVERSE:
             if symbol in existing_underlyings:
                 continue
+            # A standing decision, already announced at boot with its reason.
+            # Re-deciding it every cycle only buries the decisions that matter.
+            if self.is_parked(symbol):
+                logger.debug(f"MCX Arena: {symbol} is parked; not scanned.")
+                continue
             if not self.orchestrator.session_manager.is_tradable(symbol):
                 continue
 
@@ -6213,6 +6238,11 @@ class AutonomousTradingBot:
 
         for symbol in active_universe:
             symbol_upper = symbol.upper()
+            # Same rule in both leagues, so parking an index asset later needs
+            # no second change here.
+            if self.is_parked(symbol_upper):
+                logger.debug(f"Index Dojo: {symbol_upper} is parked; not scanned.")
+                continue
             if symbol_upper in existing:
                 self.update_asset_surveillance_state(
                     asset=symbol_upper,

@@ -93,7 +93,14 @@ def isolate_resolver(tmp_path):
         yield
 
 
-def test_crudeoil_long_lands_on_mcx_venue_never_index(mock_orchestrator_with_mcx, tmp_path):
+def test_crudeoil_long_lands_on_mcx_venue_never_index(mock_orchestrator_with_mcx, tmp_path, monkeypatch):
+    # CRUDEOIL is PARKED and the scan loop skips parked assets, but this
+    # test is about ROUTING -- that an MCX underlying reaches the MCX venue
+    # and never the index one. Crude is its example, not its subject, so
+    # unpark it here rather than let a lineup decision silently delete a
+    # routing guarantee. Same treatment test_parked_assets.py already uses
+    # for NATURALGAS.
+    monkeypatch.delitem(AutonomousTradingBot.PARKED_ASSETS, "CRUDEOIL", raising=False)
     orch = mock_orchestrator_with_mcx
     with ExitStack() as stack:
         stack.enter_context(patch.object(PathResolver, "__init__", lambda self, brain_root=None: setattr(self, "_brain_root", tmp_path)))
