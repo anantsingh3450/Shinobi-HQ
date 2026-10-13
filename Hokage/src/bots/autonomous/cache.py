@@ -39,8 +39,31 @@ class IntelligenceCache:
         """Return absolute path for cache file."""
         return self._intel_dir / filename
 
-    def write_intelligence(self, filename: str, data: dict[str, Any]) -> None:
-        """Write precomputed JSON dictionary back to intelligence cache folder atomically."""
+    #: Attempts at the final rename before giving up. On Windows os.replace
+    #: fails with WinError 5 while anything holds the target open for even a
+    #: moment - an indexer or a scanner reading the freshly written .tmp is
+    #: enough - and the lock is gone again milliseconds later.
+    _REPLACE_ATTEMPTS = 5
+    _REPLACE_BACKOFF_SECONDS = 0.05
+
+    def write_intelligence(self, filename: str, data: dict[str, Any]) -> bool:
+        """Write a precomputed JSON dictionary into the intelligence cache.
+
+        Returns True only if the file on disk now holds this data.
+
+        IT USED TO SAY "Wrote precomputed intelligence to cache" ON THE PATH
+        WHERE THE WRITE HAD BEEN DROPPED. A PermissionError from the final
+        rename was caught, logged at WARNING, and execution fell straight
+        through to the success line - so the log claimed a write that had not
+        happened, the orphaned .tmp was left on disk, and every caller was told
+        nothing at all because this returned None either way.
+
+        Seen 9 times, most recently 2026-10-13 06:23:21 on
+        portfolio_health.json. The consequence is not a missing panel: the
+        reader finds the PREVIOUS file and shows an old health score as the
+        current one. A stale number that cannot be told apart from a fresh one
+        is the same failure as a fabricated one.
+        """
         file_path = self.get_cache_file_path(filename)
         try:
             # Created here, at the moment it is genuinely needed, rather than in
@@ -61,13 +84,36 @@ class IntelligenceCache:
                     os.fsync(fh.fileno())
                 except Exception:
                     pass
+            import time
+            last_error: Exception | None = None
+            for attempt in range(self._REPLACE_ATTEMPTS):
+                try:
+                    temp_path.replace(file_path)
+                    logger.debug(f"Wrote precomputed intelligence to cache: {filename}")
+                    return True
+                except PermissionError as pe:
+                    last_error = pe
+                    if attempt + 1 < self._REPLACE_ATTEMPTS:
+                        time.sleep(self._REPLACE_BACKOFF_SECONDS * (attempt + 1))
+
+            # ERROR, not WARNING. The cache now holds data of an unknown age
+            # that its reader will present as current.
+            logger.error(
+                f"Could not replace cache for {filename} after "
+                f"{self._REPLACE_ATTEMPTS} attempts - the file on disk is now "
+                f"STALE and whatever reads it will show an old value as "
+                f"current: {last_error}"
+            )
+            # Never leave the .tmp behind: an orphan makes the next failure
+            # look like this one and accumulates silently.
             try:
-                temp_path.replace(file_path)
-            except PermissionError as pe:
-                logger.warning(f"File locked, could not replace cache for {filename}: {pe}")
-            logger.debug(f"Wrote precomputed intelligence to cache: {filename}")
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return False
         except Exception as exc:
             logger.error(f"Failed to write intelligence cache '{filename}': {exc}")
+            return False
 
     def read_intelligence(
         self,
