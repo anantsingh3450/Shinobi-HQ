@@ -55,9 +55,11 @@ def test_a_wider_search_must_clear_a_higher_bar():
 
 
 def test_the_measured_case():
-    """536 candidates demanded t>=3.90, and that is what took the count of
-    'discoveries' from 21 to 0."""
+    """536 candidates demanded t>=3.90. Widened to conjunctions, GOLDM alone
+    produced 21,718 candidates and a t>=4.72 bar - which took the count of
+    "discoveries" from 194 to 0."""
     assert hl.corrected_t(536) == pytest.approx(3.90, abs=0.05)
+    assert hl.corrected_t(21718) == pytest.approx(4.72, abs=0.05)
 
 
 def test_a_small_search_never_earns_an_easier_bar():
@@ -88,7 +90,7 @@ def test_a_candidate_must_clear_on_both_halves(capsys):
     """Train-only is a search result. The hold-out half is the test."""
     bar = hl.corrected_t(2)
     train_only = {
-        "symbol": "X", "key": ("p", "above", 1, "long", "band"),
+        "symbol": "X", "key": ((("p", "above", 1),), "long", "band"),
         "train_n": 100, "train_edge": 0.4, "train_t": bar + 1,
         "hold_n": 100, "hold_edge": 0.0, "hold_t": 0.1,
     }
@@ -98,7 +100,7 @@ def test_a_candidate_must_clear_on_both_halves(capsys):
 
 def test_a_thin_sample_is_not_eligible_however_good_its_t(capsys):
     thin = {
-        "symbol": "X", "key": ("p", "above", 1, "long", "band"),
+        "symbol": "X", "key": ((("p", "above", 1),), "long", "band"),
         "train_n": hl.MIN_N - 1, "train_edge": 2.0, "train_t": 99.0,
         "hold_n": hl.MIN_N - 1, "hold_edge": 2.0, "hold_t": 99.0,
     }
@@ -120,7 +122,7 @@ def test_the_uncorrected_count_is_shown_so_the_correction_can_be_judged(capsys):
     """Seeing '21 would clear uncorrected, 0 corrected' is what makes the
     correction believable rather than a black box."""
     ok = {
-        "symbol": "X", "key": ("p", "above", 1, "long", "band"),
+        "symbol": "X", "key": ((("p", "above", 1),), "long", "band"),
         "train_n": 100, "train_edge": 0.4, "train_t": 2.5,
         "hold_n": 100, "hold_edge": 0.4, "hold_t": 2.5,
     }
@@ -142,7 +144,7 @@ def test_nothing_is_written_anywhere():
 
 def test_the_output_calls_them_hypotheses(capsys):
     ok = {
-        "symbol": "X", "key": ("stretch_vs_vwap", "above", 1, "long", "09:15-11:00"),
+        "symbol": "X", "key": ((("stretch_vs_vwap", "above", 1),), "long", "09:15-11:00"),
         "train_n": 100, "train_edge": 0.9, "train_t": 9.0,
         "hold_n": 100, "hold_edge": 0.9, "hold_t": 9.0,
     }
@@ -218,3 +220,84 @@ def test_the_volume_probe_is_bounded():
     """measurable() runs once per candidate bar and ctx.bars grows to the
     whole archive; an unbounded scan would make every lab quadratic."""
     assert signal_lab._VOLUME_PROBE_BARS <= 1000
+
+# --------------------------------------------- the widened space stays sane
+def test_conjunctions_are_searched():
+    """Pairs are where the interesting ideas live: "stretched from VWAP AND
+    volatility expanding" is a different claim from either half."""
+    assert hl.MAX_CONDITIONS >= 2
+
+
+def test_the_primitive_set_is_interpretable():
+    """A search over hundreds of opaque features would clear the corrected bar
+    occasionally and teach nobody anything. Every condition here is a sentence
+    a human can argue with."""
+    prims = hl._primitives()
+    assert 8 <= len(prims) <= 20
+    for name, (fn, thresholds) in prims.items():
+        assert callable(fn)
+        assert len(thresholds) >= 3, f"{name} has too few thresholds to be a sweep"
+        assert "_" in name, f"{name} should read as a phrase"
+
+
+def test_every_primitive_reads_only_the_context():
+    """Ctx by construction cannot see the future. A primitive reaching past it
+    would be lookahead, and lookahead always clears any bar."""
+    src = (ROOT / "tools" / "research" / "hypothesis_lab.py").read_text(
+        encoding="utf-8"
+    )
+    body = src[src.index("def _primitives("):src.index("#: A hypothesis may be")]
+    for banned in ("bars[i +", "bars[i+", "future", "lookahead", "HORIZON"):
+        assert banned not in body, f"a primitive reaches outside Ctx: {banned}"
+
+
+def test_the_outcome_is_computed_per_bar_not_per_candidate():
+    """With conjunctions the space is tens of thousands of candidates; a
+    forward walk inside the innermost loop recomputes an identical result for
+    each and the search never finishes.
+
+    COUNTS CALLS VIA AST, not occurrences of the name - this function's own
+    docstring mentions it, and text cannot tell a call from a description of
+    one.
+    """
+    import ast
+
+    src = (ROOT / "tools" / "research" / "hypothesis_lab.py").read_text(
+        encoding="utf-8"
+    )
+    fn = next(
+        n for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.FunctionDef) and n.name == "search"
+    )
+    calls = [
+        n for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "realised"
+    ]
+    assert len(calls) == 2, (
+        f"expected one forward walk per side per bar, found {len(calls)}"
+    )
+
+
+def test_only_testable_candidates_count_toward_the_family():
+    """Counting keys too thin to be tested would inflate the correction and
+    make the bar meaninglessly high - dishonest in the other direction."""
+    src = (ROOT / "tools" / "research" / "hypothesis_lab.py").read_text(
+        encoding="utf-8"
+    )
+    body = src[src.index("def search("):src.index("def report(")]
+    assert "if tn < MIN_N or hn < MIN_N:" in body
+    assert "return out, len(out)" in body
+
+
+def test_a_conjunction_is_rendered_readably(capsys):
+    two = {
+        "symbol": "GOLDM", "key": (
+            (("stretch_vs_vwap", "above", 0.75), ("atr_expansion", "above", 1.1)),
+            "long", "17:00-18:30"),
+        "train_n": 100, "train_edge": 0.9, "train_t": 9.0,
+        "hold_n": 100, "hold_edge": 0.9, "hold_t": 9.0,
+    }
+    hl.report([two], 2)
+    out = capsys.readouterr().out
+    assert "AND" in out
+    assert "stretch_vs_vwap above 0.75" in out
