@@ -115,6 +115,49 @@ class Ctx:
 MIN_ATR_FRACTION_OF_PRICE = 0.0001   # 1 basis point
 
 
+#: Family-wise error rate the multiple-comparisons correction targets. The
+#: conventional 0.05, stated rather than tuned - anything that tunes its own
+#: significance threshold is marking its own homework.
+FAMILY_ALPHA = 0.05
+
+#: The bar a single pre-specified test clears, and the floor for any corrected
+#: bar. Everything Hokage ships has met it.
+BASE_SHIP_T = 2.0
+
+
+def corrected_t(n_tested: int, alpha: float = FAMILY_ALPHA) -> float:
+    """The t a result must clear, given how many results were looked at.
+
+    PICKING THE BEST OF N AND JUDGING IT AS IF IT WERE THE ONLY ONE IS THE
+    OLDEST MISTAKE IN MEASUREMENT. Measured 2026-10-14 on Hokage's own tape:
+    of 116,360 generated hypotheses, 2,808 cleared t>=2.0 on BOTH a train and
+    a hold-out half. Not one cleared the bar corrected for having looked in
+    116,360 places. Those 2,808 were noise wearing a t-statistic.
+
+    Sidak: a per-test alpha of 1-(1-alpha)^(1/N) holds the family-wise rate at
+    alpha across N tests. Converted to a two-sided z by bisection on erf,
+    which is the right order of magnitude for these sample sizes and is
+    deliberately the SIMPLE correction - an elaborate one invites tuning.
+
+    Never returns less than BASE_SHIP_T: a narrow search does not earn an
+    easier bar than everything else in this system ships against.
+    """
+    if n_tested <= 1:
+        return BASE_SHIP_T
+    import math
+
+    per_test = 1.0 - (1.0 - alpha) ** (1.0 / n_tested)
+    target = 1.0 - per_test / 2.0
+    lo, hi = 0.0, 10.0
+    for _ in range(80):
+        mid = (lo + hi) / 2.0
+        if 0.5 * (1.0 + math.erf(mid / math.sqrt(2.0))) < target:
+            lo = mid
+        else:
+            hi = mid
+    return max(BASE_SHIP_T, (lo + hi) / 2.0)
+
+
 def measurable(ctx: "Ctx", entry_bar: dict) -> bool:
     """Whether this bar is a legitimate place to measure an entry FROM.
 

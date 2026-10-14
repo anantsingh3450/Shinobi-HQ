@@ -12,6 +12,8 @@ be allowed to change the lineup.
 """
 from __future__ import annotations
 
+import pathlib
+
 import importlib.util
 import sys
 from pathlib import Path
@@ -27,6 +29,14 @@ _spec = importlib.util.spec_from_file_location(
 )
 wa = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(wa)
+
+#: Comfortably either side of whatever the derived bar is, so these fixtures
+#: need no rewrite each time the lineup changes size. The bar was a flat 2.0
+#: until 2026-10-14, when it became the value corrected for the 32 cells this
+#: audit looks at — and every literal t below silently meant "above 2.0" or
+#: "below 2.0" until then.
+ABOVE = wa.SHIP_BAR + 1.0
+BELOW = wa.SHIP_BAR - 1.0
 
 
 def _snapshot(day: str, rows: dict, lineup: dict) -> dict:
@@ -48,8 +58,8 @@ ARCHIVED = {"mod-b": {"strategy_id": "s-b", "name": "Beta", "status": "ARCHIVED"
 def test_one_bad_week_is_not_enough_to_demote():
     """A single week below the bar is noise. Acting on it would churn the
     lineup every time a quiet week lowered someone's t."""
-    prev = _snapshot("2026-08-08", {("mod-a", "GOLDM"): 2.6}, LIVE)
-    now = _snapshot("2026-08-15", {("mod-a", "GOLDM"): 1.4}, LIVE)
+    prev = _snapshot("2026-08-08", {("mod-a", "GOLDM"): ABOVE}, LIVE)
+    now = _snapshot("2026-08-15", {("mod-a", "GOLDM"): BELOW}, LIVE)
     report = wa.build_report(now, [prev])
     assert report["demotions"] == []
 
@@ -67,7 +77,7 @@ def test_two_consecutive_bad_weeks_flags_a_demotion():
 def test_an_archived_module_back_above_the_bar_is_flagged_for_revival():
     """Archiving is not meant to be permanent — regimes change."""
     prev = _snapshot("2026-08-08", {("mod-b", "GOLDM"): 0.4}, ARCHIVED)
-    now = _snapshot("2026-08-15", {("mod-b", "GOLDM"): 2.7}, ARCHIVED)
+    now = _snapshot("2026-08-15", {("mod-b", "GOLDM"): ABOVE}, ARCHIVED)
     report = wa.build_report(now, [prev])
     assert len(report["revivals"]) == 1
     assert report["revivals"][0]["name"] == "Beta"
@@ -150,11 +160,61 @@ def test_the_rendered_report_names_the_below_bar_pairs():
     assert "Alpha" in text and "GOLDM" in text and "below bar" in text
 
 
-def test_the_ship_bar_matches_every_other_lab():
-    """t>=2 is the standard the whole research directory ships against. A
-    different bar here would quietly create two definitions of 'edge'."""
-    assert wa.SHIP_BAR == 2.0
+def test_the_ship_bar_is_derived_from_the_size_of_the_search():
+    """THIS TEST USED TO ASSERT SHIP_BAR == 2.0, on the belief that one bar
+    everywhere is consistency. That belief is wrong, and hypothesis_lab
+    measured why: of 116,360 candidates on Hokage's own tape, 2,808 cleared
+    t>=2.0 on BOTH halves and none cleared the bar corrected for having looked
+    in 116,360 places.
+
+    The bar is a function of how many results were looked at, so labs with
+    different search sizes correctly have different bars. What must be shared
+    is the FUNCTION and the floor, not the number.
+
+    Raised on the commander's decision 2026-10-14.
+    """
+    from signal_lab import BASE_SHIP_T, corrected_t
+
+    assert wa.SHIP_BAR == round(corrected_t(wa.FAMILY_SIZE), 2)
+    assert wa.SHIP_BAR > BASE_SHIP_T, "a family of 32 must clear more than one test"
     assert wa.MIN_N == 30
+
+
+def test_the_family_size_counts_what_was_LOOKED_AT():
+    """Not what reported a number. The commander asked for 3.11, the bar for
+    the 27 cells that reported on 2026-10-14; the audit ATTEMPTS 32, because 3
+    index assets x 4 index modules + 4 MCX assets x 5 MCX modules. Counting
+    only the ones that reported would let a thin-n drop shrink the family, and
+    dropping a cell is itself a selection."""
+    from bots.strategy.components.entries import ENTRY_MODULES
+    from bots.strategy.components.mcx_entries import MCX_ENTRY_MODULES
+
+    index_assets = [a for a in wa.UNIVERSE if a not in wa._MCX_FUTURES]
+    mcx_assets = [a for a in wa.UNIVERSE if a in wa._MCX_FUTURES]
+    assert wa.FAMILY_SIZE == (
+        len(index_assets) * len(ENTRY_MODULES)
+        + len(mcx_assets) * len(MCX_ENTRY_MODULES)
+    )
+
+
+def test_the_bar_is_not_a_typed_number():
+    """Hardcoding 3.11 would silently become wrong the moment a module or an
+    asset is added or retired, and this audit exists to stop numbers drifting
+    from what they describe."""
+    src = (ROOT / "tools" / "research" / "weekly_audit.py").read_text(
+        encoding="utf-8"
+    )
+    assert "SHIP_BAR = round(corrected_t(" in src
+    assert "SHIP_BAR = 3.11" not in src
+    assert "SHIP_BAR = 2.0" not in src
+
+
+def test_the_bar_is_part_of_the_stamp():
+    """"Below the bar two audits running" compares two VERDICTS, so a change
+    of bar changes what the trend means - exactly like a change of
+    measurement. Folding it into the stamp makes a bar change reset the
+    retirement clock through the one mechanism that already does that."""
+    assert f"bar{wa.SHIP_BAR:.2f}" in wa.GEOMETRY
 
 
 # ------------------------------------------------- the measurement basis

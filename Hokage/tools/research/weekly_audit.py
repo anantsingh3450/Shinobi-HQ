@@ -62,6 +62,7 @@ from signal_lab import (  # noqa: E402
 from sweep_lab import realised  # noqa: E402
 from entry_module_lab import build_context  # noqa: E402
 
+from signal_lab import corrected_t  # noqa: E402
 from bots.autonomous.autonomous_bot import AutonomousTradingBot as Bot  # noqa: E402
 from bots.strategy.components.entries import ENTRY_MODULES  # noqa: E402
 from bots.strategy.components.mcx_entries import MCX_ENTRY_MODULES  # noqa: E402
@@ -72,7 +73,6 @@ HORIZON = 4
 
 #: Below this a measured edge is indistinguishable from luck. Same bar every
 #: other lab in this directory ships against.
-SHIP_BAR = 2.0
 
 #: Minimum signals before a t-statistic is quoted at all.
 MIN_N = 30
@@ -87,6 +87,42 @@ LOOKBACK_DAYS = 105
 #: The production thesis stop, in ATR of the underlying. Every number this audit
 #: writes is measured INSIDE it.
 PROD_STOP_ATR = 1.25
+
+
+UNIVERSE = ["NIFTY", "BANKNIFTY", "SENSEX", "CRUDEOIL", "NATURALGAS", "GOLDM", "SILVERM"]
+
+#: THE BAR, CORRECTED FOR HOW MANY CELLS THIS AUDIT LOOKS AT.
+#:
+#: Raised 2026-10-14 on the commander's decision, from a flat 2.0.
+#:
+#: This audit scores every (module, asset) pair and reports the ones that
+#: clear. Picking the best of N and judging it as though it were the only test
+#: is the oldest mistake in measurement, and hypothesis_lab had just measured
+#: its size on Hokage's own tape: of 116,360 generated candidates, 2,808
+#: cleared t>=2.0 on BOTH halves and NONE cleared the corrected bar. The
+#: audit's family is far smaller and its cells are pre-specified rather than
+#: machine-generated, which is a genuinely weaker version of the problem - but
+#: it is the same problem, and a flat 2.0 was never the right answer to it.
+#:
+#: DERIVED, NOT TYPED. The commander asked for 3.11, which is the corrected
+#: bar for the 27 cells measured that day. Hardcoding 3.11 would silently
+#: become wrong the moment a module or an asset is added or retired, and this
+#: audit's whole purpose is to stop numbers drifting from what they describe.
+#: So the family size is computed from the lineup and the bar follows it.
+#:
+#: Consequence, stated plainly: both cells confirmed under the old bar -
+#: SessionShift/GOLDM t+2.19 and MeanReversion/SENSEX t+2.15 - fall below this
+#: one. That is the point of raising it.
+def _family_size() -> int:
+    """How many (module, asset) cells this audit tests."""
+    return sum(
+        len(MCX_ENTRY_MODULES if symbol in _MCX_FUTURES else ENTRY_MODULES)
+        for symbol in UNIVERSE
+    )
+
+
+FAMILY_SIZE = _family_size()
+SHIP_BAR = round(corrected_t(FAMILY_SIZE), 2)
 
 #: How this audit measures. Written into every snapshot, and compared by
 #: evolution.plan() before two snapshots may be treated as consecutive evidence.
@@ -145,9 +181,15 @@ PROD_STOP_ATR = 1.25
 #: consequence and it is the cheaper error: continuing a clock across a change
 #: of instrument compares two different measurements and calls the difference
 #: a decline in edge.
-GEOMETRY = "holdout-split+stop-per-cell+target+tradedbars"
-
-UNIVERSE = ["NIFTY", "BANKNIFTY", "SENSEX", "CRUDEOIL", "NATURALGAS", "GOLDM", "SILVERM"]
+#: The BAR is part of the stamp. "below the bar two audits running" compares
+#: two verdicts, so a change of bar changes what the trend means - exactly
+#: like a change of measurement. Folding it in here makes a bar change reset
+#: the retirement clock through the one mechanism that already does that,
+#: instead of a second rule that could disagree with the first.
+GEOMETRY = (
+    "holdout-split+stop-per-cell+target+tradedbars"
+    f"+bar{SHIP_BAR:.2f}"
+)
 
 SNAPSHOT_DIR = BRAIN / "research" / "snapshots"
 PORTFOLIO_DIR = BRAIN / "portfolio"

@@ -60,19 +60,23 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "research"))
 
-from signal_lab import Ctx, load_bars, measurable  # noqa: E402
+from signal_lab import (  # noqa: E402
+    BASE_SHIP_T,
+    Ctx,
+    FAMILY_ALPHA,
+    corrected_t,
+    load_bars,
+    measurable,
+)
 from sweep_lab import HORIZON, realised  # noqa: E402
 
-#: The ordinary ship bar, before any correction for the size of the search.
-BASE_T = 2.0
+#: The correction and the uncorrected bar are shared with signal_lab, so the
+#: audit and this generator cannot disagree about what a t means.
+BASE_T = BASE_SHIP_T
 
 #: Fewer than this on either half and the cell is arithmetic on noise.
 MIN_N = 40
 
-#: Family-wise error rate the correction targets. 0.05 is the conventional
-#: choice and is stated rather than tuned - a generator that tunes its own
-#: significance bar is marking its own homework.
-FAMILY_ALPHA = 0.05
 
 
 # --------------------------------------------------------------- primitives
@@ -160,32 +164,6 @@ BANDS = (
     ("17:00-18:30", 1020, 1110),
     ("18:30-20:00", 1110, 1200),
 )
-
-
-def corrected_t(n_tested: int, alpha: float = FAMILY_ALPHA) -> float:
-    """The t a candidate must clear, given how many were tried.
-
-    Sidak: a single test at alpha becomes 1 - (1-alpha)^(1/N) across N of them.
-    Converted to a two-sided z, which is the right order of magnitude for the
-    sample sizes here and is deliberately the SIMPLE correction - an elaborate
-    one would invite tuning.
-
-    Never returns less than BASE_T. A small search does not earn an easier bar
-    than everything else in this system ships against.
-    """
-    if n_tested <= 1:
-        return BASE_T
-    per_test = 1.0 - (1.0 - alpha) ** (1.0 / n_tested)
-    # inverse normal via the Beasley-Springer-Moro-free route: bisection on erf
-    target = 1.0 - per_test / 2.0
-    lo, hi = 0.0, 10.0
-    for _ in range(80):
-        mid = (lo + hi) / 2.0
-        if 0.5 * (1.0 + math.erf(mid / math.sqrt(2.0))) < target:
-            lo = mid
-        else:
-            hi = mid
-    return max(BASE_T, (lo + hi) / 2.0)
 
 
 def _t(xs: list[float]) -> tuple[int, float, float]:

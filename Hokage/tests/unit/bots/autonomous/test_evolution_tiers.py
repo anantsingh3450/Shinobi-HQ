@@ -19,7 +19,7 @@ from bots.autonomous import evolution as ev
 #: The measurement basis every snapshot is stamped with. Two snapshots are only
 #: consecutive evidence if they agree on it — see
 #: test_a_change_of_measurement_basis_resets_the_retirement_clock.
-GEOMETRY = "holdout-split+stop-per-cell+target+tradedbars"
+GEOMETRY = "holdout-split+stop-per-cell+target+tradedbars+bar3.16"
 
 
 def _snap(day: str, rows: dict, lineup: dict, bar: float = 2.0,
@@ -395,6 +395,10 @@ def test_the_audit_stamps_the_basis_it_actually_measured_with():
         "deliberate basis change should update both in the same commit"
     )
     assert wa.PROD_STOP_ATR == 1.25
+    # The bar is part of the stamp now, so a bar change also resets the
+    # clock. Raised 2026-10-14 from a flat 2.0 to the value corrected for
+    # the 32 cells this audit looks at.
+    assert f"bar{wa.SHIP_BAR:.2f}" in wa.GEOMETRY
 
 
 def test_the_orphan_reason_names_the_MODULE_not_the_decided_asset():
