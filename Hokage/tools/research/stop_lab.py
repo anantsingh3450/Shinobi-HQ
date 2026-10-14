@@ -140,6 +140,18 @@ def evaluate(symbol: str, bars: list[dict], modules: dict) -> dict:
     return out
 
 
+def _production_stop_for(module_id: str, symbol: str) -> float:
+    """The stop production actually runs for this cell, asked of the bot.
+
+    A lab holding its own copy of a production constant will eventually
+    describe a system that no longer exists.
+    """
+    from bots.autonomous.autonomous_bot import AutonomousTradingBot as _Bot
+
+    strategy_id = module_id.replace("entry-", "strat-", 1)
+    return _Bot._thesis_atr_mult_for(_Bot, strategy_id, symbol)
+
+
 def report(symbol: str, results: dict) -> None:
     printed = False
     for name, rec in sorted(results.items()):
@@ -154,6 +166,14 @@ def report(symbol: str, results: dict) -> None:
         if not printed:
             print(f"\n  {symbol}   (horizon {HORIZON} bars = {HORIZON * 15} min)")
             printed = True
+        # ASK, DO NOT ASSUME. This printed "<- production" against 1.25 on
+        # every row, but production has run SessionShift/GOLDM at 3.0 ATR
+        # since 2026-08-13 (_THESIS_ATR_MULT_BY_STRATEGY_ASSET). Labelling
+        # 1.25 as live on GOLDM made an already-shipped change look like an
+        # available improvement, and on 2026-10-14 that is exactly how it was
+        # read: as "the stop is amputating the edge" on a cell whose stop had
+        # been widened two months earlier.
+        prod = _production_stop_for(name, symbol)
         print(f"    {name}")
         print(f"      {'stop':>10s} {'n':>5s} {'stopped':>8s} {'edge_atr':>9s} {'t':>7s}")
         base_mean = None
@@ -163,9 +183,9 @@ def report(symbol: str, results: dict) -> None:
                 base_mean = mean
             label = "none" if k is None else f"{k:.2f} ATR"
             pct = rec["stopped"][k] / n * 100.0 if n else 0.0
-            flag = "  <- production" if k == 1.25 else ""
+            flag = "  <- production" if k == prod else ""
             print(f"      {label:>10s} {n:>5d} {pct:>7.0f}% {mean:>+9.3f} {t:>+7.2f}{flag}")
-        n125, m125, t125 = _t(rec[1.25])
+        n125, m125, t125 = _t(rec[prod])
         best_k, best_m, best_t = None, -9e9, 0.0
         for k in STOPS:
             _, m, t = _t(rec[k])
@@ -173,7 +193,7 @@ def report(symbol: str, results: dict) -> None:
                 best_k, best_m, best_t = k, m, t
         cost = base_mean - m125
         verdict = (
-            f"production stop costs {cost:+.3f} ATR/trade vs no stop"
+            f"production stop ({prod} ATR) costs {cost:+.3f} ATR/trade vs no stop"
             if cost > 0 else
             f"production stop ADDS {-cost:+.3f} ATR/trade vs no stop"
         )
