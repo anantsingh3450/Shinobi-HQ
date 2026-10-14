@@ -11,7 +11,8 @@ grid and reports its maximum, because the maximum of seven noisy cells is
 usually noise. These are the rules that stop it:
 
   1. n >= 40 on BOTH halves
-  2. t >= 2.0 on BOTH halves
+  2. t >= the ship bar on BOTH halves (a flat 2.0 until 2026-10-14,
+     now corrected for the size of the grid this lab searches)
   3. beats the incumbent on BOTH halves, not just the searched one
   4. hold-out gain >= 0.05 ATR
 
@@ -46,8 +47,14 @@ def cell(n, mean, t):
     return (n, mean, t)
 
 
-GOOD = cell(80, 0.60, 3.0)
-INCUMBENT = cell(80, 0.30, 2.2)
+#: RELATIVE TO THE BAR, NOT A LITERAL. These were t=3.0 and t=2.2, which
+#: silently meant "above 2.0" and "also above 2.0". On 2026-10-14 the ship bar
+#: stopped being a flat 2.0 and became the value corrected for the size of the
+#: grid this lab searches, so a fixed 3.0 was no longer reliably a winner.
+#: Priced off the live bar, these fixtures hold whatever it becomes.
+_BAR = sl.ship_bar()
+GOOD = cell(80, 0.60, _BAR + 1.0)
+INCUMBENT = cell(80, 0.30, _BAR - 0.2)
 
 
 # ------------------------------------------------------------- the four rules
@@ -57,7 +64,7 @@ def test_a_clear_winner_is_proposed():
 
 
 def test_too_few_signals_on_either_half_is_refused():
-    thin = cell(sl.MIN_N - 1, 0.90, 4.0)
+    thin = cell(sl.MIN_N - 1, 0.90, _BAR + 2.0)
     assert not sl.survives(thin, GOOD, INCUMBENT, INCUMBENT)[0]
     assert not sl.survives(GOOD, thin, INCUMBENT, INCUMBENT)[0]
 

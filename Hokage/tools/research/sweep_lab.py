@@ -77,6 +77,8 @@ from hokage.memory.resolver import brain_root
 BRAIN = brain_root()
 
 from signal_lab import (  # noqa: E402
+    BASE_SHIP_T,
+    corrected_t,
     MIN_BARS_PER_HALF,
     Ctx,
     _MCX_FUTURES,
@@ -101,7 +103,83 @@ HORIZON = 4
 PROD_STOP_ATR = 1.25
 
 #: The bar a candidate must clear on BOTH halves.
-SHIP_BAR = 2.0
+#: THE BAR, CORRECTED FOR THE SIZE OF THE GRID THIS SWEEP SEARCHES.
+#:
+#: Raised 2026-10-14, the same day and for the same reason as the audit's.
+#: This lab is a SEARCH: every live (module, asset) pair times every tunable
+#: knob times every candidate value, each judged on two halves. A flat t>=2.0
+#: across all of it is the multiple-comparisons mistake, and hypothesis_lab
+#: had just measured its size on Hokage's own tape - of 116,360 candidates,
+#: 2,808 cleared t>=2.0 on BOTH halves and none cleared the corrected bar.
+#:
+#: The consequence here is specific and it matters: this lab WRITES PENDING
+#: PROPOSALS. An uncorrected bar means it can propose a parameter change to the
+#: commander on the strength of noise, with a t-statistic attached. That is
+#: worse than the audit over-reporting edge, because a proposal invites an
+#: action.
+#:
+#: Lazily computed and cached, NOT evaluated at import. weekly_audit, iv_lab
+#: and event_lab all import realised() from this module; raising during import
+#: because a portfolio file could not be read would take all three down with
+#: it, which is a far worse failure than a sweep that cannot price its own
+#: grid.
+_SHIP_BAR_CACHE: list[float] = []
+
+
+def _family_size() -> int:
+    """How many candidate values this sweep tests.
+
+    The incumbent is excluded: it is the baseline every candidate is compared
+    AGAINST, not one of the things being tried.
+    """
+    modules = {getattr(m, "module_id", k): m
+               for k, m in {**ENTRY_MODULES, **MCX_ENTRY_MODULES}.items()}
+    n = 0
+    for mid, asset, _ in live_pairs():
+        module = modules.get(mid)
+        tunables = getattr(module, "TUNABLES", None)
+        if module is None or not tunables:
+            continue
+        for knob, spec in tunables.items():
+            grid = tuple(spec["values"])
+            try:
+                incumbent = effective(module, knob, spec, asset)
+            except Exception:
+                incumbent = object()      # unknown: count the whole grid
+            if incumbent not in grid:
+                grid = grid + (incumbent,)
+            n += max(0, len(grid) - 1)
+    return n
+
+
+def ship_bar() -> float:
+    """The t a candidate must clear on BOTH halves, corrected for the grid.
+
+    Falls back to the uncorrected floor and SAYS SO. A silent fallback would
+    be the worst outcome available: proposals written against a weaker bar
+    than the run claims.
+    """
+    if _SHIP_BAR_CACHE:
+        return _SHIP_BAR_CACHE[0]
+    size = 0
+    reason = ""
+    try:
+        size = _family_size()
+    except Exception as exc:
+        reason = str(exc)
+    # AN EMPTY GRID IS NOT A SMALL GRID. live_pairs() reads the strategy
+    # portfolios and returns NOTHING - no exception - when the brain root has
+    # no portfolio to read, which is the case in any hermetic environment and
+    # would be the case for a misconfigured one. Counting that as a family of
+    # zero collapsed the bar to the uncorrected floor with no warning at all:
+    # the precise silent-weakening this correction exists to prevent.
+    if size < 1:
+        print("  WARNING: could not size this sweep's grid%s. Falling back to "
+              "the UNCORRECTED t>=%.1f — treat any proposal from this run as "
+              "unconfirmed." % (" (%s)" % reason if reason else "", BASE_SHIP_T))
+        size = 1
+    _SHIP_BAR_CACHE.append(round(corrected_t(size), 2))
+    return _SHIP_BAR_CACHE[0]
 
 #: Below this a half is not judged.
 MIN_N = 40
@@ -351,8 +429,10 @@ def survives(cand_tr, cand_ho, inc_tr, inc_ho) -> tuple[bool, str]:
     """(is this a proposal, and if not why not). Each argument is (n, mean, t)."""
     if cand_tr[0] < MIN_N or cand_ho[0] < MIN_N:
         return False, "too few signals (train %d, hold %d)" % (cand_tr[0], cand_ho[0])
-    if cand_tr[2] < SHIP_BAR or cand_ho[2] < SHIP_BAR:
-        return False, "below the ship bar (t %+.2f / %+.2f)" % (cand_tr[2], cand_ho[2])
+    bar = ship_bar()
+    if cand_tr[2] < bar or cand_ho[2] < bar:
+        return False, "below the ship bar t>=%.2f (t %+.2f / %+.2f)" % (
+            bar, cand_tr[2], cand_ho[2])
     if cand_ho[1] <= inc_ho[1] or cand_tr[1] <= inc_tr[1]:
         return False, "loses to today's setting on one half"
     #: Compared with a tolerance, because binary floats make the boundary lie.
@@ -530,8 +610,12 @@ def main() -> int:
     print("  split at its midpoint — a contract roll must shorten BOTH halves, "
           "not hollow one out.")
     print("  Every cell measured WITH the production %s ATR thesis stop." % PROD_STOP_ATR)
-    print("  A proposal must clear t>=%.1f on BOTH halves AND beat today's "
-          "setting on BOTH." % SHIP_BAR)
+    print("  A proposal must clear t>=%.2f on BOTH halves AND beat today's "
+          "setting on BOTH." % ship_bar())
+    print("  That bar is CORRECTED for the %d candidate values this sweep "
+          "tries; searching" % _family_size())
+    print("  more places means clearing a higher bar, which is the honest "
+          "price of looking.")
     print("=" * 92)
 
     proposals, asked = sweep(only, do_write)
