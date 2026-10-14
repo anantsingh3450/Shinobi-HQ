@@ -220,7 +220,8 @@ def split_by_guard(symbol: str, bars: list[dict], module,
             continue      # production SKIPS the guard here; not evidence either way
 
         call = 1 if sig.direction == "long" else -1
-        edge = realised(bars, i, call, ctx.atr)
+        edge = realised(bars, i, call, ctx.atr,
+                        getattr(module, "module_id", None), symbol)
         out["blocked" if pct >= VIX_BLOCK else "passed"].append(edge)
     return out
 

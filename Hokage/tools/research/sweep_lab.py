@@ -76,7 +76,14 @@ from hokage.memory.resolver import brain_root
 #: another, silently. See hokage.memory.resolver.brain_root.
 BRAIN = brain_root()
 
-from signal_lab import MIN_BARS_PER_HALF, Ctx, halves, load_bars, measurable# noqa: E402, measurable
+from signal_lab import (  # noqa: E402
+    MIN_BARS_PER_HALF,
+    Ctx,
+    _MCX_FUTURES,
+    halves,
+    load_bars,
+    measurable,
+)
 from entry_module_lab import build_context  # noqa: E402
 from holdout_lab import live_pairs  # noqa: E402
 
@@ -117,24 +124,106 @@ def _stats(edges: list[float]) -> tuple[int, float, float]:
     return n, mean, mean / (math.sqrt(var / n) or 1e-9)
 
 
-def realised(bars: list[dict], i: int, call: int, atr: float) -> float:
-    """Edge in ATR units with the production stop applied, same-day only.
+#: Production's target rule, read off the bot so it cannot drift from it.
+#: Both the target and the stop convert from underlying points to premium
+#: through the same ATM delta, so delta CANCELS and the whole rule lives in
+#: underlying points:
+#:
+#:     target_move = max(MOVE_FRACTION * ATR * sqrt(bars_left),
+#:                       MIN_REWARD_RISK * stop_distance)
+#:
+#: The 60% premium cap is not modelled - it needs an entry premium and there is
+#: no option history in the brain. It only ever pushes the target FURTHER, so
+#: omitting it keeps this on the pessimistic side.
+def _bot():
+    from bots.autonomous.autonomous_bot import AutonomousTradingBot
+    return AutonomousTradingBot
 
-    Lifted from stop_lab.simulate at k = PROD_STOP_ATR. Stops are detected on
-    the bar's low (long) or high (short) because a stop fires intrabar in real
-    life, and the exit is priced AT the stop level, which is generous — real
-    fills slip — so this never understates a setting's cost.
+
+def production_stop_atr(module_id: str | None, symbol: str | None) -> float:
+    """The stop production runs for this cell, asked of the bot.
+
+    A lab holding its own copy of a production constant eventually describes a
+    system that no longer exists: stop_lab printed "<- production" against 1.25
+    on GOLDM for two months after that asset was moved to 3.0, and on
+    2026-10-14 that produced a confident recommendation to make a change which
+    had already shipped.
+
+    Falls back to the shared default when the caller cannot name the cell, so a
+    sweep over a hypothetical module still measures inside SOME stop.
+    """
+    if not module_id:
+        return PROD_STOP_ATR
+    Bot = _bot()
+    return Bot._thesis_atr_mult_for(
+        Bot, module_id.replace("entry-", "strat-", 1), symbol
+    )
+
+
+def _bars_left(bar_date, symbol: str | None) -> float:
+    """Bars remaining in the session, which is what makes the target adaptive:
+    far away at the open, close at the bell."""
+    is_mcx = bool(symbol) and symbol in _MCX_FUTURES
+    bar_minutes = 5 if is_mcx else 15
+    close_h, close_m = (23, 15) if is_mcx else (15, 20)
+    minutes_left = (close_h - bar_date.hour) * 60 + (close_m - bar_date.minute)
+    return max(0.0, minutes_left / bar_minutes)
+
+
+def target_move(atr: float, stop_atr: float, bars_left: float) -> float:
+    """Production's target as an underlying move, in points."""
+    Bot = _bot()
+    adaptive = Bot._OPTION_TARGET_MOVE_FRACTION * atr * math.sqrt(max(0.0, bars_left))
+    floor = Bot._OPTION_MIN_REWARD_RISK * stop_atr * atr
+    return max(adaptive, floor)
+
+
+def realised(
+    bars: list[dict], i: int, call: int, atr: float,
+    module_id: str | None = None, symbol: str | None = None,
+) -> float:
+    """Edge in ATR units under FULL production geometry, same-day only.
+
+    STOP AND TARGET, not just the stop. Until 2026-10-14 this applied the stop
+    and then exited at the horizon, which scores a system nobody runs:
+    production also exits at a target, and a target truncates the winners the
+    horizon was counting in full. Measured across every live cell, the
+    difference is not cosmetic -
+
+        SessionShift / SILVERM   stop only +0.283 t+3.15
+                                 full      +0.096 t+1.54
+
+    - and SILVERM was the ONE cell the weekly audit called confirmed. The bot's
+    own stop table had carried a comment saying it was "+0.007 under full
+    geometry, indistinguishable from zero at ANY stop width" since 2026-08-13;
+    the audit disagreed only because of what it left out.
+
+    The stop is resolved PER CELL rather than assumed to be 1.25.
+
+    Stops are detected on the bar's low (long) or high (short) because a stop
+    fires intrabar, and the exit is priced AT the level, which is generous.
+
+    WHEN A BAR TOUCHES BOTH, THE STOP IS ASSUMED. OHLC cannot say which came
+    first, and resolving the tie in favour of the target would flatter every
+    number this produces.
     """
     entry = bars[i]["close"]
-    stop_level = entry - PROD_STOP_ATR * atr if call == 1 else entry + PROD_STOP_ATR * atr
+    stop_atr = production_stop_atr(module_id, symbol)
+    stop_level = entry - call * stop_atr * atr
+    target_level = entry + call * target_move(
+        atr, stop_atr, _bars_left(bars[i]["date"], symbol)
+    )
     exit_price = entry
     for j in range(i + 1, min(i + 1 + HORIZON, len(bars))):
         bar = bars[j]
         if bar["date"].date() != bars[i]["date"].date():
             break
-        hit = bar["low"] <= stop_level if call == 1 else bar["high"] >= stop_level
-        if hit:
+        stopped = bar["low"] <= stop_level if call == 1 else bar["high"] >= stop_level
+        if stopped:
             return (stop_level - entry) * call / atr
+        reached = bar["high"] >= target_level if call == 1 else bar["low"] <= target_level
+        if reached:
+            return (target_level - entry) * call / atr
         exit_price = bar["close"]
     return (exit_price - entry) * call / atr
 
@@ -247,7 +336,13 @@ def measure_all(symbol: str, bars: list[dict], cells: list[tuple]) -> dict:
             if not getattr(sig, "should_enter", False):
                 continue
             call = 1 if sig.direction == "long" else -1
-            edges[key].append(realised(bars, i, call, ctx.atr))
+            # The module carries its own id; the asset is the symbol being
+            # swept. Both are needed so realised() resolves THIS cell's
+            # production stop instead of assuming the shared default.
+            edges[key].append(realised(
+                bars, i, call, ctx.atr,
+                getattr(module, "module_id", None), symbol,
+            ))
     return edges
 
 

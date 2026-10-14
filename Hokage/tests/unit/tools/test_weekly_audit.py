@@ -226,7 +226,12 @@ def test_the_geometry_stamp_reaches_the_report():
     now = _snapshot("2026-08-28", {("mod-a", "GOLDM"): 1.1}, LIVE)
     text = wa.render(now, wa.build_report(now, []))
     assert wa.GEOMETRY in text
-    assert "ATR stop applied" in text
+    # The report must say what the basis MEANS, not just name it. Bumped
+    # 2026-10-14 when the target leg was added and the stop became per-cell:
+    # a reader comparing this week's t against an older snapshot needs to see
+    # that the two were not measured the same way.
+    assert "per-cell production stop" in text
+    assert "target at" in text
 
 
 # ------------------------------------------------------- the parked asset watch

@@ -62,6 +62,7 @@ from signal_lab import (  # noqa: E402
 from sweep_lab import realised  # noqa: E402
 from entry_module_lab import build_context  # noqa: E402
 
+from bots.autonomous.autonomous_bot import AutonomousTradingBot as Bot  # noqa: E402
 from bots.strategy.components.entries import ENTRY_MODULES  # noqa: E402
 from bots.strategy.components.mcx_entries import MCX_ENTRY_MODULES  # noqa: E402
 
@@ -118,7 +119,33 @@ PROD_STOP_ATR = 1.25
 #: RESTARTS. That is the intended consequence: there is no trend across a
 #: change of instrument, and the two pending MacroBreakout proposals were
 #: built on the contaminated basis.
-GEOMETRY = "holdout-split+stop1.25+tradedbars"
+#: Bumped 2026-10-14: the TARGET is now applied, and the stop is resolved PER
+#: CELL instead of assumed to be 1.25.
+#:
+#: This audit applied the production stop and then exited at the horizon. That
+#: scores a system nobody runs: production also exits at a target, and a target
+#: truncates exactly the winners a horizon exit counts in full. It also
+#: hardcoded 1.25 ATR while SessionShift/GOLDM has run 3.0 since 2026-08-13.
+#:
+#: Both omissions flatter, and not cosmetically. Re-measured across every live
+#: cell:
+#:
+#:   SessionShift / SILVERM   stop only +0.283 t+3.15   full +0.096 t+1.54
+#:   TrendRider   / CRUDEOIL  stop only +0.109 t+2.30   full +0.079 t+1.93
+#:   SessionShift / CRUDEOIL  stop only +0.153 t+2.21   full +0.113 t+2.12
+#:
+#: SILVERM was the ONE cell this audit called confirmed, and it does not
+#: survive. The bot's own stop table had carried a comment since 2026-08-13
+#: saying it was "+0.007 under full geometry, indistinguishable from zero at
+#: ANY stop width" — the audit disagreed only because of what it left out. So
+#: every promotion and retirement decision in Hokage's history rested on a
+#: basis that overstated edge.
+#:
+#: BASIS CHANGE, so the retirement clock RESETS again. That is the intended
+#: consequence and it is the cheaper error: continuing a clock across a change
+#: of instrument compares two different measurements and calls the difference
+#: a decline in edge.
+GEOMETRY = "holdout-split+stop-per-cell+target+tradedbars"
 
 UNIVERSE = ["NIFTY", "BANKNIFTY", "SENSEX", "CRUDEOIL", "NATURALGAS", "GOLDM", "SILVERM"]
 
@@ -169,7 +196,7 @@ def accumulate(symbol: str, bars: list[dict], modules: dict) -> dict[str, dict]:
             # on the geometry it actually trades inside; measuring it without
             # the stop scores a system that does not exist, which is how a
             # 240-minute crude horizon read +2.06 and delivered +0.82.
-            edge = realised(bars, i, call, ctx.atr)
+            edge = realised(bars, i, call, ctx.atr, name, symbol)
             acc[name]["edges"].append(edge)
             if edge > 0:
                 acc[name]["hits"] += 1
@@ -465,7 +492,12 @@ def build_report(current: dict, history: list[dict]) -> dict:
 def render(current: dict, report: dict) -> str:
     lines = [f"HOKAGE WEEKLY AUDIT — {current['date']}",
              f"horizon {HORIZON * 15}min · ship bar t>={SHIP_BAR} · min n={MIN_N}"]
-    lines.append(f"geometry: {GEOMETRY} (hold-out half, {PROD_STOP_ATR} ATR stop applied)")
+    lines.append(
+        f"geometry: {GEOMETRY} (hold-out half; per-cell production stop, "
+        f"default {PROD_STOP_ATR} ATR; target at "
+        f"max({Bot._OPTION_TARGET_MOVE_FRACTION}xATRxsqrt(bars_left), "
+        f"{Bot._OPTION_MIN_REWARD_RISK}xstop))"
+    )
     if report["compared_to"]:
         lines.append(f"compared to {report['compared_to']}")
     else:

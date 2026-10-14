@@ -113,7 +113,7 @@ def baseline(asset: str, bars: list[dict]) -> list[tuple]:
         # What the hour after the release bar did, signed the same way as the
         # release move. Positive = the move CONTINUED, negative = it REVERSED.
         call = 1 if move > 0 else -1
-        after = realised(bars, i, call, ctx.atr)
+        after = realised(bars, i, call, ctx.atr, None, asset)
         rows.append((day, move / ctx.atr, after))
     return rows
 
@@ -146,7 +146,9 @@ def module_events(asset: str, bars: list[dict], module) -> list[tuple]:
             if not sig.should_enter:
                 continue
             call = 1 if sig.direction == "long" else -1
-            rows.append((day, sig.direction, realised(bars, i, call, ctx.atr)))
+            rows.append((day, sig.direction,
+                         realised(bars, i, call, ctx.atr,
+                                  getattr(module, "module_id", None), asset)))
             break   # one event, one observation
     return rows
 

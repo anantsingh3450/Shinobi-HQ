@@ -19,7 +19,7 @@ from bots.autonomous import evolution as ev
 #: The measurement basis every snapshot is stamped with. Two snapshots are only
 #: consecutive evidence if they agree on it — see
 #: test_a_change_of_measurement_basis_resets_the_retirement_clock.
-GEOMETRY = "holdout-split+stop1.25+tradedbars"
+GEOMETRY = "holdout-split+stop-per-cell+target+tradedbars"
 
 
 def _snap(day: str, rows: dict, lineup: dict, bar: float = 2.0,
