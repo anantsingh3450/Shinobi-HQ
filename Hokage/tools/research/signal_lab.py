@@ -145,12 +145,42 @@ def measurable(ctx: "Ctx", entry_bar: dict) -> bool:
         return False
     if ctx.atr / ctx.price < MIN_ATR_FRACTION_OF_PRICE:
         return False
-    # volume may be absent on a series that carries none (an index); only a
-    # value that is PRESENT and zero proves the bar did not trade.
+    # Volume is only evidence of trading on a series that HAS volume.
+    #
+    # This read "absent means an index, present-and-zero means it did not
+    # trade" — the right idea, defeated by the data. candle_archive stores an
+    # index's volume as 0, not NULL: all 4,075 bars of NIFTY, BANKNIFTY and
+    # SENSEX carry volume=0, because an index is a calculation and nothing
+    # trades it. So this rejected EVERY index bar, and with it every index
+    # asset in every lab that calls measurable — sweep_lab could not propose a
+    # knob for NIFTY, stop_lab could not measure one, hypothesis_lab found
+    # zero candidates on SENSEX. Three of seven assets, silently, including
+    # the one carrying a confirmed cell.
+    #
+    # So ask the SERIES, not the bar. If nothing in this window ever traded,
+    # the instrument carries no volume and volume cannot be a trade filter. If
+    # something did, a zero means this bar is one of the repeated prints Kite
+    # emits when a contract is quiet — which is what the guard is for.
     volume = entry_bar.get("volume")
-    if volume is not None and volume <= 0:
+    if volume is not None and volume <= 0 and _series_carries_volume(ctx):
         return False
     return True
+
+
+#: Bars of recent history consulted to decide whether an instrument carries
+#: volume at all. Bounded because measurable() runs once per candidate bar and
+#: ctx.bars grows to the whole archive; an instrument that trades shows it
+#: within a few hundred bars.
+_VOLUME_PROBE_BARS = 300
+
+
+def _series_carries_volume(ctx: "Ctx") -> bool:
+    """True when this instrument reports real traded volume somewhere nearby."""
+    for bar in ctx.bars[-_VOLUME_PROBE_BARS:]:
+        v = bar.get("volume")
+        if v is not None and v > 0:
+            return True
+    return False
 
 
 # ----------------------------------------------------------------- candidates
