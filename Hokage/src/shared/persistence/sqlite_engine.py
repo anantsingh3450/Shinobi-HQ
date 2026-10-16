@@ -21,7 +21,7 @@ logger = logging.getLogger("Hokage.SqliteEngine")
 #: right level. test_schema_version_constant_matches_the_migrations keeps it in
 #: step with the `if current_version < N` branches below — a stale constant
 #: would silence the one log line that reports a real migration.
-LATEST_SCHEMA_VERSION = 8
+LATEST_SCHEMA_VERSION = 9
 
 
 class SqliteStorageEngine:
@@ -289,7 +289,8 @@ class SqliteStorageEngine:
                 status TEXT NOT NULL,
                 approving_commander TEXT,
                 applied_at TEXT,
-                actual_post_change_performance TEXT
+                actual_post_change_performance TEXT,
+                measured_geometry TEXT
             );
         """)
 
@@ -698,6 +699,39 @@ class SqliteStorageEngine:
                 conn.execute(
                     "INSERT OR REPLACE INTO schema_version (version, migrated_at) VALUES (?, ?);",
                     (8, datetime.now(timezone.utc).isoformat())
+                )
+            if current_version < 9:
+                # WHAT BASIS A PROPOSAL WAS MEASURED ON.
+                #
+                # A proposal is a claim that something clears the bar, and
+                # both halves of that claim changed on 2026-10-14: edge is now
+                # measured under full geometry with a per-cell stop, and the
+                # bar is corrected for the size of the search. Three proposals
+                # written before that are still PENDING, one stating in its
+                # own rationale that it was "measured with the 1.25 ATR
+                # production stop" while GOLDM has run 3.0 ATR since
+                # 2026-08-13.
+                #
+                # Worse than misleading. sweep_lab suppresses a re-proposal
+                # while a PENDING row exists for the same change, so a dead
+                # row measured on a retired basis was silencing the corrected
+                # measurement of the same question.
+                #
+                # Rows written before this migration stay NULL, which reads as
+                # stale - the same choice evolution._same_geometry makes for
+                # snapshots predating its geometry field. Backfilling a basis
+                # they were not measured on would be fabrication.
+                logger.info("Applying Schema Version 9: proposal measurement basis.")
+                try:
+                    conn.execute(
+                        "ALTER TABLE improvement_proposals "
+                        "ADD COLUMN measured_geometry TEXT;"
+                    )
+                except sqlite3.OperationalError:
+                    pass  # column already exists
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_version (version, migrated_at) VALUES (?, ?);",
+                    (9, datetime.now(timezone.utc).isoformat())
                 )
             conn.commit()
             return False

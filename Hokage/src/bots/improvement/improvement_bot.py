@@ -18,6 +18,8 @@ from hokage.ledger.prediction_ledger import JsonPredictionLedger
 from bots.execution.store.json_trade_store import JsonTradeStore
 from bots.strategy.portfolio import StrategyPortfolioManager
 
+from hokage.research import proposals as _proposals
+
 logger = logging.getLogger("Hokage.ImprovementBot")
 
 
@@ -145,7 +147,11 @@ class ImprovementBot:
         existing_proposals = self.load_proposals()
         existing_keys = {
             (p["strategy_id"], p["asset"], p["action"]): p["proposal_id"] 
-            for p in existing_proposals if p.get("status") == "PENDING_APPROVAL"
+            # BOTH spellings. sweep_lab and weekly_audit write "PENDING"
+            # and this read "PENDING_APPROVAL", so the measured proposals -
+            # the only ones carrying real evidence - were invisible to every
+            # duplicate check and to `hokage proposals` alike.
+            for p in existing_proposals if _proposals.is_pending(p.get("status"))
         }
 
         for strat_id, strat in strategies.items():
@@ -275,7 +281,11 @@ class ImprovementBot:
             "status": "PENDING_APPROVAL",
             "approving_commander": None,
             "applied_at": None,
-            "actual_post_change_performance": None
+            "actual_post_change_performance": None,
+            # Stamped as drift rather than left blank: blank means nobody
+            # recorded the basis, and "this was never a lab measurement" is a
+            # different fact worth keeping.
+            "measured_geometry": _proposals.DRIFT_BASIS,
         }
         proposals.append(proposal)
 
@@ -295,8 +305,31 @@ class ImprovementBot:
             logger.error(f"Proposal {proposal_id} not found.")
             return False
 
-        if target_prop["status"] != "PENDING_APPROVAL":
+        if not _proposals.is_pending(target_prop["status"]):
             logger.warning(f"Proposal {proposal_id} is already in {target_prop['status']} status.")
+            return False
+
+        # A PROPOSAL MEASURED ON A RETIRED BASIS IS NOT EVIDENCE.
+        #
+        # Until 2026-10-16 this gate rejected every lab-written proposal
+        # outright, because they carry status "PENDING" rather than
+        # "PENDING_APPROVAL" - so nothing measured could ever be applied.
+        # Accepting them makes a second question real: three of them were
+        # measured before the audit moved to full geometry with a per-cell
+        # stop and raised its bar from 2.0 to 3.16, and one says in its own
+        # rationale that it used the 1.25 ATR stop while GOLDM has run 3.0
+        # since 2026-08-13.
+        #
+        # Refusing is the cheap error. Re-running the lab produces a fresh
+        # proposal on the current basis in minutes; applying a knob change
+        # justified by a retired measurement is how a number from the wrong
+        # instrument becomes production.
+        if _proposals.is_stale(target_prop.get("measured_geometry")):
+            logger.warning(
+                f"Proposal {proposal_id} refused: "
+                f"{_proposals.describe(target_prop.get('measured_geometry'))}. "
+                f"Re-run the lab that produced it and apply the fresh proposal."
+            )
             return False
 
         strat_id = target_prop["strategy_id"]
@@ -379,7 +412,13 @@ class ImprovementBot:
                         "status": row["status"],
                         "approving_commander": row["approving_commander"],
                         "applied_at": row["applied_at"],
-                        "actual_post_change_performance": json.loads(row["actual_post_change_performance"]) if row["actual_post_change_performance"] else None
+                        "actual_post_change_performance": json.loads(row["actual_post_change_performance"]) if row["actual_post_change_performance"] else None,
+                        # Absent on a database that predates schema 9, which
+                        # correctly reads as an unrecorded basis.
+                        "measured_geometry": (
+                            row["measured_geometry"]
+                            if "measured_geometry" in row.keys() else None
+                        ),
                     })
                 return proposals
             except Exception as exc:
@@ -411,14 +450,19 @@ class ImprovementBot:
                             INSERT OR REPLACE INTO improvement_proposals (
                                 proposal_id, strategy_id, strategy_name, asset, timestamp, action,
                                 previous_values, new_values, rationale, expected_improvement, status,
-                                approving_commander, applied_at, actual_post_change_performance
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                                approving_commander, applied_at, actual_post_change_performance,
+                                measured_geometry
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                         """, (
                             p["proposal_id"], p["strategy_id"], p["strategy_name"], p["asset"],
                             p["timestamp"], p["action"], json.dumps(p["previous_values"]),
                             json.dumps(p["new_values"]), p["rationale"], p["expected_improvement"],
                             p["status"], p.get("approving_commander"), p.get("applied_at"),
-                            json.dumps(p.get("actual_post_change_performance"))
+                            json.dumps(p.get("actual_post_change_performance")),
+                            # INSERT OR REPLACE rewrites the whole row, so
+                            # leaving this out would silently strip the basis
+                            # off every lab-written proposal on the next save.
+                            p.get("measured_geometry"),
                         ))
                 logger.info("Saved proposals atomically to SQLite.")
                 return
@@ -815,7 +859,7 @@ class ImprovementBot:
         existing = self.load_proposals()
         existing_keys = {
             (p["strategy_id"], p["asset"], p["action"]): p["proposal_id"]
-            for p in existing if p.get("status") == "PENDING_APPROVAL"
+            for p in existing if _proposals.is_pending(p.get("status"))
         }
         new_proposals: list[dict[str, Any]] = []
 

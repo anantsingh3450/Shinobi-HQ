@@ -186,10 +186,14 @@ SHIP_BAR = round(corrected_t(FAMILY_SIZE), 2)
 #: like a change of measurement. Folding it in here makes a bar change reset
 #: the retirement clock through the one mechanism that already does that,
 #: instead of a second rule that could disagree with the first.
-GEOMETRY = (
-    "holdout-split+stop-per-cell+target+tradedbars"
-    f"+bar{SHIP_BAR:.2f}"
-)
+#: The basis half now lives in src, so the code that READS a proposal can
+#: tell whether it was measured this way without importing a research tool.
+#: The string is unchanged byte for byte - a different value here would reset
+#: the retirement clock, and that must only ever happen for a real change of
+#: measurement.
+from hokage.research.proposals import MEASUREMENT_BASIS  # noqa: E402
+
+GEOMETRY = f"{MEASUREMENT_BASIS}+bar{SHIP_BAR:.2f}"
 
 SNAPSHOT_DIR = BRAIN / "research" / "snapshots"
 PORTFOLIO_DIR = BRAIN / "portfolio"
@@ -649,6 +653,9 @@ def parked_watch(measurements: dict) -> str:
     return "\n".join(lines)
 
 
+from hokage.research import proposals as _proposals  # noqa: E402
+
+
 def _record_retirements(decisions) -> str:
     """Cleared Tier 1 retirements become PENDING proposals. Returns a report line.
 
@@ -668,27 +675,51 @@ def _record_retirements(decisions) -> str:
     if not db.exists():
         return "(no brain database — retirement not recorded)"
 
-    written, skipped = [], []
+    written, skipped, unstamped = [], [], []
     with sqlite3.connect(db) as conn:
         for d in cleared:
             new_values = json.dumps({"status": "ARCHIVED", "asset": d.asset})
+            has_basis = conn.execute(
+                "SELECT 1 FROM pragma_table_info('improvement_proposals') "
+                "WHERE name='measured_geometry'"
+            ).fetchone() is not None
             existing = conn.execute(
-                "SELECT status FROM improvement_proposals WHERE strategy_id=? "
-                "AND asset=? AND action=? AND status IN ('PENDING','REJECTED')",
+                "SELECT status, %s FROM improvement_proposals WHERE strategy_id=? "
+                "AND asset=? AND action=? AND status IN "
+                "('PENDING','PENDING_APPROVAL','REJECTED')"
+                % ("measured_geometry" if has_basis else "NULL"),
                 (d.strategy_id, d.asset, "ARCHIVE_STRATEGY"),
             ).fetchone()
-            if existing:
+            # A retirement rests on a TREND, and a basis change resets the
+            # clock - the rule _same_geometry already applies to snapshots. A
+            # PENDING retirement measured on the old basis must therefore not
+            # suppress this one, which was measured on the current one. A
+            # REJECTED one still does: that is the commander's answer.
+            if existing and (existing[0] == "REJECTED"
+                             or not _proposals.is_stale(existing[1], SHIP_BAR)):
                 skipped.append(f"{d.strategy_name}/{d.asset} (already {existing[0]})")
                 continue
+            # has_basis is schema 9, which arrives when Hokage next boots.
+            # Writing without it is survivable - the row reads as stale and
+            # cannot be applied - but it must be said out loud.
+            cols = ("proposal_id, strategy_id, strategy_name, asset, timestamp, "
+                    "action, previous_values, new_values, rationale, "
+                    "expected_improvement, status")
+            values = ["retire-" + uuid.uuid4().hex[:12], d.strategy_id,
+                      d.strategy_name, d.asset, _dt.now(_tz.utc).isoformat(),
+                      "ARCHIVE_STRATEGY", json.dumps({"status": "LIVE"}),
+                      new_values,
+                      f"{d.reason} | evidence: {json.dumps(d.evidence)}",
+                      0.0, "PENDING"]
+            if has_basis:
+                cols += ", measured_geometry"
+                values.append(GEOMETRY)
+            else:
+                unstamped.append(f"{d.strategy_name}/{d.asset}")
             conn.execute(
-                "INSERT INTO improvement_proposals (proposal_id, strategy_id, "
-                "strategy_name, asset, timestamp, action, previous_values, "
-                "new_values, rationale, expected_improvement, status) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                ("retire-" + uuid.uuid4().hex[:12], d.strategy_id, d.strategy_name,
-                 d.asset, _dt.now(_tz.utc).isoformat(), "ARCHIVE_STRATEGY",
-                 json.dumps({"status": "LIVE"}), new_values,
-                 f"{d.reason} | evidence: {json.dumps(d.evidence)}", 0.0, "PENDING"),
+                f"INSERT INTO improvement_proposals ({cols}) VALUES "
+                f"({','.join('?' * len(values))})",
+                values,
             )
             written.append(f"{d.strategy_name}/{d.asset}")
 
@@ -699,6 +730,11 @@ def _record_retirements(decisions) -> str:
                        "the portfolio from memory and would undo it.")
     if skipped:
         lines.append("Already answered, not re-asked: " + ", ".join(skipped))
+    if unstamped:
+        lines.append("!! Written WITHOUT a measurement basis (brain at schema 8): "
+                     + ", ".join(unstamped)
+                     + ". They read as stale and cannot be applied. Restart "
+                       "Hokage to migrate, then re-run the audit.")
     return "\n".join(lines)
 
 

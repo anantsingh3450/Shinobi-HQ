@@ -1981,7 +1981,15 @@ class CommandRouter:
         if not proposals:
             return "No strategy improvement proposals found in the ledger."
 
-        pending = [p for p in proposals if p.get("status") == "PENDING_APPROVAL"]
+        # BOTH spellings of pending. This filtered on "PENDING_APPROVAL"
+        # alone and answered "No pending proposals" while three sat in the
+        # table, because sweep_lab and weekly_audit - the two that produce
+        # proposals backed by a measurement - write "PENDING". There is no
+        # dashboard view of proposals either, so this command was the only
+        # surface they had.
+        from hokage.research import proposals as _proposals
+
+        pending = [p for p in proposals if _proposals.is_pending(p.get("status"))]
         applied = [p for p in proposals if p.get("status") == "APPLIED"]
 
         lines = ["=== Hokage Strategy Improvement Proposals ==="]
@@ -1994,6 +2002,18 @@ class CommandRouter:
                 lines.append(f"  Action:        {p['action']}")
                 lines.append(f"  Rationale:     {p['rationale']}")
                 lines.append(f"  Expected Imp:  {p['expected_improvement']}")
+                # WHAT IT WAS MEASURED ON, always shown. A proposal is a claim
+                # that something clears the bar, and both how edge is measured
+                # and how high the bar sits have changed since the oldest of
+                # these was written.
+                basis = p.get("measured_geometry")
+                lines.append(f"  Measured on:   {_proposals.describe(basis)}")
+                if _proposals.is_stale(basis):
+                    lines.append(
+                        "  ** STALE — this cannot be applied. Re-run the lab "
+                        "that produced it to get the same question measured "
+                        "the way the system measures today. **"
+                    )
                 prev_str = ", ".join(f"{k}={v}" for k, v in p['previous_values'].items())
                 new_str = ", ".join(f"{k}={v}" for k, v in p['new_values'].items())
                 lines.append(f"  Changes:       [{prev_str}] -> [{new_str}]")

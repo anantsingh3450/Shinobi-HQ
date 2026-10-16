@@ -76,6 +76,7 @@ from hokage.memory.resolver import brain_root
 #: another, silently. See hokage.memory.resolver.brain_root.
 BRAIN = brain_root()
 
+from hokage.research import proposals as _proposals  # noqa: E402
 from signal_lab import (  # noqa: E402
     BASE_SHIP_T,
     corrected_t,
@@ -462,28 +463,85 @@ def already_answered(row: dict) -> str | None:
     if not DB.exists():
         return None
     want = json.dumps(row["new"])
+    bar = ship_bar()
     with sqlite3.connect(DB) as conn:
-        for status, in conn.execute(
-            "SELECT status FROM improvement_proposals WHERE strategy_id=? AND "
-            "asset=? AND new_values=? AND status IN ('REJECTED','PENDING')",
+        for status, basis in conn.execute(
+            "SELECT status, "
+            # The column arrived with schema 9; a brain that has not migrated
+            # yet answers NULL, which reads as an unrecorded basis.
+            "  (SELECT CASE WHEN EXISTS (SELECT 1 FROM pragma_table_info"
+            "   ('improvement_proposals') WHERE name='measured_geometry') "
+            "   THEN measured_geometry END) "
+            "FROM improvement_proposals WHERE strategy_id=? AND "
+            "asset=? AND new_values=? AND status IN "
+            "('REJECTED','PENDING','PENDING_APPROVAL')",
             (row["strategy_id"], row["asset"], want),
         ):
+            # A REJECTED proposal stays answered whatever the basis was: the
+            # commander said no to the CHANGE, and re-asking every Friday is
+            # how he learns to stop reading these.
+            if status == "REJECTED":
+                return status
+            # A PENDING one measured on a basis the labs have abandoned is
+            # not a decision waiting - it is a dead row, and letting it
+            # suppress means the corrected measurement of the same question
+            # never gets asked. Found 2026-10-16: three such rows, one of
+            # them measured with a 1.25 ATR stop on a cell that has run 3.0
+            # ATR since 2026-08-13.
+            if _proposals.is_stale(basis, bar):
+                continue
             return status
     return None
+
+
+def _has_basis_column(conn) -> bool:
+    """Does this brain carry schema 9 yet?
+
+    The column arrives when Hokage next boots and runs its migrations. A lab
+    run before that must not crash, and must not pretend it stamped a basis
+    it could not store - an unstamped proposal reads as stale and cannot be
+    applied, which is the safe direction, but the commander has to be told
+    why rather than discovering it at the apply gate.
+    """
+    return conn.execute(
+        "SELECT 1 FROM pragma_table_info('improvement_proposals') "
+        "WHERE name='measured_geometry'"
+    ).fetchone() is not None
 
 
 def write_proposal(row: dict) -> str:
     pid = "sweep-" + uuid.uuid4().hex[:12]
     with sqlite3.connect(DB) as conn:
+        if not _has_basis_column(conn):
+            print("  !! this brain is at schema 8: the proposal is written "
+                  "WITHOUT its measurement basis, so it will read as stale "
+                  "and cannot be applied. Restart Hokage to migrate, then "
+                  "re-run this sweep.")
+            conn.execute(
+                "INSERT INTO improvement_proposals (proposal_id, strategy_id, "
+                "strategy_name, asset, timestamp, action, previous_values, "
+                "new_values, rationale, expected_improvement, status) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (pid, row["strategy_id"], row["strategy_name"], row["asset"],
+                 datetime.now(timezone.utc).isoformat(), "TUNE_PARAMETER",
+                 json.dumps(row["previous"]), json.dumps(row["new"]),
+                 row["rationale"], row["expected"], "PENDING"),
+            )
+            return pid
         conn.execute(
             "INSERT INTO improvement_proposals (proposal_id, strategy_id, "
             "strategy_name, asset, timestamp, action, previous_values, "
-            "new_values, rationale, expected_improvement, status) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "new_values, rationale, expected_improvement, status, "
+            "measured_geometry) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (pid, row["strategy_id"], row["strategy_name"], row["asset"],
              datetime.now(timezone.utc).isoformat(), "TUNE_PARAMETER",
              json.dumps(row["previous"]), json.dumps(row["new"]),
-             row["rationale"], row["expected"], "PENDING"),
+             row["rationale"], row["expected"], "PENDING",
+             # The basis AND the bar. A proposal is a claim that something
+             # clears the bar, so a reader months from now needs both to know
+             # what the claim meant.
+             _proposals.stamp(ship_bar())),
         )
     return pid
 
