@@ -5,6 +5,9 @@ off an official page; the sources are at the bottom.*
 
 ## The short version
 
+*(Section 3b was added after the rest, and it changes the conclusion. Read
+it before acting on section 4.)*
+
 **Do not move him to Oracle's free tier. I recommended that, and I was wrong.**
 Oracle reclaims an Always Free instance that is idle, and Hokage measures
 **0.77% of one core**. He would be flagged and deleted.
@@ -94,6 +97,68 @@ Idle sleep and idle hibernate are already disabled (`STANDBYIDLE = 0`,
 genuinely reaching 7% — a power cut long enough to drain it. No setting
 prevents that; only a UPS does.
 
+## 3b. The fault that dwarfs both of those — found later the same day
+
+Everything above treats uptime as a question of brief outages. It is not.
+
+```
+window            2026-08-07 .. 2026-10-15
+market sessions   48
+  recorded        23   (48%)
+  MISSED          24
+longest blackout  11 sessions, 2026-09-23 .. 2026-10-08
+```
+
+The process before that gap died at **2026-09-23 06:27**. The next one
+started **2026-10-09 18:26**. Sixteen calendar days: no process, no
+decisions, no log file. There is a second gap from 09-07 to 09-18.
+
+**That is the answer to "why no trade since 09-22."** Not the gates, not the
+modules — the signal-rate lab shows every live cell firing in October at or
+near the top of its range. He was not there.
+
+### And the watch did not catch it
+
+`logs/liveness.log` has no entries for those days either. That probe was
+built after a 3h39m death Hokage reported as "Health Score 100/100", on the
+principle that **his own watchdog dies with him**. But it is a Windows
+scheduled task on this laptop, and every Hokage task runs as
+`LogonType=Interactive`:
+
+```
+Hokage Morning Start    LogonType=Interactive   weekdays 08:45 + at logon
+Hokage Liveness Watch   LogonType=Interactive
+Hokage Candle Sync      LogonType=Interactive
+```
+
+The probe is independent of the **process**. It is not independent of the
+**machine**, and the machine is what went away. A probe inside the failure
+domain it watches cannot report that domain failing.
+
+Run `python tools/ops/session_coverage.py` for the current number.
+
+### What this changes
+
+A hundred paper round trips is the gate to going live, and it is a count of
+**sessions** as much as of setups. At 48% coverage that target is twice as
+far away as it looks — so uptime is not a tidiness concern, it is the
+largest single lever on how fast Hokage learns.
+
+Two things follow, and only you can do the first:
+
+1. **Why were those 24 sessions missed?** Laptop off, not logged in, away
+   from home, a repair — I cannot see it from here, and the answer decides
+   everything below. If it is "the laptop was not on", that is either free to
+   fix or it is a real constraint on your life that only an always-on host
+   solves.
+2. **Get a watch that does not live on this machine** — unconditionally, and
+   whatever you decide about the host. Without one the next sixteen-day gap
+   is just as invisible as the last one. A dead-man's switch is the shape
+   that works: Hokage pushes a heartbeat out on a schedule and **silence**
+   raises the alarm, so the alarm never shares his fate. That means sending
+   to an outside service on your account, which is your call to make, not
+   mine.
+
 ## 4. What to do, in order
 
 **These are changes to your machine, so they are yours to make — I have not
@@ -108,10 +173,16 @@ touched any of them.**
 3. **A UPS**, if power cuts are common where the machine sits. This is the
    only thing that addresses the 7% hibernate, and it is cheaper than a year
    of VPS.
-4. **Leave the host move until the live canary.** On that day the static IP
-   stops being optional and the host becomes mandatory anyway — and by then
-   there will be a measured reason to pick one, because `live_readiness` will
-   have to pass first.
+4. **An off-machine watch, before anything else on this list.** See 3b. It
+   is the only item here that is unconditional.
+5. **The host move is now a question about session coverage, not about
+   SEBI.** My earlier advice was to leave it until the live canary, on the
+   grounds that the static IP is the only hard requirement and it is not
+   binding yet. That still holds for compliance. It does not hold for
+   learning: if the honest answer to "why 24 missed sessions" is that this
+   laptop cannot be on every weekday, then a ₹600/month host buys back half
+   of Hokage's learning rate, and that is a different trade entirely from
+   the one costed below.
 
 ## 5. When you do move: what it costs and what moves
 
