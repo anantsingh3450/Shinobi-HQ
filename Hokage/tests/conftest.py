@@ -17,6 +17,11 @@ _os.environ.setdefault("HOKAGE_DISABLE_LLM", "true")
 # NEVER send real Telegram messages from tests. Also scrub any real telegram
 # credentials that leaked into the process environment (e.g. developer shell).
 _os.environ.setdefault("HOKAGE_DISABLE_TELEGRAM", "true")
+# NEVER ping the dead man's switch from tests. Its URL is a capability token:
+# a forged heartbeat would turn the real watch off silently, and a test that
+# reached it would do exactly that.
+_os.environ.setdefault("HOKAGE_DISABLE_DEADMAN", "true")
+_os.environ.pop("HOKAGE_DEADMAN_URL", None)
 _os.environ.pop("TELEGRAM_BOT_TOKEN", None)
 _os.environ.pop("TELEGRAM_CHAT_ID", None)
 # Sandbox the ENTIRE brain for the suite. PathResolver defaults to the

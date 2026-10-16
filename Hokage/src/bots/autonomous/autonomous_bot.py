@@ -69,6 +69,8 @@ from bots.autonomous.performance_analytics import PerformanceAnalyticsEngine
 from bots.autonomous.position_review import PositionReviewEngine
 from bots.autonomous.trade_dna import TradeDNAEngine
 
+from shared.watchdog.deadman import DeadMansSwitch
+
 logger = logging.getLogger("Hokage.AutonomousTrading")
 
 
@@ -547,6 +549,14 @@ class AutonomousTradingBot:
         if self.telegram_bot:
             self.telegram_bot.start()
 
+        # THE WATCH THAT DOES NOT LIVE ON THIS MACHINE. Started last, so a
+        # heartbeat is only sent once the loop it reports on is actually
+        # running. See shared.watchdog.deadman: between 2026-09-23 and
+        # 2026-10-08 Hokage was gone for eleven market sessions and the
+        # on-machine liveness probe went down with him.
+        self._deadman = DeadMansSwitch(status_fn=self._deadman_status)
+        self._deadman.start()
+
         self._thread = threading.Thread(target=self._run_loop, name="HokageAutonomousLoop", daemon=True)
         self._thread.start()
         logger.info("Autonomous trading loop started.")
@@ -589,8 +599,42 @@ class AutonomousTradingBot:
             logger.warning(f"Startup position cleanup skipped (non-critical): {e}")
 
 
+    def _deadman_status(self) -> str:
+        """The one line that rides along with each heartbeat.
+
+        Convenience, not signal: the heartbeat's presence is what the switch
+        measures. Nothing here may be sensitive — it is displayed by an
+        outside service — so it carries no account, no credential and no
+        instrument-level detail.
+        """
+        # IN-MEMORY STATE ONLY. This runs on the heartbeat thread, whose one
+        # job is to prove the process is alive; reaching into the database
+        # for a nicer status line would put a lock between that proof and
+        # the thing it proves.
+        bits = []
+        try:
+            mode = self.orchestrator.context.execution_mode
+            bits.append(getattr(mode, "value", str(mode)))
+        except Exception:
+            bits.append("mode unknown")
+        probe_ok = getattr(self, "_feed_probe_ok", None)
+        bits.append("feed ok" if probe_ok is True else
+                    ("feed down" if probe_ok is False else "feed unknown"))
+        reason = getattr(self, "_feed_probe_reason", "") or ""
+        if probe_ok is False and reason:
+            bits.append(str(reason)[:80])
+        return " | ".join(bits)
+
     def stop(self) -> None:
         """Stop the background autonomous thread gracefully."""
+        # FIRST, so the final /fail carries a reason even if something below
+        # throws. An alert that says "stopped cleanly" is a different message
+        # from one that says nothing at all.
+        deadman = getattr(self, "_deadman", None)
+        if deadman is not None:
+            deadman.stop("clean shutdown")
+            self._deadman = None
+
         if self._cron_thread is not None:
             self._cron_thread.stop()
             self._cron_thread = None
