@@ -39,8 +39,11 @@ and only the commander moves it. This prints evidence.
 MEASUREMENT
   * Bars come from the CANDLE ARCHIVE, which keeps expired contracts Kite
     deletes -- without it the train half does not exist (see volume_lab).
-  * India VIX daily closes come from Kite. VIX is an index, so it has no
-    futures roll and its history stays served.
+  * India VIX daily closes come from the VIX ARCHIVE, topped up from Kite
+    when it falls behind. Until 2026-10-16 they were fetched live on every
+    run, which meant this lab -- and the variance premium result, the first
+    thing here to clear a corrected bar on both halves -- could only be
+    reproduced while a Zerodha token happened to be alive.
   * The percentile at each signal is computed POINT IN TIME, from closes
     strictly up to that day. Using the full series would leak the future into
     the decision and flatter the guard.
@@ -146,8 +149,18 @@ def load_archive_bars(symbol: str, start: str, end: str) -> list[dict]:
     ]
 
 
-def load_vix_closes() -> list[tuple[object, float]]:
-    """India VIX daily closes, oldest first. Kite: VIX is an index, no roll."""
+#: How far behind the archive may fall before a live top-up is attempted. Four
+#: days covers a weekend plus a holiday, so a lab run on a Tuesday after a long
+#: weekend does not download the whole NSE instrument dump to learn nothing.
+MAX_ARCHIVE_LAG_DAYS = 4
+
+#: How much history a top-up asks Kite for. VIX is an index: no roll, and the
+#: whole span stays served.
+FETCH_SPAN_DAYS = 500
+
+
+def fetch_vix_from_kite() -> list[tuple[object, float]]:
+    """India VIX daily closes straight from Kite. Needs a live session."""
     from dotenv import load_dotenv
 
     load_dotenv(str(ROOT / ".env"))
@@ -167,10 +180,59 @@ def load_vix_closes() -> list[tuple[object, float]]:
         raise ValueError("could not resolve INDIA VIX")
 
     end = datetime.now()
-    start = end - timedelta(days=500)
+    start = end - timedelta(days=FETCH_SPAN_DAYS)
     candles = kite.historical_data(
         token, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"), "day")
     return [(c["date"].date(), c["close"]) for c in candles]
+
+
+def load_vix_closes(allow_fetch: bool = True) -> list[tuple[object, float]]:
+    """India VIX daily closes, oldest first, from the archive.
+
+    THE ARCHIVE IS THE SOURCE. It is topped up from Kite only when it has
+    fallen more than MAX_ARCHIVE_LAG_DAYS behind, so a lab that asks a
+    volatility question is reproducible without a broker session - which is
+    the whole reason the archive exists.
+
+    A live fetch that fails while the archive holds data is a WARNING, not a
+    failure: answering from slightly older evidence is honest, and the staleness
+    is printed. With neither, this raises. It never returns an empty series
+    dressed up as an answer, because an empty VIX series makes every percentile
+    None and every guard silently skipped.
+    """
+    from hokage.memory import vix_archive
+
+    archived = vix_archive.load()
+    cover = vix_archive.coverage()
+    lag = cover["stale_days"]
+    fresh_enough = bool(archived) and lag is not None and lag <= MAX_ARCHIVE_LAG_DAYS
+
+    if fresh_enough or not allow_fetch:
+        if not archived:
+            raise ValueError(
+                "the VIX archive is empty and no live fetch was permitted - "
+                "run: python tools/ops/archive_vix.py")
+        return archived
+
+    try:
+        fetched = fetch_vix_from_kite()
+    except Exception as exc:
+        if archived:
+            print(f"  (VIX top-up failed: {str(exc)[:70]} - answering from the "
+                  f"archive, newest day {cover['last']}, {lag} days back)")
+            return archived
+        raise ValueError(
+            f"the VIX archive is empty and the live fetch failed: {exc}")
+
+    added = vix_archive.remember(fetched)
+    merged = vix_archive.load()
+    if not merged:
+        # Everything fetched was the session in progress, which the archive
+        # refuses to store. Return it unwritten rather than claim no history.
+        return fetched
+    if added:
+        print(f"  (VIX archive: +{added} new daily closes)")
+    return merged
 
 
 def percentile_on(vix: list[tuple[object, float]], day) -> float | None:

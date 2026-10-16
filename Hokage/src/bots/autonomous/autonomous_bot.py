@@ -1625,7 +1625,9 @@ class AutonomousTradingBot:
                 interval=CandleInterval.ONE_DAY,
             )
             res = self.orchestrator.price_source.get_historical_candles(req)
-            closes = [c.close for c in (res.candles if res else ())][-self._VIX_LOOKBACK_DAYS:]
+            candles = list(res.candles if res else ())
+            self._archive_vix(candles)
+            closes = [c.close for c in candles][-self._VIX_LOOKBACK_DAYS:]
         except Exception as exc:
             logger.debug(f"IV premium guard: India VIX history unavailable: {exc}")
             return None
@@ -1634,6 +1636,28 @@ class AutonomousTradingBot:
         current = closes[-1]
         below = sum(1 for c in closes if c <= current)
         return below / len(closes)
+
+    @staticmethod
+    def _archive_vix(candles) -> None:
+        """Keep the VIX history this guard just fetched, forever.
+
+        VIX is the ONLY input to the gate that can switch Hokage off entirely,
+        and until 2026-10-16 it was archived nowhere — every lab that wanted to
+        ask a volatility question had to borrow a live Zerodha session, so the
+        answer existed only while a token did. The guard already pulls 70 daily
+        bars whenever it runs, so writing them down costs no extra broker call
+        and happens on exactly the days a session exists.
+
+        It can never affect the guard: a failure here is logged at debug and
+        the percentile is computed from the candles regardless. The archive
+        itself refuses to store the session in progress.
+        """
+        try:
+            from hokage.memory import vix_archive
+
+            vix_archive.remember(candles)
+        except Exception as exc:
+            logger.debug(f"VIX archive write skipped: {exc}")
 
     @staticmethod
     def _quote_liquidity_inputs(quote: Any) -> tuple[float | None, float | None]:

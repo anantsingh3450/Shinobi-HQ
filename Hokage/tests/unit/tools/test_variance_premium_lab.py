@@ -168,12 +168,29 @@ def test_no_premium_is_modelled_anywhere():
         assert banned not in src, f"a premium model crept in: {banned}"
 
 
-def test_vix_is_not_archived_so_it_must_be_fetched():
-    """Stated because it is a real limitation: this lab cannot run without a
-    live Zerodha session, and the failure must be explicit rather than a
-    silently empty result."""
+def test_a_missing_vix_fails_loudly_rather_than_returning_nothing():
+    """An empty VIX series makes every percentile None, every bucket empty and
+    every verdict silent - the result would look like "no signal" rather than
+    "no data". The failure has to be explicit."""
     src = (ROOT / "tools" / "research" / "variance_premium_lab.py").read_text(
         encoding="utf-8"
     )
     assert "could not load India VIX" in src
-    assert "VIX is not archived" in src
+    assert "tools/ops/archive_vix.py" in src, (
+        "the failure must name the one command that fixes it"
+    )
+
+
+def test_vix_comes_from_the_archive_not_a_live_session():
+    """The result this lab produced on 2026-10-15 was the first here to clear a
+    corrected bar on both halves, and it could only be reproduced while a
+    Zerodha token happened to be alive. Evidence that expires with a token is
+    an anecdote."""
+    from hokage.memory import vix_archive
+
+    import iv_lab
+
+    assert vp.load_vix_closes is iv_lab.load_vix_closes
+    assert callable(vix_archive.load)
+    src = (ROOT / "tools" / "research" / "iv_lab.py").read_text(encoding="utf-8")
+    assert "vix_archive" in src

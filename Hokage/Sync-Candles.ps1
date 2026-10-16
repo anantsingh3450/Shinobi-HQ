@@ -1,4 +1,5 @@
-# Keep every candle Hokage has ever been able to see.
+# Keep every candle Hokage has ever been able to see, and the India VIX
+# alongside them.
 #
 # 2026-08-27: the gas front-month contract rolled overnight and three months of
 # training tape ceased to exist. A futures contract carries no history from
@@ -33,6 +34,21 @@ try {
     & $Python (Join-Path $Root 'tools\research\candle_archive.py') sync 2>&1 |
         Out-File -FilePath $Log -Append -Encoding utf8
     $code = $LASTEXITCODE
+
+    # India VIX, the other half of the same corpus. The candle archive holds
+    # what the index DID; this holds what the market CHARGED for it, and the
+    # IV premium guard - the gate that can refuse every signal of the day -
+    # reads nothing else. Hokage writes it through himself whenever the guard
+    # runs, so on a normal day this adds nothing; it covers the days he is
+    # down. Its exit code is kept SEPARATE: a failed VIX top-up must not be
+    # reported as a failed candle sync, and a failed candle sync must not
+    # hide a VIX archive that is quietly going stale.
+    & $Python (Join-Path $Root 'tools\ops\archive_vix.py') 2>&1 |
+        Out-File -FilePath $Log -Append -Encoding utf8
+    if ($LASTEXITCODE -ne 0) {
+        "$(Get-Date -Format 'yyyy-MM-dd HH:mm') VIX archive FAILED: exit $LASTEXITCODE" |
+            Out-File -FilePath $Log -Append -Encoding utf8
+    }
     if ($code -ne 0) {
         "$(Get-Date -Format 'yyyy-MM-dd HH:mm') candle sync FAILED: exit $code" |
             Out-File -FilePath $Log -Append -Encoding utf8

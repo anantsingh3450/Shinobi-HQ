@@ -33,8 +33,14 @@ average gap is a licence to design carefully, never proof of profit. The
 losses live in the tail this average hides, so the worst realised excess is
 reported beside the mean.
 
-NO SYNTHETIC PRICES. VIX comes from Kite, the index path from the candle
-archive. Nothing is modelled.
+NO SYNTHETIC PRICES. VIX comes from the VIX ARCHIVE, the index path from the
+candle archive. Nothing is modelled.
+
+REPRODUCIBLE WITHOUT A BROKER. When this first ran, on 2026-10-15, VIX had to
+be fetched live on every run and was stored nowhere, so this result existed
+only while a Zerodha token did. It is archived from 2026-10-16: Hokage writes
+the history through every time the IV guard runs, and `tools/ops/archive_vix.py`
+covers the days he is down. A live session is now a top-up, not a dependency.
 """
 from __future__ import annotations
 
@@ -213,7 +219,8 @@ def main() -> int:
         vix = load_vix_closes()
     except Exception as exc:
         print(f"\n  could not load India VIX ({exc}).")
-        print("  This needs a live Zerodha session - VIX is not archived.")
+        print("  The VIX archive is empty and no live session could fill it.")
+        print("  Seed it once with: python tools/ops/archive_vix.py")
         return 1
     print(f"\n  India VIX: {len(vix)} daily closes, {vix[0][0]} .. {vix[-1][0]}")
 
