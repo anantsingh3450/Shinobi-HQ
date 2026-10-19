@@ -1,5 +1,28 @@
 """Is the IV premium guard filtering, or is it an off switch?
 
+ANSWERED FOR MCX ON 2026-10-19, AND THE GUARD NO LONGER APPLIES THERE.
+Commander-approved the same day: the guard is now scoped to NSE index
+options, because India VIX is the implied volatility of NIFTY options and
+says nothing about the price of gold premium. SessionShift, the only ACTIVE
+strategy, measured like this:
+
+    GOLDM   hold    passed n=88  +0.470   blocked n=19  +0.659
+    SILVERM train   passed n=179 -0.006   blocked n=98  +0.047
+    SILVERM hold    passed n=234 +0.173   blocked n=55  +0.247
+
+Three measurable halves, and the signals the guard threw away did better in
+all three. Not significantly — blocked reads t+1.50, +0.29, +1.28 — so the
+finding is the ABSENCE of evidence that it filters, not evidence that it
+hurts. On RangeFade and EventRider, both parked, the same guard measured as
+real protection (RangeFade/SILVERM blocked -0.632 t-4.83), which is why
+tests/unit/bots/autonomous/test_iv_guard_is_nse_only.py fails the day either
+is un-parked onto a commodity.
+
+SO THE MCX COLUMNS BELOW ARE NOW HISTORICAL. They describe what the guard DID
+when it applied to these symbols. Re-running this lab against MCX measures a
+gate that production no longer consults there; the question it still answers
+live is the NSE one.
+
 WHY THIS EXISTS
 On 2026-10-12 Hokage made 238 decisions and took no trade. The window that
 mattered -- SessionShift on GOLDM/SILVERM, the only ACTIVE strategy in the

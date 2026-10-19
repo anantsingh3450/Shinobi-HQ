@@ -1285,12 +1285,53 @@ class AutonomousTradingBot:
 
         # 3. IV premium guard: we BUY options; block when India VIX sits in the
         # top quintile of its trailing range (premium too rich).
-        vix_pct = self._india_vix_percentile()
-        if vix_pct is not None and vix_pct >= self._VIX_PERCENTILE_BLOCK:
-            return False, (
-                f"IV premium guard: India VIX at {vix_pct:.0%} percentile of "
-                f"{self._VIX_LOOKBACK_DAYS}d range — option premium too rich to buy."
-            )
+        #
+        # NSE INDEX OPTIONS ONLY. Commander-approved 2026-10-19.
+        #
+        # India VIX is the implied volatility of NIFTY options. Using it to
+        # refuse a GOLDM option purchase is a category error: it is a
+        # statement about the price of index premium and says nothing about
+        # the price of gold premium. That argument stands on its own, and the
+        # measurement agrees with it.
+        #
+        # iv_lab, 2026-10-19, SessionShift — the only ACTIVE strategy, and
+        # GOLDM/SILVERM the only two cells it can trade. Realised edge in ATR
+        # units, audit geometry:
+        #
+        #     GOLDM   hold    passed n=88  +0.470   blocked n=19  +0.659
+        #     SILVERM train   passed n=179 -0.006   blocked n=98  +0.047
+        #     SILVERM hold    passed n=234 +0.173   blocked n=55  +0.247
+        #
+        # Three measurable halves, and in every one the signals this guard
+        # threw away did BETTER than the ones it passed. None of it is
+        # significant — blocked reads t+1.50, +0.29, +1.28 — so this is NOT
+        # evidence that blocking helps. It is the absence of any evidence
+        # that the guard filters, with a consistent direction across three
+        # independent halves, on top of the category error.
+        #
+        # WHAT THIS COSTS, recorded because it is real. On the modules that
+        # are archived or parked, the same guard measured as genuine
+        # protection:
+        #
+        #     RangeFade  / GOLDM   train  passed +0.648 t+3.37  blocked -0.141
+        #     RangeFade  / SILVERM hold   passed -0.073         blocked -0.632 t-4.83
+        #     EventRider / GOLDM   train  passed -0.031         blocked -0.516 t-2.01
+        #
+        # Those modules do not trade today. IF ONE OF THEM IS EVER UN-PARKED
+        # ON AN MCX SYMBOL, THIS EXEMPTION MUST BE REVISITED FIRST — the
+        # protection it removes was measured, and on RangeFade/SILVERM it was
+        # measured at t-4.83. test_iv_guard_is_nse_only.py fails if that
+        # happens.
+        #
+        # The threshold itself is untouched: _VIX_PERCENTILE_BLOCK is still
+        # 0.80 and still applies in full to NIFTY, BANKNIFTY and SENSEX.
+        if not is_mcx:
+            vix_pct = self._india_vix_percentile()
+            if vix_pct is not None and vix_pct >= self._VIX_PERCENTILE_BLOCK:
+                return False, (
+                    f"IV premium guard: India VIX at {vix_pct:.0%} percentile of "
+                    f"{self._VIX_LOOKBACK_DAYS}d range — option premium too rich to buy."
+                )
 
         return True, "conduct gates passed"
 
