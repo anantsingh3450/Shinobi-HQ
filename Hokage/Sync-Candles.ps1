@@ -1,5 +1,5 @@
 # Keep every candle Hokage has ever been able to see, and the India VIX
-# alongside them.
+# and the option chain alongside them.
 #
 # 2026-08-27: the gas front-month contract rolled overnight and three months of
 # training tape ceased to exist. A futures contract carries no history from
@@ -47,6 +47,21 @@ try {
         Out-File -FilePath $Log -Append -Encoding utf8
     if ($LASTEXITCODE -ne 0) {
         "$(Get-Date -Format 'yyyy-MM-dd HH:mm') VIX archive FAILED: exit $LASTEXITCODE" |
+            Out-File -FilePath $Log -Append -Encoding utf8
+    }
+
+    # The option chain around the money. A spread CANNOT be backtested:
+    # an option carries history only from its listing and an expired one
+    # is delisted with its token, so the premium history of the past does
+    # not exist and never will. The only corpus that can exist is the one
+    # that starts being written down - the candle lesson and the VIX
+    # lesson, for a third time. This runs after 15:30 IST so the rows are
+    # closes rather than intraday marks. Its exit code is kept separate
+    # so one archive failing is never reported as another.
+    & $Python (Join-Path $Root 'tools\ops\archive_options.py') 2>&1 |
+        Out-File -FilePath $Log -Append -Encoding utf8
+    if ($LASTEXITCODE -ne 0) {
+        "$(Get-Date -Format 'yyyy-MM-dd HH:mm') option chain archive FAILED: exit $LASTEXITCODE" |
             Out-File -FilePath $Log -Append -Encoding utf8
     }
     if ($code -ne 0) {
