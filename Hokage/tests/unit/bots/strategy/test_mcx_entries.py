@@ -20,6 +20,12 @@ def _ctx(minutes_into_session, ema9=100.5, ema21=99.0, vwap=100.0, price=101.0, 
         symbol="CRUDEOIL", price=price, ema9=ema9, ema21=ema21, vwap=vwap,
         closes=c, highs=tuple(x * 1.001 for x in c), lows=tuple(x * 0.999 for x in c),
         minutes_into_session=minutes_into_session,
+        # SessionShift gates on the WALL CLOCK from 2026-10-20. Every
+        # case here assumes a normal 09:00 open, where the two agree,
+        # so the clock follows the same offset and the assertions are
+        # unchanged in meaning.
+        minute_of_day=(None if minutes_into_session is None
+                       else 9 * 60 + minutes_into_session),
     )
 
 

@@ -53,6 +53,26 @@ class MarketContext:
     #: None when the feed could not supply candles. A module reading it must
     #: stand aside on None rather than guess a weekday.
     session_date: "date | None" = None
+    #: Minutes since midnight IST of the LAST CANDLE, 0..1439. Read off the
+    #: tape for the same reason session_date is: a wall-clock read would
+    #: fabricate a time on any replay or backtest.
+    #:
+    #: Added 2026-10-20, after an MCX evening-only session cost a whole
+    #: window. SessionShift gated on `minutes_into_session` against constants
+    #: written for a 09:00 open — so on Dussehra, when MCX opened at 17:00 and
+    #: ran the evening session only, its 17:00-18:30 window mapped to
+    #: 01:00-02:30 and never arrived. Both metals were evaluated ten times and
+    #: refused every one with "outside the window (30min into session)" while
+    #: the clock read 17:30.
+    #:
+    #: minutes_into_session is still the right question for "how far into the
+    #: day are we" (an opening-range module wants exactly that). This answers
+    #: the different question "what time is it", which is what a module gated
+    #: on an external market's hours actually needs.
+    #:
+    #: None when the feed supplied no candles. A module reading it must stand
+    #: aside rather than guess the hour.
+    minute_of_day: int | None = None
 
     @property
     def weekday(self) -> int | None:

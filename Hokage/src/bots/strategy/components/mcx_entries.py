@@ -64,8 +64,14 @@ class SessionShiftEntry:
 
     module_id = "entry-sessionshift-mcx-v1"
 
-    WINDOW_START_MIN = 480  # 17:00 for a 09:00 MCX open
-    WINDOW_END_MIN = 630    # 19:30
+    #: The normal MCX open, in minutes since midnight IST. The window
+    #: constants below are offsets from THIS, not from whenever the session
+    #: happened to start — see evaluate(). Changing it would move the window
+    #: for every asset at once.
+    SESSION_ANCHOR_MIN = 9 * 60     # 09:00 IST
+
+    WINDOW_START_MIN = 480  # +480 from 09:00 = 17:00 IST
+    WINDOW_END_MIN = 630    # +630 from 09:00 = 19:30 IST
     MIN_GAP_PCT = 0.05
 
     #: Per asset, because the measurement was per asset.
@@ -121,16 +127,40 @@ class SessionShiftEntry:
     }
 
     def evaluate(self, ctx: MarketContext) -> EntrySignal:
-        m = ctx.minutes_into_session
-        if m is None:
+        # THE WALL CLOCK, NOT MINUTES SINCE THE OPEN. Fixed 2026-10-20,
+        # commander-approved, after an evening-only MCX session cost the
+        # whole window.
+        #
+        # This read `ctx.minutes_into_session` against constants written for
+        # a 09:00 open. On Dussehra, MCX ran the evening session only and
+        # opened at 17:00, so 480 minutes in mapped to 01:00 and the window
+        # never arrived. Both metals were evaluated ten times and refused
+        # every one — "outside the window (30min into session)" — while the
+        # clock read 17:30.
+        #
+        # The hypothesis was always about an EXTERNAL market's hours: the
+        # US overlap happens at 17:00 IST whatever time MCX opened. Minutes
+        # since the open only coincided with that on a normal day.
+        #
+        # THE CONSTANTS DO NOT CHANGE MEANING. They stay in minutes-since-
+        # 09:00 so the TUNABLES contract holds and the commander-approved
+        # GOLDM 570 still means 18:30; they are converted to a wall-clock
+        # minute here. On any 09:00-open day the behaviour is identical,
+        # which is what makes this safe to ship against measurements taken
+        # the old way.
+        now_min = ctx.minute_of_day
+        if now_min is None:
             return EntrySignal.stand_aside("SessionShift: session clock unknown — cannot gate to the US overlap window.")
         asset = (ctx.symbol or "").upper()
         window_end = self.WINDOW_END_MIN_BY_ASSET.get(asset, self.WINDOW_END_MIN)
-        if not (self.WINDOW_START_MIN <= m < window_end):
-            close_hhmm = "%02d:%02d" % (9 + window_end // 60, window_end % 60)
+        start_min = self.SESSION_ANCHOR_MIN + self.WINDOW_START_MIN
+        end_min = self.SESSION_ANCHOR_MIN + window_end
+        if not (start_min <= now_min < end_min):
+            close_hhmm = "%02d:%02d" % (end_min // 60, end_min % 60)
+            open_hhmm = "%02d:%02d" % (start_min // 60, start_min % 60)
             return EntrySignal.stand_aside(
-                f"SessionShift: outside the 17:00-{close_hhmm} IST US-overlap window "
-                f"({m}min into session)."
+                f"SessionShift: outside the {open_hhmm}-{close_hhmm} IST US-overlap window "
+                f"(clock {now_min // 60:02d}:{now_min % 60:02d})."
             )
 
         gap = abs(ctx.ema9 - ctx.ema21)

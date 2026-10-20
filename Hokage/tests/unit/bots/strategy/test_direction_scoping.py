@@ -89,6 +89,11 @@ class _Ctx:
         self.ema9 = ema9
         self.ema21 = ema21
         self.minutes_into_session = minutes
+        # SessionShift gates on the WALL CLOCK from 2026-10-20. These
+        # cases were all written for a normal 09:00 open, where the
+        # two agree exactly, so the clock is derived from the same
+        # offset and every assertion below keeps its original meaning.
+        self.minute_of_day = None if minutes is None else 9 * 60 + minutes
         self.above_vwap = above
         self.trend_up = up
         self.closes = [price] * 20

@@ -48,6 +48,11 @@ def _book(name: str) -> dict:
 class _Ctx:
     def __init__(self, symbol, minutes):
         self.symbol, self.minutes_into_session = symbol, minutes
+        # SessionShift gates on the WALL CLOCK from 2026-10-20. These
+        # cases were all written for a normal 09:00 open, where the
+        # two agree exactly, so the clock is derived from the same
+        # offset and every assertion below keeps its original meaning.
+        self.minute_of_day = None if minutes is None else 9 * 60 + minutes
         self.price = self.vwap = 160000.0
         self.ema9, self.ema21 = 160000.0, 160400.0
         self.above_vwap = self.trend_up = False

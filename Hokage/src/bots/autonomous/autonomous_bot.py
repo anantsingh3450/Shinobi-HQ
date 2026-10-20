@@ -1691,6 +1691,9 @@ class AutonomousTradingBot:
                 #: would disagree with it on any replay and would be a
                 #: fabricated value in exactly the way ATR used to be.
                 session_date=last_day,
+                #: Same source, same reason. See MarketContext.minute_of_day.
+                minute_of_day=(candles[-1].timestamp.hour * 60
+                               + candles[-1].timestamp.minute),
             )
 
         if cache is not None:

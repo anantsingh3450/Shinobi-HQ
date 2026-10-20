@@ -61,6 +61,10 @@ def build_context(symbol: str, bars: list[dict], ctx: Ctx, session: list[dict]) 
         #: read a wall clock here, every backtested bar would claim to be today
         #: and a weekday-aware module could not be measured at all.
         session_date=now.date(),
+        #: Same source again. A lab that left this None would make every
+        #: clock-gated module stand aside, and sweep_lab would then measure a
+        #: module production never runs that way.
+        minute_of_day=now.hour * 60 + now.minute,
     )
 
 
