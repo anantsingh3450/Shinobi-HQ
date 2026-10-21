@@ -123,12 +123,12 @@ def test_crudeoil_long_lands_on_mcx_venue_never_index(mock_orchestrator_with_mcx
                 return MarketContext(
                     symbol=symbol, price=c[-1], ema9=c[-1] - 5, ema21=c[-1] - 40, vwap=c[-1] - 20,
                     closes=c, highs=tuple(x * 1.001 for x in c), lows=tuple(x * 0.999 for x in c),
-                    minutes_into_session=600,  # 19:00 for a 09:00 MCX open — TrendRider's window
+                    minutes_into_session=600, minute_of_day=9 * 60 + 600,  # 19:00 for a 09:00 MCX open — TrendRider's window
                 )
             c = _flat
             return MarketContext(
                 symbol=symbol, price=c[-1], ema9=c[-1], ema21=c[-1], vwap=c[-1],
-                closes=c, highs=c, lows=c, minutes_into_session=600,
+                closes=c, highs=c, lows=c, minutes_into_session=600, minute_of_day=9 * 60 + 600,
             )
         bot._build_market_context = _ctx_for
         bot._compute_underlying_bias = lambda symbol: None

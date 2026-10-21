@@ -50,6 +50,11 @@ class _Ctx:
         self.closes = tuple(closes)
         self.price = closes[-1]
         self.minutes_into_session = minutes
+        # MCX modules gate on the WALL CLOCK from 2026-10-20/21. Every
+        # case here was written for a normal 09:00 open, where the two
+        # agree exactly, so the clock follows the same offset and no
+        # assertion changes meaning.
+        self.minute_of_day = None if minutes is None else 9 * 60 + minutes
         self.session_date = session_date
         self.atr = atr
         self.vwap = closes[-1]

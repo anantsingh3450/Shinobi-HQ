@@ -52,6 +52,18 @@ def _direction_allowed(module, asset: str, direction: str) -> bool:
     return want is None or want == direction
 
 
+#: The normal MCX open, in minutes since midnight IST. EVERY module's window
+#: constants in this file are offsets from THIS, never from whenever the
+#: session happened to start.
+#:
+#: 2026-10-20 showed why that distinction is load-bearing: MCX ran an
+#: evening-only session opening at 17:00, and SessionShift's 480-minute
+#: offset mapped to 01:00. Its window never arrived and the evening was lost.
+#: The other four modules carried the same bug and were saved only by being
+#: archived at the time.
+MCX_SESSION_ANCHOR_MIN = 9 * 60     # 09:00 IST
+
+
 class SessionShiftEntry:
     """Trade the US-market hand-off, when crude/gold volume genuinely wakes up.
 
@@ -68,7 +80,10 @@ class SessionShiftEntry:
     #: constants below are offsets from THIS, not from whenever the session
     #: happened to start — see evaluate(). Changing it would move the window
     #: for every asset at once.
-    SESSION_ANCHOR_MIN = 9 * 60     # 09:00 IST
+    #: One definition for the whole file; see MCX_SESSION_ANCHOR_MIN. Kept as
+    #: a class attribute because the TUNABLES contract and its tests read it
+    #: off the module.
+    SESSION_ANCHOR_MIN = MCX_SESSION_ANCHOR_MIN
 
     WINDOW_START_MIN = 480  # +480 from 09:00 = 17:00 IST
     WINDOW_END_MIN = 630    # +630 from 09:00 = 19:30 IST
@@ -217,12 +232,20 @@ class EventRiderEntry:
     MIN_ROC_PCT = 0.25
 
     def evaluate(self, ctx: MarketContext) -> EntrySignal:
-        m = ctx.minutes_into_session
+        # WALL CLOCK, not minutes-since-open — see SessionShift.evaluate
+        # for why. The constants stay offsets from a 09:00 anchor, so
+        # every tuned value keeps its meaning and a normal day behaves
+        # exactly as before.
+        m = ctx.minute_of_day
         if m is None:
             return EntrySignal.stand_aside("EventRider: session clock unknown.")
-        if not (self.WINDOW_START_MIN <= m < self.WINDOW_END_MIN):
+        start = MCX_SESSION_ANCHOR_MIN + self.WINDOW_START_MIN
+        end = MCX_SESSION_ANCHOR_MIN + self.WINDOW_END_MIN
+        if not (start <= m < end):
             return EntrySignal.stand_aside(
-                f"EventRider: outside the 17:00-18:30 IST thrust window ({m}min into session)."
+                f"EventRider: outside the {start // 60:02d}:{start % 60:02d}-"
+                f"{end // 60:02d}:{end % 60:02d} IST thrust window "
+                f"(clock {m // 60:02d}:{m % 60:02d})."
             )
         if len(ctx.closes) < self.ROC_BARS + 1:
             return EntrySignal.stand_aside(f"EventRider: need {self.ROC_BARS + 1} bars, have {len(ctx.closes)}.")
@@ -400,12 +423,20 @@ class RangeFadeEntry:
     }
 
     def evaluate(self, ctx: MarketContext) -> EntrySignal:
-        m = ctx.minutes_into_session
+        # WALL CLOCK, not minutes-since-open — see SessionShift.evaluate
+        # for why. The constants stay offsets from a 09:00 anchor, so
+        # every tuned value keeps its meaning and a normal day behaves
+        # exactly as before.
+        m = ctx.minute_of_day
         if m is None:
             return EntrySignal.stand_aside("RangeFade: session clock unknown.")
-        if not (self.WINDOW_START_MIN <= m < self.WINDOW_END_MIN):
+        start = MCX_SESSION_ANCHOR_MIN + self.WINDOW_START_MIN
+        end = MCX_SESSION_ANCHOR_MIN + self.WINDOW_END_MIN
+        if not (start <= m < end):
             return EntrySignal.stand_aside(
-                f"RangeFade: outside the 09:30-17:00 IST quiet window ({m}min into session)."
+                f"RangeFade: outside the {start // 60:02d}:{start % 60:02d}-"
+                f"{end // 60:02d}:{end % 60:02d} IST quiet window "
+                f"(clock {m // 60:02d}:{m % 60:02d})."
             )
 
         asset = (ctx.symbol or "").upper()
@@ -555,9 +586,14 @@ class EIAReactionEntry:
                 "EIAReaction: not a Thursday — the storage report only prints once a week."
             )
 
-        m = ctx.minutes_into_session
+        # WALL CLOCK, not minutes-since-open — see SessionShift.evaluate
+        # for why. The constants stay offsets from a 09:00 anchor, so
+        # every tuned value keeps its meaning and a normal day behaves
+        # exactly as before.
+        m = ctx.minute_of_day
         if m is None:
             return EntrySignal.stand_aside("EIAReaction: session clock unknown.")
+        m = m - MCX_SESSION_ANCHOR_MIN
         if m < self.WINDOW_START_MIN:
             return EntrySignal.stand_aside(
                 f"EIAReaction: too early ({m}min) — refusing the 20:00-20:15 release vacuum, "
@@ -627,12 +663,20 @@ class TrendRiderEntry:
     MIN_ROC_PCT = 0.15
 
     def evaluate(self, ctx: MarketContext) -> EntrySignal:
-        m = ctx.minutes_into_session
+        # WALL CLOCK, not minutes-since-open — see SessionShift.evaluate
+        # for why. The constants stay offsets from a 09:00 anchor, so
+        # every tuned value keeps its meaning and a normal day behaves
+        # exactly as before.
+        m = ctx.minute_of_day
         if m is None:
             return EntrySignal.stand_aside("TrendRider: session clock unknown.")
-        if not (self.WINDOW_START_MIN <= m < self.WINDOW_END_MIN):
+        start = MCX_SESSION_ANCHOR_MIN + self.WINDOW_START_MIN
+        end = MCX_SESSION_ANCHOR_MIN + self.WINDOW_END_MIN
+        if not (start <= m < end):
             return EntrySignal.stand_aside(
-                f"TrendRider: outside the 17:00-22:30 IST evening-trend window ({m}min into session)."
+                f"TrendRider: outside the {start // 60:02d}:{start % 60:02d}-"
+                f"{end // 60:02d}:{end % 60:02d} IST evening-trend window "
+                f"(clock {m // 60:02d}:{m % 60:02d})."
             )
 
         gap_pct = (abs(ctx.ema9 - ctx.ema21) / ctx.price * 100.0) if ctx.price else 0.0
