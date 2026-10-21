@@ -2052,9 +2052,26 @@ class AutonomousTradingBot:
     PARKED_ASSETS: dict[str, str] = {
         "CRUDEOIL": ("no measured edge in any configuration — 7 sweeps, all "
                      "failing out of sample; awaiting a crude-specific module"),
-        "NATURALGAS": ("the fade went NEGATIVE out of sample — hold-out +0.98 on "
-                       "2026-08-28 then -0.59 on 2026-09-22, below the bar two "
-                       "audits running; awaiting a gas idea that measures"),
+        # NATURALGAS UN-PARKED 2026-10-21, commander-approved, with the
+        # measurement against it stated rather than hidden.
+        #
+        # It was parked because the fade went negative out of sample. That is
+        # still true. Measured over the whole archive on 2026-10-21, three
+        # horizons, every MCX module:
+        #
+        #     RangeFade      +0.225 t+1.65  +0.407 t+1.80  +0.065 t+0.22
+        #     SessionShift   +0.051 t+0.39  +0.065 t+0.38  +0.035 t+0.16
+        #     TrendRider     -0.029 t-0.29  -0.047 t-0.40  -0.315 t-2.03
+        #     EventRider     -0.082 t-0.41  -0.325 t-1.08  -0.449 t-1.25
+        #
+        # Nothing clears t=2. Split train/hold, RangeFade is a textbook
+        # overfit: +0.595 t+3.11 in sample against -0.239 t-1.91 out of it.
+        #
+        # THE REASON TO TRADE IT ANYWAY IS DATA, NOT EDGE. The old gas
+        # evidence was destroyed by a futures roll before the candle archive
+        # existed (see candle_archive); the archive now keeps every bar, so
+        # from here a gas verdict compounds instead of evaporating. This is
+        # paper money buying a measurable record.
     }
 
     def is_parked(self, symbol: str) -> bool:

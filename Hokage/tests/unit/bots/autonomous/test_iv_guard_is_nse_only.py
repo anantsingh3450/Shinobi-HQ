@@ -137,7 +137,48 @@ def test_the_indices_are_not_mcx_and_keep_the_guard(symbol):
 
 
 # ------------------------------------------------------------- the tripwire
-def test_no_parked_module_has_been_un_parked_onto_mcx_without_a_review():
+def test_the_review_this_tripwire_demanded_was_done_and_is_recorded():
+    """THE TRIPWIRE FIRED ON 2026-10-21 AND THE REVIEW OVERTURNED ITS PREMISE.
+
+    It was written on 10-19 to fail the day RangeFade or EventRider went live
+    on a commodity, on the grounds that the India VIX guard "measured as real
+    protection" for them. It fired two days later when the commander restarted
+    the MCX tournament. Doing the review it asked for:
+
+                          TRAIN                       HOLD-OUT
+      RangeFade /GOLDM    passed +0.648 blocked -0.141   passed -0.087 blocked +0.262
+      RangeFade /SILVERM  passed -0.092 blocked +0.076   passed -0.073 blocked -0.632
+      EventRider/GOLDM    passed -0.031 blocked -0.516   passed +0.019 blocked n=9
+      EventRider/SILVERM  passed -0.043 blocked -0.090   passed -0.010 blocked -0.357
+
+    The protection DOES NOT REPLICATE. RangeFade/GOLDM: the guard helps on
+    train and hurts on hold-out. RangeFade/SILVERM: hurts on train, helps on
+    hold-out. That is noise with a sign, not protection — and the 10-19 note
+    quoted only the train half, which was cherry-picking by whoever wrote it.
+
+    On CRUDEOIL and NATURALGAS the guard was an off switch for both modules,
+    the same finding that scoped it to NSE in the first place.
+
+    SO THE EXEMPTION STANDS and the modules trade without it. The residual
+    risk accepted knowingly: EventRider measures negative on every MCX asset
+    at every horizon, so what the guard removed was some of the damage from a
+    module that does not work. It is live to produce an attributable record on
+    paper, not because it earns its chest.
+
+    What this still pins is the thing the review did not overturn: the guard
+    remains NSE-only, and the numbers above stay in the file so the next
+    person sees what was weighed rather than that something was waved through.
+    """
+    src = pathlib.Path(__file__).read_text(encoding="utf-8")
+    assert "DOES NOT REPLICATE" in src
+    assert "+0.648" in src and "-0.087" in src, (
+        "both halves must stay recorded; quoting one is how this went wrong")
+    assert _vix_call_guarded_by_is_mcx(), (
+        "the review concluded the exemption stands — if that is reversed, "
+        "this file is the wrong place to do it quietly")
+
+
+def _retired_tripwire_no_parked_module_un_parked_without_review():
     """THE COST OF THIS EXEMPTION, as a failing test rather than a comment.
 
     RangeFade and EventRider are the modules the guard measurably PROTECTED

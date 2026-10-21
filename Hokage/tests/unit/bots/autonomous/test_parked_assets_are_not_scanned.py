@@ -55,7 +55,11 @@ def test_a_live_asset_is_not_parked(asset):
 def test_the_parked_set_is_exactly_what_was_decided():
     """A silent addition here stops an asset being scanned. That must be a
     deliberate, reviewed act, not a drive-by edit."""
-    assert set(AutonomousTradingBot.PARKED_ASSETS) == {"CRUDEOIL", "NATURALGAS"}
+    # NATURALGAS removed 2026-10-21 by commander directive, to accumulate a
+    # record on an archive that now survives the futures roll. Nothing it
+    # measured improved; see PARKED_ASSETS for the numbers kept beside the
+    # reversal. CRUDEOIL stays parked - 7 sweeps, all failing out of sample.
+    assert set(AutonomousTradingBot.PARKED_ASSETS) == {"CRUDEOIL"}
 
 
 def test_every_parked_asset_carries_its_reason():

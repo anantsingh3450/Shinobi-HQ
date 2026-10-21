@@ -57,9 +57,18 @@ def test_crude_is_parked_with_a_stated_reason():
 
 
 def test_the_live_lineup_no_longer_alarms_on_crude():
-    """The real post-park state, 2026-09-22: BOTH energies parked, SessionShift
-    alone on the metals. Neither park may raise an alarm."""
-    bot = _bot({"s": _strat("SessionShift", "ACTIVE", ["GOLDM", "SILVERM"])})
+    """The real lineup as of 2026-10-21: CRUDEOIL still parked, NATURALGAS
+    un-parked and covered again, SessionShift on the metals. No asset may
+    raise a coverage alarm.
+
+    This was the 09-22 state — both energies parked, SessionShift alone.
+    Gas came back by commander directive on 10-21; crude did not, because
+    its seven sweeps all failed out of sample.
+    """
+    bot = _bot({
+        "s": _strat("SessionShift", "ACTIVE", ["GOLDM", "SILVERM"]),
+        "r": _strat("RangeFade", "ACTIVE", ["NATURALGAS"], start=100000.0),
+    })
     assert bot.audit_asset_coverage() == []
 
 
@@ -93,7 +102,9 @@ def test_parking_does_not_silence_the_index_league():
 def test_a_broke_owner_is_still_reported_even_for_a_parked_asset_name(monkeypatch):
     """Parking suppresses the NO-STRATEGY finding only. A strategy that is
     scoped but cannot fill is a different fault and must still surface."""
-    monkeypatch.delitem(Bot.PARKED_ASSETS, "NATURALGAS")
+    # raising=False: gas was un-parked for real on 2026-10-21, so there may
+    # be nothing left to remove here. The RULE under test is unchanged.
+    monkeypatch.delitem(Bot.PARKED_ASSETS, "NATURALGAS", raising=False)
     bot = _bot({
         "r": _strat("RangeFade", "SHADOW_MODE", ["NATURALGAS"], start=0.0, realized=-500.0),
         "s": _strat("SessionShift", "ACTIVE", ["GOLDM", "SILVERM"]),
@@ -102,12 +113,16 @@ def test_a_broke_owner_is_still_reported_even_for_a_parked_asset_name(monkeypatc
     assert any("NATURALGAS" in f and "no chest" in f for f in findings)
 
 
-def test_rangefade_is_archived_in_the_real_brain():
-    """The measurement is worthless if the lineup did not actually change.
+def test_rangefade_keeps_its_narrow_scope_in_the_real_brain():
+    """RangeFade was archived on 09-22 and REVIVED on 2026-10-21 by commander
+    directive, to accumulate a gas record on an archive that now survives the
+    futures roll. Nothing it measured improved - still +3.11 in sample against
+    -1.91 out of it.
 
-    Archived rather than emptied: an empty `supported_assets` FAILS OPEN in
-    `_strategy_supports`, so blanking the scope would arm a revived RangeFade
-    against the entire universe.
+    The SCOPE half of this test is what still bites, and it matters more now
+    that the module is live: an empty `supported_assets` FAILS OPEN in
+    `_strategy_supports`, so a revived RangeFade with a blank scope would be
+    armed against the entire universe rather than gas alone.
     """
     import json
     import os
@@ -122,5 +137,4 @@ def test_rangefade_is_archived_in_the_real_brain():
         .read_text(encoding="utf-8-sig")
     )
     rf = book["strategies"]["strat-rangefade-mcx-v1"]
-    assert rf["status"] == "ARCHIVED"
     assert rf["supported_assets"] == ["NATURALGAS"], rf["supported_assets"]

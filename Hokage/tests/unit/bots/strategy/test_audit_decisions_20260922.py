@@ -99,19 +99,38 @@ def test_meanreversion_no_longer_trades_banknifty():
     )
 
 
-# ------------------------------------------------- 3. natural gas parked
-def test_gas_is_parked_with_the_measurement_in_the_reason():
-    assert "NATURALGAS" in Bot.PARKED_ASSETS
-    why = Bot.PARKED_ASSETS["NATURALGAS"]
-    assert "-0.59" in why and "NEGATIVE" in why
+# -------------------------------------- 3. natural gas: parked, then un-parked
+def test_gas_is_no_longer_parked_and_the_reversal_is_recorded():
+    """REVERSED 2026-10-21 by commander directive, and the measurement that
+    justified the original parking is still in the source beside it.
+
+    Gas was parked on 09-22 because the fade went negative out of sample. That
+    remains true. Re-measured over the whole archive on 10-21, three horizons:
+    RangeFade +1.65/+1.80/+0.22, SessionShift +0.39/+0.38/+0.16, TrendRider
+    -0.29/-0.40/-2.03, EventRider -0.41/-1.08/-1.25. Nothing clears t=2, and
+    split train/hold RangeFade is +3.11 in sample against -1.91 out of it.
+
+    It trades again to ACCUMULATE A RECORD, not because an edge was found: the
+    old gas evidence was destroyed by a futures roll before the candle archive
+    existed, and the archive now keeps every bar. Paper money buying a
+    measurable history.
+    """
+    import inspect
+
+    assert "NATURALGAS" not in Bot.PARKED_ASSETS
+    src = inspect.getsource(Bot)
+    assert "NATURALGAS UN-PARKED 2026-10-21" in src
+    assert "-0.239 t-1.91" in src or "-1.91" in src, (
+        "the measurement against gas must stay visible beside the reversal")
 
 
-def test_rangefade_is_archived_and_NOT_left_with_an_empty_scope():
-    """An empty `supported_assets` FAILS OPEN — it reads as "no restriction
-    recorded", not "trades nothing". Emptying it would arm a revived RangeFade
-    against the entire universe."""
+def test_rangefade_is_live_again_and_still_NOT_left_with_an_empty_scope():
+    """Un-archived 2026-10-21. The scope rule is unchanged and still matters
+    MORE now, not less: an empty `supported_assets` FAILS OPEN — it reads as
+    "no restriction recorded", not "trades nothing" — so a live RangeFade with
+    a blank scope would be armed against the entire universe."""
     rf = _book("mcx_strategy_portfolio.json")["strategies"]["strat-rangefade-mcx-v1"]
-    assert rf["status"] == "ARCHIVED"
+    assert rf["status"] != "ARCHIVED"
     assert rf["supported_assets"] == ["NATURALGAS"], rf["supported_assets"]
 
 
