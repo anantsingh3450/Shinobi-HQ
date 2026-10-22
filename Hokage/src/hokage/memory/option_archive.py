@@ -46,6 +46,7 @@ import sqlite3
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from hokage.memory import trading_calendar
 from hokage.memory.resolver import brain_root
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -59,6 +60,32 @@ SESSION_END = dt.time(15, 30)
 #: quotes go stale and the spreads go wide. Twenty-one strikes per expiry per
 #: type is enough to build any defined-risk structure worth testing.
 STRIKES_EACH_SIDE = 10
+
+#: Which holiday calendar each underlying follows. NIFTY and SENSEX are both
+#: equity-segment instruments and share the NSE/BSE list; a commodity option
+#: would follow MCX, which trades an evening session on most equity holidays.
+#: Anything unlisted is treated as equity, which is the archive's universe.
+CALENDAR_SEGMENT = {
+    "NIFTY": "NSE", "BANKNIFTY": "NSE", "FINNIFTY": "NSE", "MIDCPNIFTY": "NSE",
+    "SENSEX": "NSE", "BANKEX": "NSE",
+    "CRUDEOIL": "MCX", "NATURALGAS": "MCX", "GOLD": "MCX", "GOLDM": "MCX",
+    "SILVER": "MCX", "SILVERM": "MCX",
+}
+
+
+def market_was_open(symbol: str, day: dt.date) -> bool | None:
+    """Did this underlying's market trade on this day? None = cannot say.
+
+    None is NOT "yes". The caller decides what to do with a day the calendar
+    does not cover, and `remember` deliberately writes it rather than
+    refusing, so the archive does not silently stop at the end of the
+    calendar's span. The CLI reports it.
+    """
+    segment = CALENDAR_SEGMENT.get(str(symbol).upper(), "NSE")
+    kind = trading_calendar.session_kind(day, segment)
+    if kind is None:
+        return None
+    return kind != trading_calendar.CLOSED
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS option_chain (
@@ -126,6 +153,11 @@ def remember(rows, when: dt.datetime | None = None) -> int:
     last_price; oi, volume and spot are optional. A row with no price is
     MISSING, not zero — a zero premium would read as a free option and make
     every spread look like free money.
+
+    A row for a day this underlying's market was SHUT is refused. On
+    2026-10-20, an equity holiday, the broker answered every quote with
+    Monday's last print and 168 rows went in looking like Tuesday closes.
+    A quote coming back is not evidence the market was open.
     """
     when = when or now_ist()
     day = when.date().isoformat()
@@ -152,8 +184,13 @@ def remember(rows, when: dt.datetime | None = None) -> int:
             strike = float(r["strike"])
         except (KeyError, TypeError, ValueError):
             continue
+        symbol = str(r["symbol"]).upper()
+        # False means the calendar is SURE the market was shut. None means it
+        # cannot say, and that row is written — see market_was_open.
+        if market_was_open(symbol, when.date()) is False:
+            continue
         out.append((
-            str(r["symbol"]).upper(), day, str(expiry), strike, option_type,
+            symbol, day, str(expiry), strike, option_type,
             stamp, price, _opt(r.get("oi")), _opt(r.get("volume")),
             _opt(r.get("spot")),
         ))
@@ -178,7 +215,13 @@ def _opt(value) -> float | None:
 
 def closing_snapshots(symbol: str | None = None) -> list[dict]:
     """Rows captured AFTER the session ended, which are the only ones that
-    may be read as a day's closing premium."""
+    may be read as a day's closing premium.
+
+    Rows from a day the market was SHUT are also excluded, however they got
+    in. The 2026-10-20 snapshot predates the guard in `remember` and its 168
+    rows are Monday's prints wearing Tuesday's date; they stay in the table
+    as the record of what happened, and no measurement reads them.
+    """
     path = db_path()
     if not path.exists():
         return []
@@ -205,7 +248,20 @@ def closing_snapshots(symbol: str | None = None) -> list[dict]:
     # 10:28 and is discarded as an intraday mark. The archive's own tests
     # caught it on the first run. Parsing the stamp means the answer does not
     # depend on how SQLite chooses to interpret an offset.
-    return [r for r in rows if _captured_after_close(r.get("captured_at"))]
+    return [r for r in rows
+            if _captured_after_close(r.get("captured_at"))
+            and _market_traded_that_day(r.get("symbol"), r.get("day"))]
+
+
+def _market_traded_that_day(symbol, day) -> bool:
+    """False only when the calendar is SURE the market was shut. A day it
+    cannot speak to is kept — dropping it would silently shrink the corpus
+    the moment the calendar runs out of year."""
+    try:
+        parsed = dt.date.fromisoformat(str(day))
+    except (TypeError, ValueError):
+        return True
+    return market_was_open(str(symbol or ""), parsed) is not False
 
 
 def _captured_after_close(stamp: str | None) -> bool:
@@ -239,5 +295,10 @@ def coverage() -> dict:
             "SELECT DISTINCT symbol FROM option_chain ORDER BY symbol")]
     finally:
         conn.close()
+    # `days` counts what is STORED. `usable_days` counts what a measurement
+    # would actually read: after-close snapshots from days the market traded.
+    # They differed from the moment the 2026-10-20 holiday went in, and a
+    # status line that reports only the first one overstates the corpus.
+    usable = {r["day"] for r in closing_snapshots()}
     return {"rows": rows, "days": days, "first": first, "last": last,
-            "symbols": symbols}
+            "symbols": symbols, "usable_days": len(usable)}

@@ -91,7 +91,11 @@ def test_a_contract_already_recorded_today_is_not_rewritten(archive):
 
 def test_the_same_strike_on_a_later_day_is_a_new_row(archive):
     archive.remember([_row()], when=AFTER_CLOSE)
-    later = AFTER_CLOSE + dt.timedelta(days=1)
+    # +2, not +1: the day after AFTER_CLOSE is 2026-10-20, an equity holiday,
+    # and the holiday guard added below correctly refuses it. The claim under
+    # test is about a LATER DAY, not about which day, so it moves to the next
+    # one the market was actually open.
+    later = AFTER_CLOSE + dt.timedelta(days=2)
     assert archive.remember([_row(price=160.0)], when=later) == 1
     assert len(archive.closing_snapshots()) == 2
 
@@ -200,3 +204,71 @@ def test_the_daily_job_takes_the_snapshot():
                 if (p / "pyproject.toml").is_file())
     ps = (root / "Sync-Candles.ps1").read_text(encoding="utf-8-sig")
     assert "archive_options.py" in ps
+
+
+# ------------------------------- a quote is not evidence the market was open
+# 2026-10-20 was an equity holiday. NIFTY and SENSEX did not trade. The
+# archiver ran on schedule, Kite answered every quote with MONDAY's last
+# print, and 168 rows went in stamped day='2026-10-20'. Nothing in a row says
+# so: a reader three months from now sees closes like any other and measures
+# a zero-change session that never existed.
+#
+# Same family as the rest of this file. A mark is not a close; missing is not
+# zero; and a quote coming back is not evidence that the market was open.
+HOLIDAY = dt.datetime(2026, 10, 20, 15, 58, tzinfo=IST)     # Dussehra
+TRADING_DAY = dt.datetime(2026, 10, 21, 15, 58, tzinfo=IST)
+
+
+def test_a_holiday_snapshot_is_refused_at_the_point_of_writing(archive):
+    assert archive.remember([_row()], when=HOLIDAY) == 0
+    assert archive.coverage()["rows"] == 0
+
+
+def test_the_next_trading_day_still_writes(archive):
+    """The guard must refuse a holiday, not the week around it."""
+    assert archive.remember([_row()], when=TRADING_DAY) == 1
+
+
+def test_mcx_trades_the_evening_of_an_equity_holiday(archive):
+    """Commodity options follow a different calendar, and on 2026-10-20 MCX
+    ran its evening session. Refusing them would be the same error pointed
+    the other way."""
+    assert archive.market_was_open("NATURALGAS", HOLIDAY.date()) is True
+    assert archive.market_was_open("NIFTY", HOLIDAY.date()) is False
+
+
+def test_a_day_the_calendar_cannot_speak_to_is_written_not_dropped(archive):
+    """UNKNOWN IS NOT SHUT, and this direction is deliberate. The calendar
+    covers 2026. Refusing on silence would make the archive stop writing on
+    2027-01-01 with no error anywhere — the silent-stop failure this project
+    has now paid for with a dead token, a blind watcher and a dead bot."""
+    beyond = dt.datetime(2027, 3, 1, 15, 58, tzinfo=IST)
+    assert archive.market_was_open("NIFTY", beyond.date()) is None
+    assert archive.remember([_row()], when=beyond) == 1
+
+
+def test_a_holiday_row_already_in_the_table_never_reaches_a_measurement(archive):
+    """The 168 rows from 2026-10-20 predate the guard. They are NOT deleted —
+    they are the record of what happened — but no study may read them."""
+    import sqlite3
+    archive.remember([_row()], when=TRADING_DAY)
+    # Write the bad row the way it got in: straight past the guard.
+    with archive.connect() as conn:
+        conn.execute(
+            "INSERT INTO option_chain (symbol, day, expiry, strike, "
+            "option_type, captured_at, last_price) VALUES (?,?,?,?,?,?,?)",
+            ("NIFTY", "2026-10-20", "2026-11-23", 22900.0, "CE",
+             HOLIDAY.isoformat(), 150.0))
+    assert archive.coverage()["rows"] == 2, "the row stays in the table"
+    days = {r["day"] for r in archive.closing_snapshots()}
+    assert days == {"2026-10-21"}, "a shut day must not read as a close"
+
+
+def test_the_status_line_separates_what_is_stored_from_what_is_usable(archive):
+    """A corpus count that includes unusable days overstates the corpus, and
+    this one is being built precisely so a spread can be measured later."""
+    archive.remember([_row()], when=TRADING_DAY)
+    archive.remember([_row(strike=23000.0)], when=DURING)   # intraday mark
+    cover = archive.coverage()
+    assert cover["days"] == 2
+    assert cover["usable_days"] == 1

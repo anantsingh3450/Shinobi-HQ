@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "research"))
 
-from hokage.memory import option_archive  # noqa: E402
+from hokage.memory import option_archive, trading_calendar  # noqa: E402
 
 #: The underlyings the confirmed variance-premium result lives on, and the two
 #: cheapest lots in the universe. BANKNIFTY is deliberately absent: it showed
@@ -128,7 +128,13 @@ def report() -> dict:
         print("  EMPTY — no option chain has ever been archived.")
         return cover
     print(f"  rows      {cover['rows']:,}")
-    print(f"  sessions  {cover['days']}")
+    usable = cover.get("usable_days")
+    if usable is not None and usable != cover["days"]:
+        print(f"  sessions  {cover['days']} stored, {usable} usable")
+        print(f"            ({cover['days'] - usable} held back: captured "
+              f"intraday, or on a day the market was shut)")
+    else:
+        print(f"  sessions  {cover['days']}")
     print(f"  span      {cover['first']} .. {cover['last']}")
     print(f"  symbols   {', '.join(cover['symbols'])}")
     return cover
@@ -150,6 +156,26 @@ def main() -> int:
         return 0 if before["rows"] else 1
 
     when = option_archive.now_ist()
+
+    # Say the day out loud BEFORE spending quota on a chain that will be
+    # refused, and before a holiday's stale prints look like a successful run.
+    open_today = {s: option_archive.market_was_open(s, when.date())
+                  for s in UNDERLYINGS}
+    if all(v is False for v in open_today.values()):
+        print("")
+        print(f"  {trading_calendar.describe(when.date())}")
+        print("  Every underlying here is shut today. The broker would still")
+        print("  answer with the previous session's prints, and those rows")
+        print("  would be indistinguishable from today's closes. Not capturing.")
+        return 0
+    unknown = [s for s, v in open_today.items() if v is None]
+    if unknown:
+        print("")
+        print(f"  NOTE: the calendar does not cover {when.date()}, so "
+              f"it cannot confirm {', '.join(unknown)} traded.")
+        print("  Capturing anyway — unknown is not the same as shut — but a "
+              "holiday would pass unnoticed here.")
+
     if not option_archive.is_after_close(when):
         print(f"\n  NOTE: it is {when.strftime('%H:%M')} IST and the session "
               f"ends at 15:30.")
