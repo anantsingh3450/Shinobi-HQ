@@ -2310,7 +2310,22 @@ class AutonomousTradingBot:
             logger.debug("Capital regime: no lot could be priced yet; will retry.")
             return
 
-        self._capital_regime_announced = True
+        # WHAT DID NOT PRICE. price_universe_lots returns only the symbols
+        # that quoted, which is correct — but a caller that reads the result
+        # as "the universe" turns a feed gap into a confident, wrong answer.
+        # On 2026-10-22 NATURALGAS simply vanished from this line, and the
+        # line latched for the whole day off a read taken while the venue was
+        # unauthenticated.
+        wanted = {s.upper() for s in index_universe + list(MCX_UNIVERSE)}
+        unpriced = wanted - set(costs)
+
+        # A PARTIAL READ DOES NOT LATCH. Once-per-boot is right for a complete
+        # picture and wrong for a half one, so the flag waits until every
+        # symbol in scope has a price.
+        complete = not unpriced
+        if complete:
+            self._capital_regime_announced = True
+
         lines: list[str] = []
         starved: list[str] = []
 
@@ -2322,7 +2337,9 @@ class AutonomousTradingBot:
             if equity is None:
                 continue
             profile = capital_regime.profile_for(equity)
-            scoped = {s: c for s, c in costs.items() if s in {u.upper() for u in universe}}
+            in_scope = {u.upper() for u in universe}
+            scoped = {s: c for s, c in costs.items() if s in in_scope}
+            missing = sorted(in_scope - set(scoped))
             affordable, priced_out = capital_regime.affordable_assets(
                 equity, scoped, MAX_PREMIUM_CHEST_FRACTION
             )
@@ -2331,14 +2348,33 @@ class AutonomousTradingBot:
                 head += f" | can trade {', '.join(affordable)}"
             if priced_out:
                 head += f" | PRICED OUT of {', '.join(priced_out)}"
+            if missing:
+                # UNKNOWN, stated. Never an omission the reader has to notice.
+                head += f" | COULD NOT PRICE {', '.join(missing)}"
             lines.append(head)
-            if not affordable and scoped:
+            # Starvation is only a claim worth making about a complete scope.
+            if not affordable and scoped and not missing:
                 starved.append(league)
 
         if not lines:
             return
+
+        # Say the first partial out loud, then stay quiet until the picture
+        # changes or completes. Repeating an incomplete line every minute of
+        # the session would bury the corrected one.
+        previous = getattr(self, "_capital_regime_unpriced", None)
+        if not complete and previous == unpriced:
+            return
+        self._capital_regime_unpriced = unpriced
+
         for line in lines:
             logger.info(f"Capital regime — {line}")
+        if not complete:
+            logger.info(
+                f"Capital regime — {len(unpriced)} of {len(wanted)} symbols "
+                f"did not quote ({', '.join(sorted(unpriced))}); this reading "
+                f"is INCOMPLETE and will be taken again."
+            )
 
         if starved:
             cheapest = min(costs.items(), key=lambda kv: kv[1])
