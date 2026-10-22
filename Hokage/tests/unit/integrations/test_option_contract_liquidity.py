@@ -67,8 +67,18 @@ def _provider(book, fail=False):
 
 
 def _cand(symbol, distance):
-    """(expiry, distance_from_atm, strike, instrument) as the resolver builds it."""
-    return (date(2026, 9, 24), distance, 0.0, {"tradingsymbol": symbol})
+    """A candidate in the SHAPE THE RESOLVER BUILDS: (expiry, strike, inst).
+
+    It used to carry a precomputed distance-from-ATM as well. That field went
+    away on 2026-10-22, when strike distance had to be measured AFTER the
+    expiry was chosen so MCX could re-anchor to the right month's future. The
+    fixture is kept identical to production on purpose: a test double whose
+    shape has drifted is measuring something nobody runs.
+
+    `distance` is now expressed as the strike itself, with the reference at 0,
+    so the ordering each case depends on is unchanged.
+    """
+    return (date(2026, 9, 24), float(distance), {"tradingsymbol": symbol})
 
 
 # ------------------------------------------------------- the 2026-08-24 chain
@@ -90,14 +100,14 @@ def test_the_dead_atm_strike_is_skipped_for_the_liquid_one():
     p, _ = _provider(SILVERM_BOOK)
     chosen = p._closest_liquid(SILVERM_CHAIN, "MCX")
     assert chosen is not None
-    assert chosen[3]["tradingsymbol"] == "SILVERM26SEP250000CE"
+    assert chosen[-1]["tradingsymbol"] == "SILVERM26SEP250000CE"
 
 
 def test_a_healthy_atm_strike_is_still_taken_first():
     """GOLDM's ATM had 1,432 OI. Nothing about it should change."""
     chain = [_cand("GOLDM26AUG162500CE", 238), _cand("GOLDM26AUG162000CE", 262)]
     p, _ = _provider({"GOLDM26AUG162500CE": 1432, "GOLDM26AUG162000CE": 3041})
-    assert p._closest_liquid(chain, "MCX")[3]["tradingsymbol"] == "GOLDM26AUG162500CE"
+    assert p._closest_liquid(chain, "MCX")[-1]["tradingsymbol"] == "GOLDM26AUG162500CE"
 
 
 @pytest.mark.parametrize("symbol,oi", [
@@ -115,7 +125,7 @@ def test_every_healthy_asset_still_clears_the_floor(symbol, oi):
 def test_a_chain_with_no_market_anywhere_returns_nothing():
     """Standing aside is the correct answer. Buying the least-dead strike is
     not a fallback, it is the same mistake with extra steps."""
-    p, _ = _provider({c[3]["tradingsymbol"]: 1 for c in SILVERM_CHAIN})
+    p, _ = _provider({c[-1]["tradingsymbol"]: 1 for c in SILVERM_CHAIN})
     assert p._closest_liquid(SILVERM_CHAIN, "MCX") is None
 
 
@@ -136,7 +146,7 @@ def test_a_quote_failure_falls_back_to_atm_rather_than_starving():
     its context is unavailable."""
     p, _ = _provider(SILVERM_BOOK, fail=True)
     chosen = p._closest_liquid(SILVERM_CHAIN, "MCX")
-    assert chosen[3]["tradingsymbol"] == "SILVERM26SEP251000CE"
+    assert chosen[-1]["tradingsymbol"] == "SILVERM26SEP251000CE"
 
 
 def test_a_missing_or_junk_oi_field_counts_as_no_market():

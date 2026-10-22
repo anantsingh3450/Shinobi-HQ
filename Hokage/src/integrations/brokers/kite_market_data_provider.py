@@ -147,6 +147,50 @@ class KiteMarketDataProvider(MarketDataProvider):
             return None
         return price if price > 0 else None
 
+    def _mcx_future_for_expiry(self, chain_name: str, option_expiry,
+                               contracts: list) -> float | None:
+        """Price of the MCX future the given option expiry settles against.
+
+        An MCX option is an option ON A FUTURE, and which future is decided by
+        the option's own expiry, not by whichever contract happens to be front
+        month today. Returns None when no matching future can be priced, so the
+        caller keeps the reference it already has rather than refusing to
+        trade.
+
+        2026-10-22: without this, gas strikes were chosen 42 points - 16% -
+        away from the money, every candidate came back with no open interest,
+        and the asset went untradeable for a whole session behind a message
+        that blamed the market.
+        """
+        from datetime import date as _date
+
+        later = []
+        for inst in contracts:
+            if (inst.get("name") != chain_name
+                    or inst.get("instrument_type") != "FUT"):
+                continue
+            expiry = inst.get("expiry")
+            expiry_date = (expiry.date()
+                           if hasattr(expiry, "date") and not isinstance(expiry, _date)
+                           else expiry)
+            # A future settling BEFORE the option cannot be its underlying.
+            if expiry_date and expiry_date >= option_expiry:
+                later.append((expiry_date, inst["tradingsymbol"]))
+        if not later:
+            return None
+        _, tradingsymbol = min(later)
+        kite_symbol = f"MCX:{tradingsymbol}"
+        try:
+            quotes = self._connection_manager.get_kite_client().quote([kite_symbol])
+            price = float(quotes.get(kite_symbol, {}).get("last_price", 0.0))
+        except Exception as exc:
+            logger.warning(
+                f"Could not price {kite_symbol} to anchor the strike ({exc}); "
+                f"using the front-month reference, which may be the wrong month."
+            )
+            return None
+        return price if price > 0 else None
+
     def __init__(self, connection_manager: KiteConnectionManager) -> None:
         """Initialize KiteMarketDataProvider.
 
@@ -379,13 +423,40 @@ class KiteMarketDataProvider(MarketDataProvider):
                 continue
             if (expiry_date - today).days < self._MIN_DAYS_TO_EXPIRY:
                 continue
-            candidates.append((expiry_date, abs(strike - strike_reference), strike, inst))
+            candidates.append((expiry_date, strike, inst))
         if not candidates:
             return None
 
         nearest_expiry = min(c[0] for c in candidates)
+
+        # RE-ANCHOR TO THE MONTH WE ARE ACTUALLY BUYING FROM. This has to come
+        # AFTER the expiry is chosen, because which future these options settle
+        # on is decided by that expiry. The 2-DTE floor regularly pushes
+        # selection into the next month, and the front-month reference then
+        # describes a different contract: on 2026-10-22, 262.1 against a chain
+        # whose money was at 304.2.
+        if kite_exchange == "MCX":
+            future_price = self._mcx_future_for_expiry(
+                chain_name, nearest_expiry, contracts
+            )
+            if future_price is None:
+                logger.warning(
+                    f"No future priced for the {chain_name} {nearest_expiry} "
+                    f"chain; anchoring strikes to the reference "
+                    f"{strike_reference:.2f}, which may be another month."
+                )
+            elif abs(future_price - strike_reference) > 0.0:
+                logger.info(
+                    f"{underlying_upper} strike anchored to the {nearest_expiry} "
+                    f"future at {future_price:.2f} (reference was "
+                    f"{strike_reference:.2f}, calendar spread "
+                    f"{future_price - strike_reference:+.2f})."
+                )
+                strike_reference = future_price
+
         at_expiry = sorted(
-            (c for c in candidates if c[0] == nearest_expiry), key=lambda c: c[1]
+            (c for c in candidates if c[0] == nearest_expiry),
+            key=lambda c: abs(c[1] - strike_reference),
         )
 
         # CLOSEST TO ATM *THAT HAS A MARKET*, not closest outright. See
@@ -398,7 +469,7 @@ class KiteMarketDataProvider(MarketDataProvider):
                 f"rather than buying a contract with no market."
             )
             return None
-        contract = atm[3]
+        contract = atm[-1]
         option_lot = float(contract.get("lot_size") or 0.0)
 
         # Kite reports MCX commodity option lot_size as 1 (per-contract) —
@@ -414,7 +485,7 @@ class KiteMarketDataProvider(MarketDataProvider):
         return {
             "tradingsymbol": contract["tradingsymbol"],
             "exchange": kite_exchange,
-            "strike": atm[2],
+            "strike": atm[1],
             "expiry": nearest_expiry,
             "lot_size": option_lot,
         }
@@ -435,13 +506,13 @@ class KiteMarketDataProvider(MarketDataProvider):
         window = at_expiry[: self._LIQUIDITY_STRIKE_WINDOW]
         if not window:
             return None
-        symbols = [f"{kite_exchange}:{c[3]['tradingsymbol']}" for c in window]
+        symbols = [f"{kite_exchange}:{c[-1]['tradingsymbol']}" for c in window]
         try:
             quotes = self._connection_manager.get_kite_client().quote(symbols)
         except Exception as exc:
             logger.warning(
                 f"Could not price the option chain to check liquidity ({exc}); "
-                f"falling back to the ATM strike {window[0][3]['tradingsymbol']} "
+                f"falling back to the ATM strike {window[0][-1]['tradingsymbol']} "
                 f"UNCHECKED."
             )
             return window[0]
@@ -454,7 +525,7 @@ class KiteMarketDataProvider(MarketDataProvider):
         if not priced:
             logger.warning(
                 f"Option chain returned no open-interest data; falling back to "
-                f"the ATM strike {window[0][3]['tradingsymbol']} UNCHECKED."
+                f"the ATM strike {window[0][-1]['tradingsymbol']} UNCHECKED."
             )
             return window[0]
 
@@ -466,8 +537,8 @@ class KiteMarketDataProvider(MarketDataProvider):
             if oi >= self._MIN_OPTION_OPEN_INTEREST:
                 if candidate is not window[0]:
                     logger.info(
-                        f"ATM strike {window[0][3]['tradingsymbol']} has no market; "
-                        f"taking {candidate[3]['tradingsymbol']} instead (open "
+                        f"ATM strike {window[0][-1]['tradingsymbol']} has no market; "
+                        f"taking {candidate[-1]['tradingsymbol']} instead (open "
                         f"interest {oi:,.0f})."
                     )
                 return candidate
