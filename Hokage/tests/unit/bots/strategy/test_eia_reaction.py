@@ -209,3 +209,104 @@ def test_a_weekday_skip_does_not_leak_to_another_asset():
     ctx = _Ctx(200, THURSDAY, [300.0] * 5, symbol="CRUDEOIL")
     ctx.vwap = 300.0
     assert "weekday" not in module.evaluate(ctx).reason
+
+
+# =============================================================== 2026-10-23
+# A FADE MODULE WAS SITTING BEHIND A TREND-JOIN GATE, so it could never fire.
+#
+# 2026-10-22, its one window of the week:
+#
+#   20:15:07  EIAReaction wins with SHORT (conf 62) - the storage print moved
+#             the tape +1.30 (0.65 ATR) and the release bar has closed
+#   20:15:08  Bias engine: NATURALGAS MIXED - 2.13 ATR from VWAP,
+#             too extended to join the trend (needs <= 0.5).
+#   20:15:08  entry blocked for NATURALGAS: underlying tape is MIXED
+#
+# FADE_THE_PRINT is True: the module fires BECAUSE price is extended. The gas
+# bias rule is trend_pullback, which says yes only when price is WITHIN 0.5 ATR
+# of VWAP. Mutually exclusive by construction.
+#
+# MeanReversionEntry measured this exact shape six weeks running: 16 valid
+# signals, 0 allowed through. RangeFade was given COUNTER_TREND for it.
+# EIAReaction was not. Commander-approved 2026-10-23.
+def test_it_is_declared_counter_trend_so_the_trend_veto_skips_it():
+    assert EIAReactionEntry.COUNTER_TREND is True
+
+
+def test_the_exemption_is_paired_with_the_modules_own_ceiling():
+    """RangeFade's exemption was justified as safe ONLY because
+    MAX_TREND_GAP_PCT is its own, correctly-oriented guard. MIN_REACTION_ATR
+    is a trigger, not a guard - it refuses moves that are too SMALL. Without a
+    ceiling, exempting this module would remove a gate and put nothing back."""
+    assert EIAReactionEntry.MAX_REACTION_ATR > EIAReactionEntry.MIN_REACTION_ATR
+    import inspect
+    src = inspect.getsource(EIAReactionEntry)
+    assert "MAX_REACTION_ATR" in src
+    assert "STATED PRIOR, NOT A MEASUREMENT" in src, (
+        "the value is a judgement and must keep saying so - 28 Thursdays "
+        "exist in the entire fetchable universe")
+
+
+def test_a_print_too_big_to_be_a_vacuum_is_refused():
+    """The ceiling's whole job. The hypothesis is that the print is a
+    LIQUIDITY event that reverses; a move this large is repricing, and fading
+    it is betting against information."""
+    sig = EIAReactionEntry().evaluate(_spike(up=True, size=4.0))   # 4.0 ATR
+    assert not sig.should_enter
+    assert "information" in sig.reason and "4.00 ATR" in sig.reason
+
+
+def test_the_ceiling_refuses_both_sides():
+    """A fade is symmetric; so is the reason not to take one."""
+    for up in (True, False):
+        sig = EIAReactionEntry().evaluate(_spike(up=up, size=9.0))
+        assert not sig.should_enter, up
+        assert "not a vacuum to fade" in sig.reason
+
+
+def test_the_real_2026_10_22_print_still_fires_under_the_ceiling():
+    """CALIBRATION, kept as a test so the ceiling cannot quietly drift past
+    the one real observation we have. The storage print that day moved the
+    tape 1.30 points against ATR 2.00 - 0.65 ATR."""
+    ctx = _Ctx(675, THURSDAY, [300.0, 301.30, 301.30], atr=2.00)
+    sig = EIAReactionEntry().evaluate(ctx)
+    assert sig.should_enter, sig.reason
+    assert sig.direction == "short", "FADE_THE_PRINT fades an up-print"
+    assert "0.65 ATR" in sig.reason
+
+
+def test_a_reaction_exactly_at_the_ceiling_is_allowed():
+    """> not >=, so the boundary belongs to the tradeable side - the same
+    convention MIN_REACTION_ATR uses at the other end."""
+    size = EIAReactionEntry.MAX_REACTION_ATR
+    assert EIAReactionEntry().evaluate(_spike(up=True, size=size)).should_enter
+
+
+def test_the_floor_and_the_ceiling_leave_a_real_band():
+    """Two guards pointed at each other with nothing between them would be an
+    off switch wearing two labels."""
+    lo = EIAReactionEntry.MIN_REACTION_ATR
+    hi = EIAReactionEntry.MAX_REACTION_ATR
+    mid = (lo + hi) / 2
+    assert EIAReactionEntry().evaluate(_spike(up=True, size=mid)).should_enter
+
+
+def test_the_ceiling_is_sweepable_but_never_auto_tuned():
+    """propose tier: a lab may suggest a value, nothing ships one on its own -
+    and this module can never reach the ship bar anyway."""
+    spec = EIAReactionEntry.TUNABLES["MAX_REACTION_ATR"]
+    assert spec["tier"] == "propose"
+    assert EIAReactionEntry.MAX_REACTION_ATR in spec["values"]
+
+
+def test_the_other_mcx_modules_are_not_quietly_exempted_too():
+    """COUNTER_TREND turns off a safety gate. It belongs only to modules that
+    bet against the move AND carry their own guard."""
+    from bots.strategy.components.mcx_entries import (
+        EventRiderEntry, SessionShiftEntry, TrendRiderEntry,
+    )
+    for module in (SessionShiftEntry, EventRiderEntry, TrendRiderEntry):
+        assert not getattr(module, "COUNTER_TREND", False), module.__name__
+    # RangeFade IS exempt, and legitimately - it is the precedent this change
+    # followed. Asserting it here keeps the list honest about who is on it.
+    assert RangeFadeEntry.COUNTER_TREND is True

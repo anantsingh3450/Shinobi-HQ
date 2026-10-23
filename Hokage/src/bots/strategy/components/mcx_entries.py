@@ -545,10 +545,38 @@ class EIAReactionEntry:
     #: Thursday. Monday=0, so EIA day is 3.
     EIA_WEEKDAY = 3
 
+    #: Counter-trend by design - see MeanReversionEntry.COUNTER_TREND, which
+    #: measured 16 valid signals and 0 allowed through. EIAReaction FADES the
+    #: release move, so it fires precisely when price is extended from VWAP,
+    #: which is the condition the trend-join veto refuses. On 2026-10-22 it won
+    #: its only window of the week with confidence 62 and was blocked by
+    #: "NATURALGAS MIXED - 2.13 ATR from VWAP, too extended to join the trend".
+    #: Mutually exclusive by construction, which is why it had never traded.
+    #:
+    #: Safe to exempt ONLY because MAX_REACTION_ATR below is this module's own,
+    #: correctly-oriented guard. Commander-approved 2026-10-23.
+    COUNTER_TREND = True
+
     #: How far the release bar must have travelled, in ATR, to count as a
     #: reaction worth trading rather than an ordinary bar that happened to land
     #: at 20:00. Sweepable.
     MIN_REACTION_ATR = 0.50
+
+    #: THE CEILING, and the reason the veto exemption above is safe. This
+    #: module's whole hypothesis is that the print is a LIQUIDITY event that
+    #: reverses - "a bullish print spikes price into resting sell orders and
+    #: reverses within fifteen minutes". Above some size the move is genuine
+    #: repricing, and fading it is betting against information rather than
+    #: against a vacuum. Without this, exempting the module from the trend veto
+    #: would remove a gate and put nothing in its place.
+    #:
+    #: 2.0 IS A STATED PRIOR, NOT A MEASUREMENT, and cannot become one here:
+    #: Kite serves ~200 days of 15-minute candles, so the measurable universe
+    #: is ~28 Thursdays, 14 per half, and this module can never reach the ship
+    #: bar (see the class docstring). It sits in TUNABLES at propose tier so
+    #: nothing tunes it automatically. For calibration, the 2026-10-22 print
+    #: moved 0.65 ATR and is unaffected.
+    MAX_REACTION_ATR = 2.00
 
     #: EMPTY ON PURPOSE. Nothing is scoped until it has been measured on this
     #: asset — the whole point of the module is that the direction is the open
@@ -563,6 +591,10 @@ class EIAReactionEntry:
     TUNABLES = {
         "MIN_REACTION_ATR": {
             "values": (0.25, 0.50, 0.75, 1.00, 1.50),
+            "tier": "propose",
+        },
+        "MAX_REACTION_ATR": {
+            "values": (1.50, 2.00, 3.00, 5.00),
             "tier": "propose",
         },
         "FADE_THE_PRINT": {
@@ -620,6 +652,15 @@ class EIAReactionEntry:
             return EntrySignal.stand_aside(
                 f"EIAReaction: the print barely moved the tape ({reaction:.2f} ATR) — "
                 f"no reaction to trade."
+            )
+        # The ceiling that earns this module its veto exemption. A move this
+        # big is repricing, not a liquidity vacuum, and fading it is betting
+        # against information.
+        if reaction > self.MAX_REACTION_ATR:
+            return EntrySignal.stand_aside(
+                f"EIAReaction: the print repriced the tape {reaction:.2f} ATR "
+                f"(ceiling {self.MAX_REACTION_ATR:.2f}) — that is information, "
+                f"not a vacuum to fade."
             )
 
         spiked_up = move > 0
