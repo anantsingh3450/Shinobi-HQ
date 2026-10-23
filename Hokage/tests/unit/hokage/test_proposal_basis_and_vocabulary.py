@@ -151,7 +151,19 @@ def test_the_audit_builds_its_geometry_from_the_shared_basis():
     sys.path.insert(0, str(root / "tools" / "research"))
     import weekly_audit as wa
 
-    assert wa.GEOMETRY == "holdout-split+stop-per-cell+target+tradedbars+bar3.16"
+    # bar3.16 -> bar3.22 on 2026-10-23. NOT a change of measurement: the
+    # commander added FadeRange and RiderTrend, which take the family from 32
+    # (module, asset) cells to 40, and Sidak's correction moves the bar with
+    # it. The bar is PART of the stamp precisely so this counts as a basis
+    # change and resets the retirement clock, rather than letting old verdicts
+    # be compared against new ones.
+    #
+    # The price of the mirror experiment, stated plainly: every pending
+    # retirement clock restarted, and two cells that cleared 3.16 no longer do.
+    assert wa.GEOMETRY == "holdout-split+stop-per-cell+target+tradedbars+bar3.22"
+    assert wa.FAMILY_SIZE == 40, (
+        "the bar is derived from the lineup; if the lineup changed again, "
+        "this and the GEOMETRY string above move together or not at all")
     assert wa.GEOMETRY.startswith(pr.MEASUREMENT_BASIS)
     assert not pr.is_stale(wa.GEOMETRY, wa.SHIP_BAR)
 

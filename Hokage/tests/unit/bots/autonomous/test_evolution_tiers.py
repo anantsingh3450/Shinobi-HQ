@@ -19,7 +19,19 @@ from bots.autonomous import evolution as ev
 #: The measurement basis every snapshot is stamped with. Two snapshots are only
 #: consecutive evidence if they agree on it — see
 #: test_a_change_of_measurement_basis_resets_the_retirement_clock.
-GEOMETRY = "holdout-split+stop-per-cell+target+tradedbars+bar3.16"
+#:
+#: bar3.16 -> bar3.22 on 2026-10-23, when FadeRange and RiderTrend took the
+#: family from 32 cells to 40 and Sidak moved the bar with it. Read from the
+#: audit rather than retyped: a hand-copied constant here would drift from the
+#: one production stamps with, and these tests would then be checking that two
+#: strings nobody uses agree with each other.
+import sys as _sys  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
+
+_ROOT = next(p for p in _Path(__file__).resolve().parents
+             if (p / "pyproject.toml").is_file())
+_sys.path.insert(0, str(_ROOT / "tools" / "research"))
+from weekly_audit import GEOMETRY  # noqa: E402,F401
 
 
 def _snap(day: str, rows: dict, lineup: dict, bar: float = 2.0,

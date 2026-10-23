@@ -748,12 +748,124 @@ class TrendRiderEntry:
         )
 
 
+#: The one asset the commander scoped the mirror experiment to.
+MIRROR_ASSET = "NATURALGAS"
+
+#: long <-> short. A buy-side options router turns "long" into a CALL and
+#: "short" into a PUT, so flipping the direction flips the contract.
+_OPPOSITE = {"long": "short", "short": "long"}
+
+
+class _MirrorEntry:
+    """Run another module's logic and buy the opposite option.
+
+    COMMANDER'S HYPOTHESIS, 2026-10-23: where a module's directional call is
+    wrong, the other option on the identical signal should be right. Scoped
+    to natural gas and run in the arena beside the originals.
+
+    A SUBCLASS, NOT A COPY. The instruction was "exact copy, trading logic
+    will remain same", and a literal copy guarantees the opposite inside a
+    month - two copies of one rule drift, and the half that drifts is the one
+    nobody ran that week. Overriding nothing but the final direction means
+    every threshold, window, guard and future fix lands in the mirror on the
+    day it lands in the original, because it IS the original.
+
+    WHAT IS MIRRORED. The flip happens after the parent has finished, so a
+    mirror fires exactly when its original fires and never otherwise -
+    including the parent's own DIRECTION_BY_ASSET scoping. RangeFade is
+    long-only on gas, so FadeRange is put-only. That is the faithful reading
+    of "every time it takes a call, take a put".
+
+    WHY THIS IS NOT JUST -1 x THE ORIGINAL'S P&L, which is the point of
+    running it rather than deducing it. Both modules BUY options. A long call
+    and a long put are both long premium: both pay theta, both pay the
+    spread, both lose when the underlying sits still. A mirror only wins
+    where the original was wrong about DIRECTION - not where it was wrong
+    about MOVEMENT. The pair therefore separates those two failures, which
+    nothing else in this system can do.
+    """
+
+    #: Scoped by the commander to one asset. Enforced here as well as in the
+    #: portfolio's supported_assets, because an empty scope FAILS OPEN in
+    #: _strategy_supports and a mirror armed against the whole universe would
+    #: be an experiment nobody authorised.
+    MIRRORED_ASSET = MIRROR_ASSET
+
+    #: DELIBERATELY NOT OVERRIDDEN. The first version set this to {} on the
+    #: reasoning that the parent had already applied its own scoping - and
+    #: that was wrong in a way only a test caught. `_direction_allowed` reads
+    #: the scoping off `self`, and inside a parent method `self` is the CHILD,
+    #: so an empty dict here silently switches the parent's measured direction
+    #: scoping OFF. FadeRange then fired on the short-fade signals RangeFade
+    #: refuses on gas (+2.53/+2.23 long-only), which would have made the
+    #: mirror trade MORE OFTEN than the module it is supposed to mirror and
+    #: quietly ruined the comparison.
+    #:
+    #: Inheriting is correct: the parent checks the ORIGINAL direction against
+    #: its own measured scope, exactly as it does when it trades alone, and
+    #: the flip happens afterwards on whatever survived.
+
+    def evaluate(self, ctx: MarketContext) -> EntrySignal:
+        asset = (ctx.symbol or "").upper().replace("_", "")
+        if asset != self.MIRRORED_ASSET:
+            return EntrySignal.stand_aside(
+                f"{self.__class__.__name__}: the mirror experiment is scoped to "
+                f"{self.MIRRORED_ASSET} only, not {asset or 'an unnamed asset'}."
+            )
+
+        signal = super().evaluate(ctx)
+        if not signal.should_enter:
+            return signal          # the original's own words, unchanged
+
+        flipped = _OPPOSITE.get(signal.direction)
+        if flipped is None:
+            return EntrySignal.stand_aside(
+                f"{self.__class__.__name__}: cannot mirror direction "
+                f"{signal.direction!r} — standing aside rather than guessing."
+            )
+        return EntrySignal(
+            True, flipped,
+            f"MIRROR of {signal.direction.upper()} — {signal.reason} "
+            f"Taking the opposite option by commander hypothesis (2026-10-23).",
+            confidence=signal.confidence,
+        )
+
+
+class FadeRangeEntry(_MirrorEntry, RangeFadeEntry):
+    """RangeFade's signal, the opposite option, natural gas only.
+
+    RangeFade measured +2.53 train / +2.23 hold-out LONG on gas and is scoped
+    long-only, so it buys calls. FadeRange therefore buys puts on the same
+    bars. If RangeFade's confirmed long edge is real, this should lose - and
+    that is a useful result, because it is the control for the experiment.
+    """
+
+    module_id = "entry-faderange-mcx-v1"
+
+
+class RiderTrendEntry(_MirrorEntry, TrendRiderEntry):
+    """TrendRider's signal, the opposite option, natural gas only.
+
+    TrendRider measured -0.348 ATR over n=360 at the 120-minute horizon,
+    t=-2.37, which is the only significant result in the 2026-10-22 veto
+    sweep and it is NEGATIVE. A module that is significantly wrong is exactly
+    where the commander's hypothesis has its best chance - and exactly where
+    the theta caveat above has to be remembered, because "significantly
+    wrong" was measured on the UNDERLYING, where there is no premium to decay.
+    """
+
+    module_id = "entry-ridertrend-mcx-v1"
+
+
 #: strategy_id -> its entry engine. Mirrors bots.strategy.components.entries.ENTRY_MODULES
-#: but for the MCX Arena's own 4-strategy lineup.
+#: but for the MCX Arena's own lineup.
 MCX_ENTRY_MODULES: dict[str, object] = {
     "strat-sessionshift-mcx-v1": SessionShiftEntry(),
     "strat-eventrider-mcx-v1": EventRiderEntry(),
     "strat-rangefade-mcx-v1": RangeFadeEntry(),
     "strat-trendrider-mcx-v1": TrendRiderEntry(),
     "strat-eiareaction-mcx-v1": EIAReactionEntry(),
+    # The 2026-10-23 mirror experiment. Same signals, opposite option, gas only.
+    "strat-faderange-mcx-v1": FadeRangeEntry(),
+    "strat-ridertrend-mcx-v1": RiderTrendEntry(),
 }
