@@ -3897,11 +3897,61 @@ class AutonomousTradingBot:
                     f"hit protective floor {active_floor:.2f}"
                 ), tracking
 
+        self._archive_mark(symbol, entry_premium, current_premium, peak_premium, tracking)
         self._trace_ladder(symbol, entry_premium, current_premium, peak_premium, tracking)
         return False, "", tracking
 
     #: A new peak must beat the last traced one by this much to be worth a line.
     _LADDER_TRACE_PEAK_STEP = 0.02
+
+    def _archive_mark(
+        self,
+        symbol: str,
+        entry_premium: float,
+        current_premium: float,
+        peak_premium: float,
+        tracking: dict[str, Any],
+    ) -> None:
+        """Write one point of this position's premium path to the archive.
+
+        SEPARATE FROM _trace_ladder ON PURPOSE. That method logs the three
+        transitions a human needs to understand a round trip, and returns
+        early when nothing changed. The marks it skips are the ones a floor
+        study needs most: a path recorded only at its corners says nothing
+        about what happened along the edges.
+
+        Rate-limited per position - see MIN_SECONDS_BETWEEN_MARKS for why the
+        archive must not inherit the per-tick dump the log refuses.
+
+        NEVER RAISES. This runs inside the exit path, and a position that
+        cannot be closed because its history could not be written would be a
+        far worse bug than a missing row.
+        """
+        try:
+            from hokage.memory import premium_path
+
+            now = premium_path.now_ist()
+            last = tracking.get("_archived_at")
+            if last is not None:
+                try:
+                    if (now - last).total_seconds() < premium_path.MIN_SECONDS_BETWEEN_MARKS:
+                        return
+                except TypeError:
+                    pass          # a stale value of the wrong type: re-stamp
+            tracking["_archived_at"] = now
+
+            premium_path.remember(
+                symbol,
+                current_premium,
+                entry_premium,
+                peak=peak_premium,
+                floor=tracking.get("stop_price"),
+                target=tracking.get("target_price"),
+                decision_id=tracking.get("decision_id"),
+                when=now,
+            )
+        except Exception as exc:
+            logger.debug(f"Could not archive the premium mark for {symbol}: {exc}")
 
     def _trace_ladder(
         self,
