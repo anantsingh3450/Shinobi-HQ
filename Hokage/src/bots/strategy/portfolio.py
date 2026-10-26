@@ -496,9 +496,42 @@ class StrategyPortfolioManager:
         expectancy = strat["expectancy"].get(asset, 0.0)
         status = strat["status"]
         if status in ("ACTIVE", "PRODUCTION") and count >= 10 and win_rate < 45.0 and expectancy < 0:
-            strat["status"] = "ARCHIVED"
+            # RETIRE THE CELL, NOT THE STRATEGY.
+            #
+            # 2026-10-23: this read `strat["status"] = "ARCHIVED"`, and the
+            # message it logged said "for GOLDM" while the effect was total.
+            # Ten bad gold trades switched TrendRider off on gas, silver and
+            # crude too - including a silver cell that had returned +3,117
+            # that same evening. A module's cells are different bets; the
+            # system has been able to say so since 2026-08-26 (see
+            # _direction_allowed) and this check had never been told.
+            scope = [a for a in strat.get("supported_assets", []) if a]
+            remaining = [a for a in scope if a.upper() != asset.upper()]
             now_str = datetime.now(timezone.utc).isoformat()
-            event_msg = f"DEMOTION: Strategy {strat['name']} demoted to ARCHIVED for {asset} due to negative expectancy after {count} trades (Win Rate: {win_rate}%, Expectancy: {expectancy})."
+
+            if scope and remaining:
+                strat["supported_assets"] = remaining
+                event_msg = (
+                    f"CELL RETIRED: {strat['name']} dropped {asset} after "
+                    f"{count} trades (Win Rate: {win_rate}%, Expectancy: "
+                    f"{expectancy}). Still scoped to {', '.join(remaining)} - "
+                    f"a verdict on one asset is not a verdict on the others."
+                )
+            else:
+                # THE LAST CELL. It must archive rather than empty the scope:
+                # an empty supported_assets FAILS OPEN in _strategy_supports,
+                # reading as "no restriction recorded" rather than "trades
+                # nothing", so emptying it would arm the strategy against the
+                # whole universe at the moment it proved worthless.
+                strat["status"] = "ARCHIVED"
+                event_msg = (
+                    f"DEMOTION: Strategy {strat['name']} demoted to ARCHIVED "
+                    f"after its LAST remaining cell ({asset}) failed on "
+                    f"{count} trades (Win Rate: {win_rate}%, Expectancy: "
+                    f"{expectancy}). Scope is never emptied - an empty "
+                    f"supported_assets fails open."
+                )
+
             strat["history"].append({"timestamp": now_str, "event": event_msg})
             logger.info(event_msg)
             self.save()

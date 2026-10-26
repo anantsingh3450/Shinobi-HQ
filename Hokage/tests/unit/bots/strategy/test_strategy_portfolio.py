@@ -85,21 +85,92 @@ def test_strategy_confidence_evolution_and_promotion(tmp_path):
     assert strat["win_rate"]["TCS"] == 100.0
     assert strat["domain_confidence"]["TCS"] > 50.0  # evolved gradually
 
-def test_strategy_demotion_on_poor_performance(tmp_path):
-    resolver = PathResolver(tmp_path)
-    manager = StrategyPortfolioManager(resolver)
-
-    # The flagship trend strategy starts ACTIVE
+# ===================================================== 2026-10-23 / 2026-10-26
+# A PER-ASSET VERDICT WAS ARCHIVING THE STRATEGY ON EVERY ASSET.
+#
+#     DEMOTION: Strategy TrendRider demoted to ARCHIVED for GOLDM due to
+#     negative expectancy after 10 trades (Win Rate: 10.0%, Expectancy: -1420.0).
+#
+# The message said "for GOLDM". The code said strat["status"] = "ARCHIVED",
+# and status is ONE field for the whole strategy - so ten bad gold trades
+# switched TrendRider off on gas, silver and crude too, including a silver
+# cell that had returned +3,117 that same evening.
+#
+# Same disease as detect_patterns pooling every asset into one number, pointed
+# the other way: there, one number stood in for many cells; here, one cell's
+# verdict was applied to all of them. The system has been able to say "this
+# asset, this side" since 2026-08-26 (_direction_allowed). The demoter had
+# never been told.
+def test_a_failing_cell_is_retired_without_touching_the_others(tmp_path):
+    """The fix. Ten losing NIFTY trades retire NIFTY, and the strategy keeps
+    trading the assets it was never judged on."""
+    manager = StrategyPortfolioManager(PathResolver(tmp_path))
     s_id = "strat-trendpullback-v2"
-    assert manager.portfolio["strategies"][s_id]["status"] == "ACTIVE"
+    strat = manager.portfolio["strategies"][s_id]
+    assert strat["status"] == "ACTIVE"
+    before = list(strat["supported_assets"])
+    assert len(before) > 1, "this test needs a multi-asset strategy to mean anything"
 
-    # Record 10 losses to simulate expectancy deterioration
     for _ in range(10):
         manager.record_trade_outcome(s_id, "NIFTY", is_win=False, pnl=-2000.0)
 
-    # Check that it got demoted to ARCHIVED
     strat = manager.portfolio["strategies"][s_id]
-    assert strat["status"] == "ARCHIVED"
+    assert strat["status"] == "ACTIVE", "one bad cell must not archive the strategy"
+    assert "NIFTY" not in strat["supported_assets"]
+    assert strat["supported_assets"] == [a for a in before if a != "NIFTY"]
+
+
+def test_the_retirement_says_which_cell_and_what_survives(tmp_path):
+    manager = StrategyPortfolioManager(PathResolver(tmp_path))
+    s_id = "strat-trendpullback-v2"
+    for _ in range(10):
+        manager.record_trade_outcome(s_id, "NIFTY", is_win=False, pnl=-2000.0)
+    last = manager.portfolio["strategies"][s_id]["history"][-1]["event"]
+    assert "CELL RETIRED" in last and "NIFTY" in last
+    assert "Still scoped to" in last
+
+
+def test_the_last_failing_cell_archives_rather_than_emptying_the_scope(tmp_path):
+    """THE TRAP THIS FIX HAD TO AVOID. An empty supported_assets FAILS OPEN -
+    _strategy_supports reads it as "no restriction recorded", not "trades
+    nothing". Emptying the scope would arm the strategy against the ENTIRE
+    universe at the exact moment it had proved worthless. Two other tests in
+    this codebase already pin that trap from the other direction."""
+    manager = StrategyPortfolioManager(PathResolver(tmp_path))
+    s_id = "strat-trendpullback-v2"
+    manager.portfolio["strategies"][s_id]["supported_assets"] = ["NIFTY"]
+
+    for _ in range(10):
+        manager.record_trade_outcome(s_id, "NIFTY", is_win=False, pnl=-2000.0)
+
+    strat = manager.portfolio["strategies"][s_id]
+    assert strat["status"] == "ARCHIVED", "the last cell failing does archive it"
+    assert strat["supported_assets"] == ["NIFTY"], "the scope is never emptied"
+    assert "LAST remaining cell" in strat["history"][-1]["event"]
+
+
+def test_a_winning_cell_is_never_retired(tmp_path):
+    """The demotion still needs all four of its conditions. This is the
+    control for the two tests above."""
+    manager = StrategyPortfolioManager(PathResolver(tmp_path))
+    s_id = "strat-trendpullback-v2"
+    before = list(manager.portfolio["strategies"][s_id]["supported_assets"])
+    for _ in range(10):
+        manager.record_trade_outcome(s_id, "NIFTY", is_win=True, pnl=+2000.0)
+    strat = manager.portfolio["strategies"][s_id]
+    assert strat["status"] != "ARCHIVED"
+    assert strat["supported_assets"] == before
+
+
+def test_fewer_than_ten_trades_decides_nothing(tmp_path):
+    """Nine losses is not evidence. The 10-trade floor is the only thing
+    standing between a bad afternoon and a retired cell."""
+    manager = StrategyPortfolioManager(PathResolver(tmp_path))
+    s_id = "strat-trendpullback-v2"
+    before = list(manager.portfolio["strategies"][s_id]["supported_assets"])
+    for _ in range(9):
+        manager.record_trade_outcome(s_id, "NIFTY", is_win=False, pnl=-2000.0)
+    assert manager.portfolio["strategies"][s_id]["supported_assets"] == before
 
 
 def test_war_chest_seeded_and_migrated(tmp_path):
