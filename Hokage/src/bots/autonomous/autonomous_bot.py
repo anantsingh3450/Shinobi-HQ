@@ -1611,6 +1611,77 @@ class AutonomousTradingBot:
             logger.info(f"Bias engine: {reason}")
         return verdict
 
+    #: How many consecutive context failures on one asset before the arena
+    #: stops treating it as bad luck. Scans run about every 15 minutes, so
+    #: four is roughly an hour of an asset being untradeable - long enough
+    #: not to fire on a transient quote hiccup, short enough that a session
+    #: is not lost before anyone hears about it. Ten hours were lost to this
+    #: across 2026-10-26 and 10-27 with no alarm at all.
+    _CTX_FAILURES_BEFORE_ALARM = 4
+
+    #: After this many, clear the provider's futures-symbol cache ONCE and
+    #: say so. A bounded, logged hypothesis - not a silent retry loop.
+    _CTX_FAILURES_BEFORE_RESET = 8
+
+    @property
+    def _ctx_failure(self) -> dict:
+        """Why each symbol's context last failed. Created lazily so the
+        hundreds of places that build a bare bot in tests keep working."""
+        if not hasattr(self, "_ctx_failure_reasons"):
+            self._ctx_failure_reasons: dict[str, str] = {}
+        return self._ctx_failure_reasons
+
+    @property
+    def _ctx_misses(self) -> dict:
+        """Consecutive context failures per symbol."""
+        if not hasattr(self, "_ctx_miss_counts"):
+            self._ctx_miss_counts: dict[str, int] = {}
+        return self._ctx_miss_counts
+
+    def _note_context_miss(self, symbol: str) -> str:
+        """Count a context failure, escalate if it is becoming a blackout.
+
+        Returns the sentence the caller should log, which always carries the
+        REASON - the thing whose absence made this invisible for two days.
+        """
+        misses = self._ctx_misses.get(symbol, 0) + 1
+        self._ctx_misses[symbol] = misses
+        why = self._ctx_failure.get(symbol) or "no reason recorded"
+        line = (f"MCX Arena: no live market context for {symbol}; standing "
+                f"aside. ({why}; miss {misses})")
+
+        if misses == self._CTX_FAILURES_BEFORE_ALARM:
+            alarm = (f"{symbol} has had no market context for "
+                     f"{misses} consecutive scans — it is untradeable and the "
+                     f"rest of the arena is unaffected. Last reason: {why}")
+            logger.critical(f"ARENA BLACKOUT — {alarm}")
+            if self.telegram_bot:
+                try:
+                    self.telegram_bot.send_message(f"ARENA BLACKOUT\n\n{alarm}")
+                except Exception as exc:
+                    logger.debug(f"Could not send the blackout alert: {exc}")
+
+        if misses == self._CTX_FAILURES_BEFORE_RESET:
+            # ONE bounded attempt, with its result readable in the next scan.
+            try:
+                source = getattr(self.orchestrator, "price_source", None)
+                cache = getattr(source, "_futures_symbol_cache", None)
+                if isinstance(cache, dict) and cache:
+                    cache.clear()
+                    logger.warning(
+                        f"{symbol}: clearing the futures-symbol cache once after "
+                        f"{misses} failed scans. If the next scan succeeds, a "
+                        f"stale contract resolution was the cause.")
+            except Exception as exc:
+                logger.debug(f"Could not clear the futures cache: {exc}")
+        return line
+
+    def _clear_context_miss(self, symbol: str) -> None:
+        """A context that built is the end of the streak."""
+        if self._ctx_misses.pop(symbol, None):
+            logger.info(f"MCX Arena: market context for {symbol} is back.")
+        self._ctx_failure.pop(symbol, None)
+
     def _build_market_context(self, symbol: str, cache: dict[str, Any] | None = None) -> Any:
         """Build the live tape snapshot every entry module reads.
 
@@ -1639,10 +1710,21 @@ class AutonomousTradingBot:
             res = self.orchestrator.price_source.get_historical_candles(req)
             candles = list(res.candles) if res and res.candles else []
         except Exception as exc:
+            # KEPT, NOT DROPPED. This line used to be the only record of why
+            # an asset was untradeable, and it was at DEBUG - so the MCX arena
+            # went dark for two full sessions (2026-10-26, 2026-10-27) with
+            # nothing in the log but "no live market context" sixty times.
+            self._ctx_failure[symbol] = f"{type(exc).__name__}: {str(exc)[:160]}"
             logger.debug(f"MarketContext: intraday candles unavailable for {symbol}: {exc}")
             candles = []
 
+        if candles and len(candles) < 21:
+            # NOT AN ERROR, AND STILL A REASON. A short series is a different
+            # fault from a failed fetch and the two were indistinguishable.
+            self._ctx_failure[symbol] = (
+                f"only {len(candles)} candles, need 21")
         if len(candles) >= 21:
+            self._ctx_failure.pop(symbol, None)
             closes = [c.close for c in candles]
             highs = [c.high for c in candles]
             lows = [c.low for c in candles]
@@ -4870,8 +4952,9 @@ class AutonomousTradingBot:
 
             mkt_ctx = self._build_market_context(symbol, cache=_ctx_cache)
             if mkt_ctx is None:
-                logger.info(f"MCX Arena: no live market context for {symbol}; standing aside.")
+                logger.info(self._note_context_miss(symbol))
                 continue
+            self._clear_context_miss(symbol)
 
             module_verdicts: list[str] = []
             #: The same verdicts, kept as DATA rather than as a log sentence,
