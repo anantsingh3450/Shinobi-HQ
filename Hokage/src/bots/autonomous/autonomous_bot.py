@@ -3904,6 +3904,30 @@ class AutonomousTradingBot:
     #: A new peak must beat the last traced one by this much to be worth a line.
     _LADDER_TRACE_PEAK_STEP = 0.02
 
+    def _archive_scan(self, symbol, scan_verdicts, winner_sid, mkt_ctx):
+        """Write one auction's full field to the signal archive.
+
+        Returns the scan stamp so a later fill can be stamped against it, or
+        None when nothing was written.
+
+        NEVER RAISES. This sits inside the scan loop; a scan that died because
+        a row could not be written would be far worse than a missing row.
+        """
+        try:
+            from hokage.memory import signal_archive
+
+            stamp = signal_archive.now_ist()
+            signal_archive.remember_scan(
+                symbol, scan_verdicts,
+                winner_strategy_id=winner_sid,
+                underlying=getattr(mkt_ctx, "price", None),
+                when=stamp,
+            )
+            return stamp.isoformat()
+        except Exception as exc:
+            logger.debug(f"Could not archive the {symbol} scan: {exc}")
+            return None
+
     def _archive_mark(
         self,
         symbol: str,
@@ -4850,6 +4874,11 @@ class AutonomousTradingBot:
                 continue
 
             module_verdicts: list[str] = []
+            #: The same verdicts, kept as DATA rather than as a log sentence,
+            #: so the losing side of the mirror experiment can be scored. See
+            #: hokage.memory.signal_archive for why the loser cannot simply be
+            #: filled instead.
+            scan_verdicts: list[tuple] = []
             winner = None  # (confidence, strategy_dict, signal)
             out_of_scope: list[str] = []
             scoped_count = 0
@@ -4880,6 +4909,7 @@ class AutonomousTradingBot:
                 if module is None:
                     continue
                 sig = module.evaluate(mkt_ctx)
+                scan_verdicts.append((sid, getattr(module, "module_id", None), sig))
                 if not sig.should_enter:
                     module_verdicts.append(f"EntrySignal: {strat.get('name', sid)}: {sig.reason}")
                     continue
@@ -4898,6 +4928,11 @@ class AutonomousTradingBot:
                         symbol, scoped_count, out_of_scope))
                 reason_txt = "MCX league stand-aside on " + symbol + ": " + " | ".join(module_verdicts)
                 logger.info(reason_txt)
+                # THE REFUSALS ARE PART OF THE DENOMINATOR. A module that
+                # stands aside ninety-nine times in a hundred has a different
+                # character from one that fires constantly, and an archive of
+                # only the fires cannot tell them apart.
+                self._archive_scan(symbol, scan_verdicts, None, mkt_ctx)
                 bus.publish("OPPORTUNITY_REJECTED", {"symbol": symbol, "reason": reason_txt, "timestamp": datetime.now(timezone.utc).isoformat()})
                 self._journal_no_trade(symbol, module_verdicts)
                 continue
@@ -4908,6 +4943,18 @@ class AutonomousTradingBot:
                 f"MCX league entry for {symbol}: {selected_strat.get('name')} wins with "
                 f"{direction.upper()} (conf {win_conf:.0f}) — {signal.reason}. Field: {' | '.join(module_verdicts)}"
             )
+            # BEFORE the conduct gate on purpose. Winning is not filling - the
+            # bias veto, correlation cap, IV guard and affordability all still
+            # stand between here and an order, and on 2026-10-26 the gas winner
+            # was blocked by "underlying tape is MIXED" after winning. The row
+            # records the SIGNAL; mark_filled records what became of it.
+            _scan_stamp = self._archive_scan(
+                symbol, scan_verdicts,
+                selected_strat.get("strategy_id") or next(
+                    (sid for sid, st in
+                     self.mcx_strategy_portfolio.portfolio.get("strategies", {}).items()
+                     if st is selected_strat), None),
+                mkt_ctx)
 
             # Entry conduct gate (bias alignment + IV premium guard) is
             # universe-agnostic and already MCX-aware for its NSE-only time
@@ -5063,6 +5110,20 @@ class AutonomousTradingBot:
             if str(getattr(resp, "status", "")).upper() in ("REJECTED", "CANCELLED", "ERROR", "FAILED"):
                 logger.error(f"MCX Arena: order for {symbol} REJECTED: {getattr(resp, 'error_message', 'unknown')}")
                 continue
+
+            # THE SIGNAL BECAME A POSITION. Winning the auction did not
+            # guarantee this - the bias veto, correlation cap, IV guard and
+            # affordability all sit between the two - so the archive keeps
+            # them as separate facts.
+            try:
+                from hokage.memory import signal_archive
+                if _scan_stamp:
+                    signal_archive.mark_filled(
+                        symbol,
+                        selected_strat.get("strategy_id") or "",
+                        _scan_stamp, True)
+            except Exception as exc:
+                logger.debug(f"Could not stamp the fill for {symbol}: {exc}")
 
             qty_filled = getattr(resp, "filled_quantity", req.quantity) or req.quantity
             tracked_symbol = req.instrument.symbol
