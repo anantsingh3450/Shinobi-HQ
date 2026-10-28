@@ -3986,6 +3986,35 @@ class AutonomousTradingBot:
     #: A new peak must beat the last traced one by this much to be worth a line.
     _LADDER_TRACE_PEAK_STEP = 0.02
 
+    @staticmethod
+    def _auction_key(conf: float, sid: str, module: object) -> tuple:
+        """How the MCX arena ranks one firing module. Lowest key wins.
+
+        DECLARED HERE SO A FILE REWRITE CANNOT REACH IT. Until 2026-10-28 an
+        exact tie was settled by the order of keys in the portfolio JSON:
+        the loop kept the first module it met and replaced it only on a
+        STRICTLY higher confidence. A mirror ties its original on every scan
+        by design, so when a write re-sorted that file alphabetically the
+        winner flipped from TrendRider to RiderTrend - 2 ties to 0 on
+        2026-10-26, then 0 to 14 on 2026-10-27, with nothing about gas
+        changed. An experiment whose outcome turns on a string comparison is
+        not an experiment.
+
+            1. confidence, highest first
+            2. a mirror LOSES a tie to a non-mirror
+            3. strategy_id, as a reproducible last resort
+
+        Rung 2 is the rule: the experiment does not displace the measured
+        strategy. The mirror is scored on every tie by signal_archive and
+        needs no fill to be measured. It is NOT barred from winning - a
+        mirror still out-bids a different module on higher confidence, and
+        still wins alone when its original is archived or out of scope.
+        Only the tie is decided.
+        """
+        return (-float(conf or 0.0),
+                1 if getattr(module, "IS_MIRROR", False) else 0,
+                str(sid))
+
     def _archive_scan(self, symbol, scan_verdicts, winner_sid, mkt_ctx):
         """Write one auction's full field to the signal archive.
 
@@ -4962,7 +4991,7 @@ class AutonomousTradingBot:
             #: hokage.memory.signal_archive for why the loser cannot simply be
             #: filled instead.
             scan_verdicts: list[tuple] = []
-            winner = None  # (confidence, strategy_dict, signal)
+            winner = None  # (rank_key, confidence, strategy_dict, signal)
             out_of_scope: list[str] = []
             scoped_count = 0
             # A SCOPE IS CONFIGURATION, NOT A VERDICT.
@@ -4998,8 +5027,9 @@ class AutonomousTradingBot:
                     continue
                 conf = float(sig.confidence or 0.0)
                 module_verdicts.append(f"EntrySignal: {strat.get('name', sid)}: {sig.direction.upper()} (conf {conf:.0f})")
-                if winner is None or conf > winner[0]:
-                    winner = (conf, strat, sig)
+                rank = self._auction_key(conf, sid, module)
+                if winner is None or rank < winner[0]:
+                    winner = (rank, conf, strat, sig)
 
             if winner is None:
                 # A NO-TRADE WITH NO REASON IS WORSE THAN A NOISY ONE.
@@ -5020,7 +5050,7 @@ class AutonomousTradingBot:
                 self._journal_no_trade(symbol, module_verdicts)
                 continue
 
-            win_conf, selected_strat, signal = winner
+            _rank, win_conf, selected_strat, signal = winner
             direction = signal.direction
             logger.info(
                 f"MCX league entry for {symbol}: {selected_strat.get('name')} wins with "

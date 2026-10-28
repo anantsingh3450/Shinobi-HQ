@@ -791,6 +791,17 @@ class _MirrorEntry:
     #: be an experiment nobody authorised.
     MIRRORED_ASSET = MIRROR_ASSET
 
+    #: THE ARENA'S TIE-BREAK READS THIS, and it is a public flag rather than
+    #: an isinstance check so the auction never has to import a private class
+    #: to ask the one question it needs answered.
+    #:
+    #: A mirror carries its original's confidence by deliberate design, so the
+    #: pair ties on EVERY scan. Before 2026-10-28 that tie was settled by
+    #: whichever strategy_id happened to come first in the portfolio JSON, and
+    #: when a write re-sorted that file alphabetically the winner silently
+    #: flipped from TrendRider to RiderTrend between one evening and the next.
+    IS_MIRROR = True
+
     #: DELIBERATELY NOT OVERRIDDEN. The first version set this to {} on the
     #: reasoning that the parent had already applied its own scoping - and
     #: that was wrong in a way only a test caught. `_direction_allowed` reads
