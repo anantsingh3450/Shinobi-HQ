@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -348,22 +349,68 @@ class AutonomousTradingBot:
         return surv_state.to_dict()
 
     def _load_positions_tracking(self) -> dict[str, dict[str, float]]:
-        """Load persistent stop levels from brain root."""
+        """Load persistent stop levels from brain root.
+
+        A FILE THAT WILL NOT PARSE IS NOT AN EMPTY BOOK. The empty dict this
+        returns on failure is indistinguishable from "flat overnight", and it
+        means every position still open starts the session with no stop and no
+        target - the same loss as the critical-battery sleep that suspended
+        Hokage for 7.5 hours mid-session, but arriving silently at boot.
+
+        So the failure is CRITICAL rather than one ERROR among thousands, and
+        the unreadable bytes are KEPT rather than overwritten by the first save
+        of the new session. They are usually most of a valid file, and the
+        stops are recoverable by hand from them.
+        """
         if self._positions_file.exists():
             try:
-                with self._positions_file.open("r") as fh:
+                with self._positions_file.open("r", encoding="utf-8") as fh:
                     return json.load(fh)
             except Exception as exc:
-                logger.error(f"Failed to load active positions: {exc}")
+                kept = self._positions_file.with_name(
+                    f"{self._positions_file.stem}.unreadable-"
+                    f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+                )
+                try:
+                    os.replace(self._positions_file, kept)
+                except Exception:
+                    kept = self._positions_file
+                logger.critical(
+                    "ACTIVE POSITIONS UNREADABLE (%s). Every position still open "
+                    "is starting this session with NO stop and NO target. The "
+                    "bytes are kept at %s - recover the levels from there before "
+                    "trusting the exit path.", exc, kept,
+                )
         return {}
 
     def _save_positions_tracking(self) -> None:
-        """Save stop levels to brain root."""
+        """Save stop levels to brain root, atomically.
+
+        THE OLD VERSION COULD DESTROY THIS FILE BY TRYING TO WRITE IT.
+        json.dump streams into a handle already opened "w" - the truncate
+        happens FIRST - so any value it cannot serialize leaves the real file
+        cut off mid-key and unparseable. On 2026-10-28 a datetime reached
+        "_archived_at" and did exactly that, 168 times across two days, while
+        positions were open: active_positions.json ended at byte 639 and the
+        only surviving copy of those stops and targets was process memory.
+
+        Two defences, because one was clearly not enough:
+          * the write lands in a temp file and is renamed over the real one,
+            so a failure costs the NEW copy and never the old one
+          * default=str, so an unserializable value becomes a string in the
+            file rather than costing every stop in it
+        """
+        tmp = self._positions_file.with_suffix(".json.tmp")
         try:
-            with self._positions_file.open("w") as fh:
-                json.dump(self._active_positions_tracking, fh, indent=2)
+            with tmp.open("w", encoding="utf-8") as fh:
+                json.dump(self._active_positions_tracking, fh, indent=2, default=str)
+            os.replace(tmp, self._positions_file)
         except Exception as exc:
             logger.error(f"Failed to save active positions: {exc}")
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     def _entry_family_of(self, strategy_name: str | None) -> str:
         """Volume-gate entry family for the strategy that is ACTUALLY trading.
@@ -4066,14 +4113,18 @@ class AutonomousTradingBot:
             from hokage.memory import premium_path
 
             now = premium_path.now_ist()
+            # EPOCH SECONDS, NOT A datetime. This dict is the per-position
+            # tracking record, and it is json.dump'ed to active_positions.json
+            # on every tick - so a datetime here is not a local detail, it is
+            # the thing that truncated the file holding every open position's
+            # stop and target. A float makes the round trip; anything else that
+            # ever lands here is treated as stale and re-stamped.
             last = tracking.get("_archived_at")
-            if last is not None:
-                try:
-                    if (now - last).total_seconds() < premium_path.MIN_SECONDS_BETWEEN_MARKS:
-                        return
-                except TypeError:
-                    pass          # a stale value of the wrong type: re-stamp
-            tracking["_archived_at"] = now
+            if isinstance(last, (int, float)) and (
+                now.timestamp() - float(last) < premium_path.MIN_SECONDS_BETWEEN_MARKS
+            ):
+                return
+            tracking["_archived_at"] = now.timestamp()
 
             premium_path.remember(
                 symbol,

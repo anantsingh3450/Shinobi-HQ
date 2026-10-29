@@ -238,10 +238,25 @@ def test_a_second_mark_within_the_window_is_skipped(archive):
 
 def test_the_throttle_releases_once_the_window_has_passed(archive):
     bot = _bot()
-    tracking = {"_archived_at": pp.now_ist()
-                - dt.timedelta(seconds=pp.MIN_SECONDS_BETWEEN_MARKS + 1)}
+    tracking = {"_archived_at": pp.now_ist().timestamp()
+                - (pp.MIN_SECONDS_BETWEEN_MARKS + 1)}
     bot._archive_mark("X26OCT100CE", 100.0, 101.0, 101.0, tracking)
     assert archive.coverage()["marks"] == 1
+
+
+def test_the_stamp_it_leaves_behind_can_be_written_to_json(archive):
+    """THE STAMP SHARES A DICT WITH THAT POSITION'S STOP AND TARGET, and that
+    dict is json.dump'ed to active_positions.json on every tick. A datetime
+    here raised "Object of type datetime is not JSON serializable" 168 times
+    across 2026-10-28 and 10-29 and truncated the file mid-key, while two
+    positions were open. The throttle is a local concern; what it stores is
+    not."""
+    import json
+
+    bot, tracking = _bot(), {"stop_price": 18.7, "target_price": 20.8}
+    bot._archive_mark("X26OCT100CE", 100.0, 100.0, 100.0, tracking)
+    assert "_archived_at" in tracking, "it must still stamp"
+    json.dumps(tracking)          # the whole point: this must not raise
 
 
 def test_each_position_is_throttled_separately(archive):
