@@ -841,6 +841,16 @@ class AutonomousTradingBot:
                 except Exception as exc:
                     logger.error(f"Asset coverage audit failed: {exc}")
 
+                # 0a-quinquies. And is every competitor's RECORD complete? A
+                # broke strategy fails at the router and an orphaned asset
+                # never trades; a record missing one field changes how the
+                # gates judge it and says nothing at all. See
+                # audit_strategy_records.
+                try:
+                    self._announce_incomplete_strategy_records()
+                except Exception as exc:
+                    logger.error(f"Strategy record audit failed: {exc}")
+
                 # 0b. A critical-battery sleep is not a surprise — it is a
                 # countdown. Warn while there is still time to plug in. The
                 # guard above does NOT cover this: ES_SYSTEM_REQUIRED stops the
@@ -2339,6 +2349,104 @@ class AutonomousTradingBot:
                     f"{scope}. It will win auctions and fill nothing."
                 )
         return findings
+
+    #: Fields whose absence from a strategy record is not cosmetic, and what
+    #: it costs. A record is the VALUE in a dict keyed by its own id, so
+    #: storing that id inside itself looks redundant - right up until
+    #: something asks the record what it is called.
+    _LOAD_BEARING_STRATEGY_FIELDS = {
+        "strategy_id": "the counter-trend exemption, the chest lookup and fill "
+                       "attribution all read it from the record",
+        "win_rate": "the tournament cannot score it",
+        "expectancy": "the tournament cannot score it",
+        "trade_count": "the tournament cannot score it",
+        "sharpe_ratio": "the tournament cannot score it",
+        "created_at": "the retirement clock has no start",
+    }
+
+    def audit_strategy_records(self) -> list[str]:
+        """Name every competing strategy whose record is missing fields its
+        peers have.
+
+        THE FAILURE THIS EXISTS TO CATCH (2026-10-29): EIAReaction fired for
+        only the second time in its life, won the auction, and was refused by
+        the bias engine for being "too extended to join the trend" - the gate
+        that a fade module is explicitly exempt from. It carries
+        COUNTER_TREND = True, and commit a68de90 added that flag a week
+        earlier for exactly this reason.
+
+        The exemption never applied, because it is looked up by strategy id
+        and EIAReaction's record was a stub: seven fields where every peer had
+        eighteen, "strategy_id" among the missing. The lookup returned None,
+        the exemption evaluated False, and a shipped fix sat inert for a week
+        while the module it was written for kept being blocked.
+
+        Nothing failed. No exception, no rejected order, no missing data - the
+        record was simply thinner than its neighbours, and the one field that
+        mattered reads as "not counter-trend" when it is absent.
+
+        CONSERVATIVE ON PURPOSE: only fields that EVERY other competitor in
+        that league carries are reported, so one unusual record cannot
+        manufacture findings about the rest.
+
+        Returns the human-readable findings so callers can announce them.
+        """
+        findings: list[str] = []
+        leagues = (
+            ("Index Dojo", getattr(self, "strategy_portfolio", None)),
+            ("MCX Arena", getattr(self, "mcx_strategy_portfolio", None)),
+        )
+        for league, manager in leagues:
+            portfolio = getattr(manager, "portfolio", None) or {}
+            records = {
+                sid: st for sid, st in (portfolio.get("strategies") or {}).items()
+                if isinstance(st, dict) and st.get("status") != "ARCHIVED"
+            }
+            if len(records) < 2:
+                continue            # nothing to compare a record against
+            for sid, strat in records.items():
+                peers = [set(other) for other_sid, other in records.items() if other_sid != sid]
+                missing = sorted(set.intersection(*peers) - set(strat))
+                if not missing:
+                    continue
+                line = (
+                    f"{league}: {strat.get('name', sid)} ({sid}) is missing "
+                    f"{len(missing)} field(s) that every other competitor has: "
+                    f"{', '.join(missing)}."
+                )
+                for field in missing:
+                    cost = self._LOAD_BEARING_STRATEGY_FIELDS.get(field)
+                    if cost:
+                        line += f" Without {field}, {cost}."
+                findings.append(line)
+        return findings
+
+    def _announce_incomplete_strategy_records(self) -> None:
+        """Run the record audit once per boot and say so loudly if it bites."""
+        if getattr(self, "_record_audit_done", False):
+            return
+        self._record_audit_done = True
+        try:
+            findings = self.audit_strategy_records()
+        except Exception as exc:
+            logger.error(f"Strategy record audit failed: {exc}")
+            return
+        if not findings:
+            logger.info("Strategy record audit: every competitor carries the same fields.")
+            return
+        for line in findings:
+            logger.critical(f"INCOMPLETE STRATEGY RECORD - {line}")
+        if not self.telegram_bot:
+            return
+        try:
+            self.telegram_bot.send_message(
+                "STRATEGY RECORD IS INCOMPLETE\n\n"
+                + "\n\n".join(findings)
+                + "\n\nThis throws no error. The strategy competes normally and "
+                  "whatever reads the missing field quietly gets a default."
+            )
+        except Exception as exc:
+            logger.debug(f"Could not send the record audit alert: {exc}")
 
     def _trade_context(
         self,
