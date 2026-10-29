@@ -526,6 +526,45 @@ class AutonomousTradingBot:
         module = ENTRY_MODULES.get(strategy_id) or MCX_ENTRY_MODULES.get(strategy_id)
         return bool(getattr(module, "COUNTER_TREND", False))
 
+    def _resolve_strategy_id(
+        self, record: Any, strategies: dict | None
+    ) -> str | None:
+        """The id a strategy record is filed under: its own field, or failing
+        that the key it lives at.
+
+        A record is the VALUE in a dict keyed by its own id, so carrying that
+        id inside itself looks redundant — and `strat-eiareaction-mcx-v1` did
+        not carry it. See `audit_strategy_records`, which now names any record
+        thinner than its peers at boot.
+
+        WHY THIS EXISTS RATHER THAN A `.get()` AT EACH SITE. The MCX entry
+        path reads `selected_strat["strategy_id"]` by subscript in four
+        places and the index path in six, so a thin record that clears the
+        gates raises KeyError in the middle of a scan. Reading it leniently
+        instead is worse: `_strategy_available_capital` does not raise on an
+        unknown id, it falls through to STRATEGY_STARTING_CAPITAL and hands
+        the strategy a FULL FRESH CHEST in place of its real remaining
+        balance. Unresolvable must therefore mean "stand aside", loudly —
+        never a default, never a crash.
+
+        DELIBERATELY NOT USED BY `_is_counter_trend_strategy`. Resolving the
+        id there would let a fade module past the trend-join gate that is
+        blocking it today — a real improvement, and a LOOSENING, so it waits
+        for the commander's word instead of arriving as a tidy-up. Do not
+        fold those two call sites into this helper.
+        """
+        if not isinstance(record, dict):
+            return None
+        stored = record.get("strategy_id")
+        if stored:
+            return str(stored)
+        # Identity, not equality: two strategies can hold equal dicts, and the
+        # question here is which key THIS object is filed under.
+        for sid, candidate in (strategies or {}).items():
+            if candidate is record:
+                return str(sid)
+        return None
+
     def _strategy_display_name(self, strategy_id: str | None) -> str | None:
         """Human name for a strategy id, e.g. 'TrendPullback'.
 
@@ -5211,6 +5250,25 @@ class AutonomousTradingBot:
 
             _rank, win_conf, selected_strat, signal = winner
             direction = signal.direction
+            # Resolved ONCE here, because everything downstream — the order's
+            # attribution, the war chest, the fill stamp, the position record
+            # — used to subscript it straight off the record.
+            selected_sid = self._resolve_strategy_id(
+                selected_strat,
+                self.mcx_strategy_portfolio.portfolio.get("strategies", {}),
+            )
+            if not selected_sid:
+                logger.error(
+                    "MCX Arena: %s won the auction for %s but its record "
+                    "cannot say what it is called, and an unknown id draws a "
+                    "FULL FRESH CHEST rather than its real balance. Standing "
+                    "aside — the boot audit names the record to repair.",
+                    selected_strat.get("name"), symbol,
+                )
+                self._journal_no_trade(
+                    symbol, ["winning strategy record carries no id"]
+                )
+                continue
             logger.info(
                 f"MCX league entry for {symbol}: {selected_strat.get('name')} wins with "
                 f"{direction.upper()} (conf {win_conf:.0f}) — {signal.reason}. Field: {' | '.join(module_verdicts)}"
@@ -5221,12 +5279,7 @@ class AutonomousTradingBot:
             # was blocked by "underlying tape is MIXED" after winning. The row
             # records the SIGNAL; mark_filled records what became of it.
             _scan_stamp = self._archive_scan(
-                symbol, scan_verdicts,
-                selected_strat.get("strategy_id") or next(
-                    (sid for sid, st in
-                     self.mcx_strategy_portfolio.portfolio.get("strategies", {}).items()
-                     if st is selected_strat), None),
-                mkt_ctx)
+                symbol, scan_verdicts, selected_sid, mkt_ctx)
 
             # Entry conduct gate (bias alignment + IV premium guard) is
             # universe-agnostic and already MCX-aware for its NSE-only time
@@ -5334,7 +5387,7 @@ class AutonomousTradingBot:
             inst = Instrument(symbol=symbol, asset_class=resolved_ac, exchange=resolved_exch)
             req = OrderRequest(
                 instrument=inst, side=side, quantity=1.0, order_type=OrderType.MARKET,
-                venue_id=venue.venue_id, strategy_id=selected_strat["strategy_id"],
+                venue_id=venue.venue_id, strategy_id=selected_sid,
                 execution_reason=f"MCX Arena: {selected_strat.get('name')} {direction} — {signal.reason}",
                 # Carried so the position records WHICH playbook opened it. The
                 # index path has always set this; MCX never did, leaving all 42
@@ -5350,7 +5403,7 @@ class AutonomousTradingBot:
                 cash_for_premium = float(venue.get_account_balance().cash)
             except Exception:
                 cash_for_premium = None
-            chest_budget = self._strategy_available_capital(selected_strat["strategy_id"])
+            chest_budget = self._strategy_available_capital(selected_sid)
 
             try:
                 opt_router = OptionsRouter(price_source=self.orchestrator.price_source)
@@ -5366,7 +5419,7 @@ class AutonomousTradingBot:
             entry_cost = float(req_meta.get("premium_at_entry", entry_price)) * float(req.quantity)
             if entry_cost > chest_budget:
                 logger.warning(
-                    f"MCX Arena: war chest exhausted for {selected_strat['strategy_id']}: "
+                    f"MCX Arena: war chest exhausted for {selected_sid}: "
                     f"entry cost Rs{entry_cost:,.0f} exceeds remaining Rs{chest_budget:,.0f}."
                 )
                 continue
@@ -5391,9 +5444,7 @@ class AutonomousTradingBot:
                 from hokage.memory import signal_archive
                 if _scan_stamp:
                     signal_archive.mark_filled(
-                        symbol,
-                        selected_strat.get("strategy_id") or "",
-                        _scan_stamp, True)
+                        symbol, selected_sid, _scan_stamp, True)
             except Exception as exc:
                 logger.debug(f"Could not stamp the fill for {symbol}: {exc}")
 
@@ -5427,7 +5478,7 @@ class AutonomousTradingBot:
                 "stop_price": tracked_entry_price * (1.0 - self.tsl_percent),
                 "target_price": tracked_entry_price * (1.0 + self.tp_percent),
                 "decision_id": f"mcx-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
-                "strategy_id": selected_strat["strategy_id"],
+                "strategy_id": selected_sid,
                 "conviction_score": int(win_conf),
                 "side": side.value,
                 "quantity": float(qty_filled),
@@ -6038,10 +6089,25 @@ class AutonomousTradingBot:
                 volatility_regime=volatility_str
             )
             selected_strat = selection_res["strategy"]
+            # Same reason as the MCX path: resolved once, and an unresolvable
+            # record stands aside rather than drawing a fresh chest.
+            selected_sid = self._resolve_strategy_id(
+                selected_strat,
+                self.strategy_portfolio.portfolio.get("strategies", {}),
+            )
+            if not selected_sid:
+                logger.error(
+                    "Index Dojo: %s was selected for %s but its record cannot "
+                    "say what it is called, and an unknown id draws a FULL "
+                    "FRESH CHEST rather than its real balance. Standing aside "
+                    "— the boot audit names the record to repair.",
+                    selected_strat.get("name"), symbol,
+                )
+                continue
             logger.info(selection_res["reason"])
             bus.publish("STRATEGY_COMPLETED", {
                 "symbol": symbol,
-                "strategy_id": selected_strat.get("strategy_id"),
+                "strategy_id": selected_sid,
                 "strategy_name": selected_strat.get("name"),
                 "reason": selection_res["reason"],
                 "timestamp": datetime.now(timezone.utc).isoformat()
@@ -6117,7 +6183,7 @@ class AutonomousTradingBot:
             committee_decision = self.committee.evaluate_proposal(proposal, backtest_result, ic_context)
 
             # Record in Immutable Committee Ledger
-            self.committee_ledger.record_decision(decision_id, selected_strat["strategy_id"], symbol, committee_decision)
+            self.committee_ledger.record_decision(decision_id, selected_sid, symbol, committee_decision)
             
             # Fire COMMITTEE_VOTE
             votes_dict = {c: {"vote": v.vote.value if hasattr(v.vote, 'value') else v.vote, "reason": v.reasoning} for c, v in committee_decision.votes.items()}
@@ -6614,7 +6680,7 @@ class AutonomousTradingBot:
                         # budget the router sizes lots from — an exhausted chest
                         # skips the trade at the sizing seam instead of the
                         # router buying a lot the risk framework never funded.
-                        _chest_budget = self._strategy_available_capital(selected_strat["strategy_id"])
+                        _chest_budget = self._strategy_available_capital(selected_sid)
                         opt_router = OptionsRouter(price_source=self.orchestrator.price_source)
                         req = opt_router.route_to_options(
                             req,
@@ -6647,11 +6713,11 @@ class AutonomousTradingBot:
                     entry_cost = float(_entry_meta.get("premium_at_entry", entry_price)) * float(req.quantity)
                 else:
                     entry_cost = float(entry_price) * float(req.quantity)
-                _strat_id_for_chest = selected_strat["strategy_id"]
+                _strat_id_for_chest = selected_sid
                 available_chest = self._strategy_available_capital(_strat_id_for_chest)
                 if entry_cost > available_chest:
                     chest_reason = (
-                        f"War chest exhausted for {selected_strat['strategy_id']}: entry cost "
+                        f"War chest exhausted for {selected_sid}: entry cost "
                         f"₹{entry_cost:,.0f} exceeds remaining ₹{available_chest:,.0f}."
                     )
                     logger.warning(chest_reason)
@@ -6772,7 +6838,7 @@ class AutonomousTradingBot:
                     "stop_price": tracked_entry_price * (1.0 - self.tsl_percent),
                     "target_price": tracked_entry_price * (1.0 + self.tp_percent),
                     "decision_id": decision_id,
-                    "strategy_id": selected_strat["strategy_id"],
+                    "strategy_id": selected_sid,
                     "conviction_score": int(committee_decision.decision_confidence),
                     "allocation_pct": alloc_pct,
                     "sector": symbol_sec,
