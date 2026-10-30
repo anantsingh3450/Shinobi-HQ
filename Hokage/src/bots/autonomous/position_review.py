@@ -104,10 +104,14 @@ class PositionReviewEngine:
         exit_quality   = self._grade_exit_quality(exit_reason, exit_price, target_price, stop_price, entry_price)
         sizing_quality = self._grade_sizing_quality(position_size_pct, conviction_score)
         stop_quality   = self._grade_stop_quality(entry_price, stop_price)
-        rr_achieved    = self._compute_rr_achieved(entry_price, exit_price, stop_price)
+        rr_measured    = self._compute_rr_achieved(entry_price, exit_price, stop_price)
+        # The dataclass field stays a float so the JSONL stays valid JSON and
+        # every existing reader keeps working; the lesson and the log line are
+        # told the difference between "zero" and "could not tell".
+        rr_achieved    = 0.0 if rr_measured is None else rr_measured
         lesson         = self._generate_lesson(
             symbol, entry_quality, exit_quality, sizing_quality,
-            stop_quality, rr_achieved, pnl, holding_days, conviction_score
+            stop_quality, rr_measured, pnl, holding_days, conviction_score
         )
 
         review = PositionReview(
@@ -129,8 +133,10 @@ class PositionReviewEngine:
         self._forward_lesson(review)
 
         logger.info(
-            "Position review: %s | entry=%s exit=%s sizing=%s stop=%s R:R=%.2f",
-            symbol.upper(), entry_quality, exit_quality, sizing_quality, stop_quality, rr_achieved
+            "Position review: %s | entry=%s exit=%s sizing=%s stop=%s R:R=%s",
+            symbol.upper(), entry_quality, exit_quality, sizing_quality, stop_quality,
+            "unknown (no entry stop on record)" if rr_measured is None
+            else f"{rr_measured:.2f}",
         )
         return review
 
@@ -246,13 +252,27 @@ class PositionReviewEngine:
         entry_price: float,
         exit_price: float,
         stop_price: float,
-    ) -> float:
-        """Compute actual R:R achieved at exit."""
+    ) -> float | None:
+        """Reward at exit over the risk accepted at entry, or None if unknown.
+
+        `stop_price` MUST be the stop as it stood at entry. The caller's
+        `tracking["stop_price"]` is a live trailing floor that the ladder
+        ratchets to break-even at Target 1 and higher after, so a trade that
+        ran far enough to win arrives here with stop == entry: risk zero.
+        That is why GOLDM26NOV141000PE, +13.8% and ON_TARGET on 2026-10-30,
+        was reviewed `stop=TIGHT R:R=0.00` at a true 2.75 - and why the
+        generated lesson told the commander to tighten the target on the best
+        trade of his day. The entry path now freezes `initial_stop_price`.
+
+        None means UNMEASURABLE, which is not 0.00. A zero would be read as a
+        trade that risked everything for nothing, and would pull the "Low R:R
+        despite profit" lesson onto a clean winner.
+        """
         if entry_price <= 0 or stop_price <= 0:
-            return 0.0
+            return None
         risk = abs(entry_price - stop_price)
         if risk == 0:
-            return 0.0
+            return None
         reward = exit_price - entry_price
         return round(reward / risk, 4)
 
@@ -267,7 +287,7 @@ class PositionReviewEngine:
         exit_quality: str,
         sizing_quality: str,
         stop_quality: str,
-        rr_achieved: float,
+        rr_achieved: float | None,
         pnl: float,
         holding_days: int,
         conviction_score: int,
@@ -293,9 +313,13 @@ class PositionReviewEngine:
             parts.append("Stop was placed too tightly — increased risk of stop hunting on volatile sessions.")
         if stop_quality == "WIDE":
             parts.append("Stop was too wide — poor risk management, exceeding normal risk-per-trade tolerance.")
-        if rr_achieved >= 2.0 and pnl >= 0:
+        # Both clauses stay silent when R:R is unmeasurable. Saying "Low R:R
+        # of 0.00 despite profit - tighten target" to a trade that hit its
+        # target is worse than saying nothing, and these lessons are forwarded
+        # to long-term memory.
+        if rr_achieved is not None and rr_achieved >= 2.0 and pnl >= 0:
             parts.append(f"Excellent R:R achieved: {rr_achieved:.2f} — this setup should be replicated.")
-        if rr_achieved < 1.0 and pnl >= 0:
+        if rr_achieved is not None and rr_achieved < 1.0 and pnl >= 0:
             parts.append(f"Low R:R of {rr_achieved:.2f} despite profit — tighten target or improve exit timing.")
 
         return " ".join(parts)

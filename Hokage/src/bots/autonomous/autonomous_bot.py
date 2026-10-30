@@ -3317,6 +3317,11 @@ class AutonomousTradingBot:
             "entry_price": tracked_entry_price,
             "peak_price": tracked_entry_price,
             "stop_price": tracked_entry_price * (1.0 - self.tsl_percent),
+            # The risk actually accepted, frozen. "stop_price"
+            # above is a LIVE floor the ladder ratchets to
+            # break-even and beyond; reading it after the fact
+            # measures nothing. See _compute_rr_achieved.
+            "initial_stop_price": tracked_entry_price * (1.0 - self.tsl_percent),
             "target_price": tracked_entry_price * (1.0 + self.tp_percent),
             "decision_id": f"manual-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
             "strategy_id": manual_strategy_id,
@@ -3645,6 +3650,7 @@ class AutonomousTradingBot:
                 tracking["stop_price"] = average_price - atr_stop_distance
             else:
                 tracking["stop_price"] = average_price + atr_stop_distance
+            tracking.setdefault("initial_stop_price", tracking["stop_price"])
 
         # Track peak price. "Peak" is directional (best price FOR the position),
         # "trough" is the worst — together they form the excursion envelope that
@@ -4554,7 +4560,12 @@ class AutonomousTradingBot:
                     entry_meta = tracking or {}
                     stored_decision_id   = entry_meta.get("decision_id", "")
                     stored_entry_price   = entry_meta.get("entry_price", pos.average_price)
-                    stored_stop_price    = entry_meta.get("stop_price", 0.0)
+                    # initial_stop_price first: "stop_price" is the ratcheted
+                    # floor, and on a winner it sits ON entry by exit time.
+                    stored_stop_price    = (
+                        entry_meta.get("initial_stop_price")
+                        or entry_meta.get("stop_price", 0.0)
+                    )
                     stored_target_price  = entry_meta.get("target_price", pos.average_price * 1.10)
                     stored_conviction    = entry_meta.get("conviction_score", 75)
                     stored_alloc_pct     = entry_meta.get("allocation_pct", 1.0)
@@ -5483,6 +5494,11 @@ class AutonomousTradingBot:
                 # on a trade that dipped to +4% before running would cut a
                 # winner off at the knees.
                 "stop_price": tracked_entry_price * (1.0 - self.tsl_percent),
+                # The risk actually accepted, frozen. "stop_price"
+                # above is a LIVE floor the ladder ratchets to
+                # break-even and beyond; reading it after the fact
+                # measures nothing. See _compute_rr_achieved.
+                "initial_stop_price": tracked_entry_price * (1.0 - self.tsl_percent),
                 "target_price": tracked_entry_price * (1.0 + self.tp_percent),
                 "decision_id": f"mcx-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
                 "strategy_id": selected_sid,
@@ -6843,6 +6859,11 @@ class AutonomousTradingBot:
                     # Bought option, always long the premium — see the note on
                     # the MCX path. Never seed the floor above entry.
                     "stop_price": tracked_entry_price * (1.0 - self.tsl_percent),
+                    # The risk actually accepted, frozen. "stop_price"
+                    # above is a LIVE floor the ladder ratchets to
+                    # break-even and beyond; reading it after the fact
+                    # measures nothing. See _compute_rr_achieved.
+                    "initial_stop_price": tracked_entry_price * (1.0 - self.tsl_percent),
                     "target_price": tracked_entry_price * (1.0 + self.tp_percent),
                     "decision_id": decision_id,
                     "strategy_id": selected_sid,
