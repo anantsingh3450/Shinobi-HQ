@@ -44,6 +44,24 @@ _SIZING_OVER        = 3.0    # size > 3% per conviction unit = oversized
 _SIZING_UNDER       = 0.5    # size < 0.5% per conviction unit = undersized
 
 
+def _format_hold(holding_days: int, holding_seconds: float | None) -> str:
+    """Render the hold the way it was actually held.
+
+    `holding_days` is an int, and this system's trades live and die inside one
+    session, so every honest value rounds to 0 and "0d hold" says nothing.
+    When the caller knows the seconds, say them.
+    """
+    if not holding_seconds or holding_seconds <= 0:
+        return f"{holding_days}d"
+    minutes = holding_seconds / 60.0
+    if minutes < 60:
+        return f"{minutes:.0f}m"
+    hours = minutes / 60.0
+    if hours < 24:
+        return f"{hours:.1f}h"
+    return f"{hours / 24:.1f}d"
+
+
 class PositionReviewEngine:
     """Analyses closed trades and generates structured quality reviews.
 
@@ -94,6 +112,7 @@ class PositionReviewEngine:
         pnl: float,
         decision_id: str = "",
         return_pct: float = 0.0,
+        holding_seconds: float | None = None,
     ) -> PositionReview:
         """Generate a PositionReview for a closed trade.
 
@@ -111,7 +130,8 @@ class PositionReviewEngine:
         rr_achieved    = 0.0 if rr_measured is None else rr_measured
         lesson         = self._generate_lesson(
             symbol, entry_quality, exit_quality, sizing_quality,
-            stop_quality, rr_measured, pnl, holding_days, conviction_score
+            stop_quality, rr_measured, pnl, holding_days, conviction_score,
+            holding_seconds,
         )
 
         review = PositionReview(
@@ -291,12 +311,14 @@ class PositionReviewEngine:
         pnl: float,
         holding_days: int,
         conviction_score: int,
+        holding_seconds: float | None = None,
     ) -> str:
         """Auto-generate a structured lesson from quality grades."""
         outcome_str = "profitable" if pnl >= 0 else "a loss-making"
         parts: list[str] = [
             f"{symbol} was {outcome_str} trade (PnL: {pnl:+.2f}, "
-            f"{holding_days}d hold, conviction={conviction_score})."
+            f"{_format_hold(holding_days, holding_seconds)} hold, "
+            f"conviction={conviction_score})."
         ]
 
         if entry_quality in ("FAIR", "POOR"):

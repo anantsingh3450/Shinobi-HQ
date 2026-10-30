@@ -572,6 +572,32 @@ class AutonomousTradingBot:
                 return str(sid)
         return None
 
+    @staticmethod
+    def _holding_seconds(entry_meta: dict | None) -> float:
+        """How long the position was actually held, from its own entry stamp.
+
+        Every exit-path consumer used to be handed a hardcoded 3 days, so
+        GOLDM26NOV141000PE (71 minutes) and SILVERM26NOV184000PE (6 minutes)
+        were both recorded as three-day holds on 2026-10-30, their generated
+        lessons said "3d hold", and the calibration engine compared a constant
+        3 against an expected 3 and reported perfect agreement about a number
+        nobody had measured.
+
+        0.0 means UNREADABLE, and it is the honest answer here: it cannot be
+        mistaken for a real hold, where the 3 days it replaces looked exactly
+        like one.
+        """
+        stamp = (entry_meta or {}).get("entry_timestamp")
+        if not stamp:
+            return 0.0
+        try:
+            started = datetime.fromisoformat(str(stamp))
+        except (TypeError, ValueError):
+            return 0.0
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - started).total_seconds())
+
     def _strategy_display_name(self, strategy_id: str | None) -> str | None:
         """Human name for a strategy id, e.g. 'TrendPullback'.
 
@@ -4572,6 +4598,10 @@ class AutonomousTradingBot:
                     stored_sector        = entry_meta.get("sector", self.portfolio_intel.symbol_sectors.get(symbol.upper(), "other"))
                     stored_personality   = entry_meta.get("personality_mode", "BALANCED")
                     stored_sector_flow   = entry_meta.get("sector_flow", "N/A")
+                    # Real time on the clock, not the 3 days every site below
+                    # used to assume. See _holding_seconds.
+                    held_seconds         = self._holding_seconds(entry_meta)
+                    held_days            = int(held_seconds // 86400)
 
                     symbol_sec = stored_sector
                     regime_data = self.cache.read_intelligence("market_regime.json")
@@ -4604,7 +4634,7 @@ class AutonomousTradingBot:
                         sector=symbol_sec,
                         market_regime=regime_str,
                         conviction_score=stored_conviction,
-                        holding_period_days=3,
+                        holding_period_days=held_days,
                         pnl=live_pnl,
                         is_win=is_win,
                         decision_id=stored_decision_id,
@@ -4716,7 +4746,7 @@ class AutonomousTradingBot:
                             outcome=outcome_str,
                             pnl=live_pnl,
                             exit_reason=exit_reason,
-                            holding_days=3,
+                            holding_days=held_days,
                             return_pct=return_pct,
                         )
 
@@ -4740,6 +4770,8 @@ class AutonomousTradingBot:
                         _personality=stored_personality,
                         _sector_flow=stored_sector_flow,
                         _result=outcome_str,
+                        _held_days=held_days,
+                        _held_seconds=held_seconds,
                     ) -> None:
                         try:
                             # Position Review
@@ -4751,7 +4783,8 @@ class AutonomousTradingBot:
                                 target_price=_target_price,
                                 conviction_score=_conviction,
                                 position_size_pct=_alloc_pct,
-                                holding_days=3,
+                                holding_days=_held_days,
+                                holding_seconds=_held_seconds,
                                 exit_reason=_exit_reason,
                                 pnl=_pnl,
                                 decision_id=_decision_id,
@@ -4767,7 +4800,7 @@ class AutonomousTradingBot:
                                 market_regime=_regime,
                                 sector=_sector,
                                 conviction_score=_conviction,
-                                holding_period_days=3,
+                                holding_period_days=_held_days,
                                 result=_result,
                                 return_pct=_return_pct,
                                 pnl=_pnl,
@@ -4790,7 +4823,7 @@ class AutonomousTradingBot:
                                 exit_price=_exit_price,
                                 pnl=_pnl,
                                 return_pct=_return_pct,
-                                holding_time_seconds=3 * 86400, # Mocked holding time based on holding_days=3
+                                holding_time_seconds=_held_seconds,
                                 exit_reason=_exit_reason,
                                 ml_edge_score_at_entry=_conviction,
                                 vix_at_entry=15.0, # Defaulting for now
