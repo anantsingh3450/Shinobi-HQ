@@ -547,11 +547,18 @@ class AutonomousTradingBot:
         balance. Unresolvable must therefore mean "stand aside", loudly —
         never a default, never a crash.
 
-        DELIBERATELY NOT USED BY `_is_counter_trend_strategy`. Resolving the
-        id there would let a fade module past the trend-join gate that is
-        blocking it today — a real improvement, and a LOOSENING, so it waits
-        for the commander's word instead of arriving as a tidy-up. Do not
-        fold those two call sites into this helper.
+        THE COUNTER-TREND GATES READ THIS TOO, since 2026-10-30, on the
+        commander's word. `_is_counter_trend_strategy` looks the id up in
+        ENTRY_MODULES / MCX_ENTRY_MODULES, which are keyed by exactly these
+        ids, so a record that could not name itself was silently "not
+        counter-trend" — and `EIAReactionEntry.COUNTER_TREND = True`, added
+        in a68de90 on 2026-10-23 for precisely this gate, could never fire.
+        It held the shipped exemption shut for a week.
+
+        The blast radius is one strategy. Every other record in both leagues
+        carries its own id and was already resolving correctly, so RangeFade,
+        FadeRange and MeanReversion are unaffected: only EIAReaction changes,
+        and only to the behaviour already approved for it.
         """
         if not isinstance(record, dict):
             return None
@@ -5286,7 +5293,7 @@ class AutonomousTradingBot:
             # windows (skipped for MCX symbols there) — reused as-is.
             conduct_ok, conduct_reason = self._entry_conduct_gate(
                 symbol, direction,
-                counter_trend=self._is_counter_trend_strategy(selected_strat.get("strategy_id")),
+                counter_trend=self._is_counter_trend_strategy(selected_sid),
             )
             if not conduct_ok:
                 logger.info(f"MCX Arena entry blocked for {symbol}: {conduct_reason}")
@@ -5323,7 +5330,7 @@ class AutonomousTradingBot:
                 family, label, cap = set(), "unclassified", 2
             cluster_ok, cluster_reason = self._entry_cluster_gate(
                 symbol, direction, entry_price, family=family, max_same_direction=cap, family_label=label,
-                counter_trend=self._is_counter_trend_strategy(selected_strat.get("strategy_id")),
+                counter_trend=self._is_counter_trend_strategy(selected_sid),
             )
             if not cluster_ok:
                 logger.info(f"MCX Arena entry blocked for {symbol}: {cluster_reason}")
@@ -6588,7 +6595,7 @@ class AutonomousTradingBot:
                 # windows, underlying bias alignment, and the IV premium guard.
                 conduct_ok, conduct_reason = self._entry_conduct_gate(
                     symbol, original_entry,
-                    counter_trend=self._is_counter_trend_strategy(selected_strat.get("strategy_id")),
+                    counter_trend=self._is_counter_trend_strategy(selected_sid),
                 )
                 if not conduct_ok:
                     logger.info(f"Entry blocked for {symbol}: {conduct_reason}")
@@ -6607,7 +6614,7 @@ class AutonomousTradingBot:
                 # three simultaneous same-direction CE = one bet tripled).
                 cluster_ok, cluster_reason = self._entry_cluster_gate(
                     symbol, original_entry, entry_price,
-                    counter_trend=self._is_counter_trend_strategy(selected_strat.get("strategy_id")),
+                    counter_trend=self._is_counter_trend_strategy(selected_sid),
                 )
                 if not cluster_ok:
                     logger.info(f"Entry blocked for {symbol}: {cluster_reason}")

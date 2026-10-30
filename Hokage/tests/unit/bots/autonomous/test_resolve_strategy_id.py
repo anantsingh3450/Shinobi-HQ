@@ -21,9 +21,11 @@ it had never traded. Unresolvable must mean stand aside, loudly.
 
 WHAT THIS FILE PINS: that the id resolves from the key when the record does
 not carry it, that identity decides which key, that unresolvable stays None
-rather than guessing - and that the counter-trend gate was NOT quietly
-rewired through the resolver, because doing so would let a fade module past a
-gate that blocks it today, which is a loosening and the commander's call.
+rather than guessing - and, since the commander approved it on 2026-10-30,
+that the four counter-trend gate call sites read the resolved id, with the
+blast radius measured: only modules already carrying COUNTER_TREND skip the
+trend-join gate, and only EIAReaction's behaviour changes, because it owns
+the only record in either league that cannot name itself.
 """
 from __future__ import annotations
 
@@ -96,24 +98,52 @@ def test_a_non_string_stored_id_is_returned_as_a_string():
     assert _bot()._resolve_strategy_id(rec, {}) == "7"
 
 
-# ------------------------------- 3. the gate was NOT rewired through this
-def test_the_counter_trend_gate_still_reads_the_record_directly():
-    """DELIBERATE, AND THE REASON IS NOT OBVIOUS FROM THE CODE.
+# --------------------------- 3. the gates read it too, since 2026-10-30
+def test_the_counter_trend_gates_read_the_resolved_id():
+    """THE FIX THE COMMANDER APPROVED on 2026-10-30.
 
-    Routing `_is_counter_trend_strategy` through the resolver would make
-    EIAReaction's COUNTER_TREND flag work and let it past the trend-join gate
-    that is blocking it today. That is a real improvement - and a LOOSENING
-    of a gate, which under the standing agreement is the commander's call,
-    not a tidy-up that arrives inside a defensive patch.
-
-    So the four gate call sites still pass `selected_strat.get("strategy_id")`
-    and still resolve to None for a stub. If someone unifies them, this test
-    fails and asks for the decision to be made out loud.
+    All four gate call sites - conduct and cluster, in both leagues - now
+    pass the resolved id. Passing `selected_strat.get("strategy_id")` there
+    is what kept a shipped exemption shut for a week, so if the blind form
+    comes back, this fails.
     """
     import bots.autonomous.autonomous_bot as mod
     src = Path(mod.__file__).read_text(encoding="utf-8")
-    assert "_is_counter_trend_strategy(selected_sid)" not in src
-    assert src.count('_is_counter_trend_strategy(selected_strat.get("strategy_id"))') == 4
+    assert src.count("_is_counter_trend_strategy(selected_sid)") == 4
+    assert '_is_counter_trend_strategy(selected_strat.get("strategy_id"))' not in src
+
+
+def test_a_stub_record_now_reaches_its_own_counter_trend_flag():
+    """END TO END, on the real registries and the real id.
+
+    This is the whole chain that was broken: the record cannot name itself ->
+    the key names it -> the entry module registry is keyed by that id -> the
+    module carries COUNTER_TREND. Any link breaking puts EIAReaction back
+    behind the trend-join gate, which is where it spent 2026-10-22 and
+    2026-10-29.
+    """
+    from bots.strategy.components.mcx_entries import MCX_ENTRY_MODULES
+    stub = {"name": "EIAReaction", "status": "ACTIVE"}
+    bot = _bot()
+    sid = bot._resolve_strategy_id(stub, {"strat-eiareaction-mcx-v1": stub})
+    assert sid in MCX_ENTRY_MODULES
+    assert bot._is_counter_trend_strategy(sid) is True
+    # and the blind form it replaced still says the opposite, which is the
+    # bug in one line.
+    assert bot._is_counter_trend_strategy(stub.get("strategy_id")) is False
+
+
+def test_the_fix_does_not_exempt_anything_that_was_not_already_flagged():
+    """A gate loosening has to have a measured blast radius. Only modules
+    carrying COUNTER_TREND skip the trend-join gate; resolving an id does not
+    confer the flag on a trend-follower."""
+    bot = _bot()
+    for sid in ("strat-trendrider-mcx-v1", "strat-sessionshift-mcx-v1",
+                "strat-eventrider-mcx-v1", "strat-ridertrend-mcx-v1"):
+        assert bot._is_counter_trend_strategy(sid) is False
+    for sid in ("strat-rangefade-mcx-v1", "strat-eiareaction-mcx-v1",
+                "strat-faderange-mcx-v1", "strat-meanreversion-sideways-v1"):
+        assert bot._is_counter_trend_strategy(sid) is True
 
 
 def test_nothing_in_the_entry_path_subscripts_the_id_any_more():
