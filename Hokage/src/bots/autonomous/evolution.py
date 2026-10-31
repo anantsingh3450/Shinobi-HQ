@@ -60,6 +60,28 @@ CONSECUTIVE_WEEKS_TO_ARCHIVE = 2
 #: Most strategies Tier 1 may archive in a single run.
 MAX_ARCHIVES_PER_RUN = 1
 
+#: The bar to REMOVE a strategy, which is NOT the bar to SHIP one.
+#:
+#: Until 2026-10-31 retirement reused `ship_bar`. That bar is Sidak-corrected
+#: for the size of the measured family, so it RISES as the arena grows: at 40
+#: cells it stands at 3.22, which is above every cell Hokage has. "Below the
+#: bar for two consecutive audits" therefore stopped being a decline signal
+#: and became a statement of membership. On 2026-10-31 `plan()` queued 13 of
+#: 14 live pairs, including the two best cells in the system
+#: (SessionShift/SILVERM +3.15 then +2.65, SessionShift/GOLDM +2.71 then
+#: +2.81) and all three MacroBreakout cells, every one of them IMPROVING.
+#: Only MAX_ARCHIVES_PER_RUN and RAIL 2 stood between that list and an empty
+#: arena, and the one cell cleared was RangeFade/NATURALGAS at -0.92 -> -0.63,
+#: also improving.
+#:
+#: Removal needs evidence a cell is LOSING, not merely unproven. Measured at
+#: zero, because a negative edge is money going the wrong way whatever the
+#: family size, while "did not clear a corrected significance bar" says only
+#: that the arena got bigger. Cells below the ship bar but above this one are
+#: still REPORTED - they just cannot be retired, and their reason says which
+#: of the two bars they failed.
+RETIRE_T = 0.0
+
 #: Minimum days between two snapshots for them to count as SEPARATE weeks.
 #:
 #: Caught on a 2026-08-17 dry run: the policy compared that day's re-measurement
@@ -167,6 +189,33 @@ def _assets_still_covered(
     return counts
 
 
+def _parked_assets(snapshot: dict) -> set[str]:
+    """Assets Hokage deliberately does not trade.
+
+    Until 2026-10-31 RAIL 2 could not see this - `grep -c PARKED
+    evolution.py` returned 0 - and so blocked EventRider's retirement on ALL
+    FOUR of its assets with "retiring EventRider outright would leave
+    CRUDEOIL with no live strategy at all". CRUDEOIL has been parked since the
+    seven sweeps that all failed out of sample. The guard was defending
+    coverage of an asset the bot refuses to trade, which meant a module that
+    is the sole nominal coverer of a parked asset could never be retired.
+
+    The snapshot's own stamp wins, so a decision stays reproducible from the
+    snapshot alone - the same reason `geometry` is stamped. Snapshots written
+    before the field existed fall back to the live constant; if even that
+    cannot be read, nothing is treated as parked, which is the conservative
+    direction because it only ever BLOCKS a retirement.
+    """
+    stamped = snapshot.get("parked_assets")
+    if stamped is not None:
+        return {str(a).upper() for a in stamped}
+    try:  # lazy: keeps this module importable on its own, as its tests require
+        from bots.autonomous.autonomous_bot import AutonomousTradingBot as _Bot
+        return {str(a).upper() for a in (getattr(_Bot, "PARKED_ASSETS", {}) or {})}
+    except Exception:
+        return set()
+
+
 def _same_geometry(current: dict, previous: dict | None) -> bool:
     """True when two snapshots measured the same way.
 
@@ -256,6 +305,18 @@ def plan(snapshots: list[dict]) -> list[Decision]:
             evidence=evidence,
         )
 
+        # RAIL 1b: unconfirmed is not the same as harmful. See RETIRE_T.
+        if stat["t"] >= RETIRE_T or before["t"] >= RETIRE_T:
+            decision.tier = TIER_PROPOSE
+            decision.blocked_reason = (
+                f"below the t>={bar:g} SHIP bar but not measurably harmful: "
+                f"{before['t']:+.2f} then {stat['t']:+.2f}, neither below "
+                f"{RETIRE_T:+.2f}. The ship bar rises with the size of the "
+                f"measured family, so on a family this size it sits above "
+                f"every cell; removing a strategy needs evidence it is "
+                f"LOSING, not merely unproven."
+            )
+
         # RAIL 2: never leave an asset with no live strategy.
         #
         # The CHECK is module-wide on purpose — `_assets_still_covered` asks
@@ -270,8 +331,14 @@ def plan(snapshots: list[dict]) -> list[Decision]:
         # non-sequitur on the face of it, and the sentence he is meant to
         # decide on. Name the module, and the sentence is true.
         remaining = _assets_still_covered(current, module)
-        orphaned = [a for a in (info.get("scope") or []) if remaining.get(a, 0) == 0]
-        if orphaned:
+        parked = _parked_assets(current)
+        orphaned = [a for a in (info.get("scope") or [])
+                    if remaining.get(a, 0) == 0 and str(a).upper() not in parked]
+        # RAIL 1b wins if it already spoke: for a cell that is not harmful at
+        # all, "retiring this would orphan BANKNIFTY" is true but implies
+        # coverage is the ONLY obstacle, when in fact it should not be retired
+        # on its own numbers either. First reason stands.
+        if orphaned and decision.blocked_reason is None:
             decision.tier = TIER_PROPOSE
             decision.blocked_reason = (
                 f"retiring {decision.strategy_name} outright would leave "
@@ -280,6 +347,9 @@ def plan(snapshots: list[dict]) -> list[Decision]:
                 f"Ceasing to trade an asset silently is a worse failure than trading "
                 f"it badly, so this needs a decision."
             )
+        if orphaned:
+            decision.tier = TIER_PROPOSE
+
         archives.append(decision)
 
     # RAIL 3: at most one autonomous archive per run; the rest are proposals.

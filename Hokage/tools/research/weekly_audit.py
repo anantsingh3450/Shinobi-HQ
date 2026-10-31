@@ -738,6 +738,19 @@ def _record_retirements(decisions) -> str:
     return "\n".join(lines)
 
 
+def _parked_now() -> set[str]:
+    """The live PARKED_ASSETS keys, or an empty set if they cannot be read.
+
+    Empty is the conservative direction here: it can only make RAIL 2 block a
+    retirement, never allow one.
+    """
+    try:
+        from bots.autonomous.autonomous_bot import AutonomousTradingBot as _Bot
+        return {str(a).upper() for a in (getattr(_Bot, "PARKED_ASSETS", {}) or {})}
+    except Exception:
+        return set()
+
+
 def main() -> int:
     args = set(sys.argv[1:])
     dry_run = "--dry-run" in args
@@ -784,6 +797,14 @@ def main() -> int:
         # no-stop pooled t against a hold-out-with-stop t.
         "geometry": GEOMETRY,
         "stop_atr": PROD_STOP_ATR,
+        # Which assets were PARKED when this was measured. RAIL 2 in
+        # evolution.plan() refuses to retire a module that would leave an
+        # asset uncovered - and until 2026-10-31 it counted a parked asset as
+        # coverage worth defending, so EventRider could never be retired
+        # because it nominally covers CRUDEOIL, which nobody trades. Stamped
+        # rather than read live so a retirement decision stays reproducible
+        # from the snapshot alone, like `geometry`.
+        "parked_assets": sorted(_parked_now()),
         "windows": windows,
         "failed_symbols": failed,
         "lineup": lineup,

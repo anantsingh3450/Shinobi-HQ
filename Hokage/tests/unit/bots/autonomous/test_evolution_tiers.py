@@ -59,19 +59,19 @@ def test_one_bad_week_retires_nothing():
     """One week below the bar is noise; acting on it would churn the lineup
     every quiet fortnight."""
     prev = _snap("2026-08-14", {("mod-a", "GOLDM"): 2.6}, TWO_LIVE)
-    now = _snap("2026-08-21", {("mod-a", "GOLDM"): 1.2}, TWO_LIVE)
+    now = _snap("2026-08-21", {("mod-a", "GOLDM"): -1.2}, TWO_LIVE)
     assert [d for d in ev.plan([now, prev]) if d.action == "archive"] == []
 
 
 def test_two_consecutive_bad_weeks_retires_AUTONOMOUSLY():
-    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): 1.8}, TWO_LIVE)
-    now = _snap("2026-08-21", {("mod-a", "GOLDM"): 1.2}, TWO_LIVE)
+    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): -0.8}, TWO_LIVE)
+    now = _snap("2026-08-21", {("mod-a", "GOLDM"): -1.2}, TWO_LIVE)
     archives = [d for d in ev.plan([now, prev]) if d.action == "archive"]
     assert len(archives) == 1
     d = archives[0]
     assert d.is_autonomous
     assert d.strategy_id == "s-a"
-    assert d.evidence["t_previous"] == 1.8 and d.evidence["t_now"] == 1.2
+    assert d.evidence["t_previous"] == -0.8 and d.evidence["t_now"] == -1.2
 
 
 def test_it_will_NOT_leave_an_asset_with_no_live_strategy():
@@ -80,8 +80,8 @@ def test_it_will_NOT_leave_an_asset_with_no_live_strategy():
     happens."""
     only_live = {"mod-a": {"strategy_id": "s-a", "name": "Alpha",
                            "status": "SHADOW_MODE", "scope": ["GOLDM"]}}
-    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): 1.8}, only_live)
-    now = _snap("2026-08-21", {("mod-a", "GOLDM"): 1.2}, only_live)
+    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): -0.8}, only_live)
+    now = _snap("2026-08-21", {("mod-a", "GOLDM"): -1.2}, only_live)
     d, = [x for x in ev.plan([now, prev]) if x.action == "archive"]
     assert not d.is_autonomous
     assert d.tier == ev.TIER_PROPOSE
@@ -96,10 +96,10 @@ def test_only_one_strategy_is_retired_per_run():
                      "status": "SHADOW_MODE", "scope": ["GOLDM", "SILVERM"]}
         for k in ("a", "b", "c")
     }
-    rows_prev = {("mod-a", "GOLDM"): 1.1, ("mod-b", "GOLDM"): 1.2,
-                 ("mod-c", "GOLDM"): 1.3}
-    rows_now = {("mod-a", "GOLDM"): 0.9, ("mod-b", "GOLDM"): 1.0,
-                ("mod-c", "GOLDM"): 1.1}
+    rows_prev = {("mod-a", "GOLDM"): -1.1, ("mod-b", "GOLDM"): -1.2,
+                 ("mod-c", "GOLDM"): -1.3}
+    rows_now = {("mod-a", "GOLDM"): -1.4, ("mod-b", "GOLDM"): -1.0,
+                ("mod-c", "GOLDM"): -0.9}
     decisions = ev.plan([_snap("2026-08-21", rows_now, lineup),
                          _snap("2026-08-14", rows_prev, lineup)])
     archives = [d for d in decisions if d.action == "archive"]
@@ -118,8 +118,8 @@ def test_the_WORST_measured_strategy_is_the_one_retired():
         "mod-c": {"strategy_id": "s-c", "name": "Gamma", "status": "SHADOW_MODE",
                   "scope": ["GOLDM"]},
     }
-    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): 1.9, ("mod-b", "GOLDM"): 0.2}, lineup)
-    now = _snap("2026-08-21", {("mod-a", "GOLDM"): 1.8, ("mod-b", "GOLDM"): 0.1}, lineup)
+    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): -0.2, ("mod-b", "GOLDM"): -1.9}, lineup)
+    now = _snap("2026-08-21", {("mod-a", "GOLDM"): -0.1, ("mod-b", "GOLDM"): -1.8}, lineup)
     acting = [d for d in ev.plan([now, prev]) if d.is_autonomous]
     assert len(acting) == 1
     assert acting[0].strategy_name == "Beta", "the worst performer should go first"
@@ -176,8 +176,8 @@ def test_a_strategy_above_the_bar_is_left_alone():
 
 def test_the_summary_separates_acting_from_asking(monkeypatch):
     monkeypatch.setattr(ev, "AUTONOMOUS_ENABLED", True)
-    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): 1.8}, TWO_LIVE)
-    now = _snap("2026-08-21", {("mod-a", "GOLDM"): 1.2}, TWO_LIVE)
+    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): -0.8}, TWO_LIVE)
+    now = _snap("2026-08-21", {("mod-a", "GOLDM"): -1.2}, TWO_LIVE)
     text = ev.summarise(ev.plan([now, prev]))
     # The two sections must stay distinguishable — what Tier 1 has cleared on
     # its own, and what needs the commander. The heading wording changed on
@@ -210,7 +210,7 @@ def test_an_unparseable_date_refuses_to_act():
     """Without knowing the gap we cannot claim a trend, and refusing is the
     safe direction."""
     prev = _snap("not-a-date", {("mod-a", "GOLDM"): 1.4}, TWO_LIVE)
-    now = _snap("2026-08-21", {("mod-a", "GOLDM"): 1.2}, TWO_LIVE)
+    now = _snap("2026-08-21", {("mod-a", "GOLDM"): -1.2}, TWO_LIVE)
     assert [d for d in ev.plan([now, prev]) if d.action == "archive"] == []
 
 
@@ -221,8 +221,8 @@ def test_the_summary_is_empty_when_there_is_nothing_to_say():
 def test_every_decision_carries_the_evidence_that_justified_it():
     """So it can be read back and reversed. An autonomous change with no
     recorded reason is indistinguishable from a bug."""
-    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): 1.8}, TWO_LIVE)
-    now = _snap("2026-08-21", {("mod-a", "GOLDM"): 1.2}, TWO_LIVE)
+    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): -0.8}, TWO_LIVE)
+    now = _snap("2026-08-21", {("mod-a", "GOLDM"): -1.2}, TWO_LIVE)
     for d in ev.plan([now, prev]):
         assert d.reason
         assert d.evidence.get("measured_on")
@@ -239,8 +239,8 @@ def test_only_archiving_is_ever_autonomous():
     larger loss. Reviving or rescoping ADDS risk and stays with the commander
     however good the measurement looks.
     """
-    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): 1.8}, TWO_LIVE)
-    now = _snap("2026-08-21", {("mod-a", "GOLDM"): 1.2}, TWO_LIVE)
+    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): -0.8}, TWO_LIVE)
+    now = _snap("2026-08-21", {("mod-a", "GOLDM"): -1.2}, TWO_LIVE)
     for d in ev.plan([now, prev]):
         if d.is_autonomous:
             assert d.action == "archive", (
@@ -264,8 +264,8 @@ def test_a_revival_is_never_autonomous_however_well_it_measures():
 def test_the_policy_still_reports_its_verdict_while_disarmed(monkeypatch):
     """The switch must gate APPLYING, not THINKING — the observed cycle is
     worthless if the policy stays silent."""
-    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): 1.8}, TWO_LIVE)
-    now = _snap("2026-08-21", {("mod-a", "GOLDM"): 1.2}, TWO_LIVE)
+    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): -0.8}, TWO_LIVE)
+    now = _snap("2026-08-21", {("mod-a", "GOLDM"): -1.2}, TWO_LIVE)
     d, = [x for x in ev.plan([now, prev]) if x.action == "archive"]
 
     monkeypatch.setattr(ev, "AUTONOMOUS_ENABLED", False)
@@ -277,8 +277,8 @@ def test_the_policy_still_reports_its_verdict_while_disarmed(monkeypatch):
 
 
 def test_the_summary_says_plainly_that_nothing_changed(monkeypatch):
-    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): 1.8}, TWO_LIVE)
-    now = _snap("2026-08-21", {("mod-a", "GOLDM"): 1.2}, TWO_LIVE)
+    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): -0.8}, TWO_LIVE)
+    now = _snap("2026-08-21", {("mod-a", "GOLDM"): -1.2}, TWO_LIVE)
     decisions = ev.plan([now, prev])
 
     monkeypatch.setattr(ev, "AUTONOMOUS_ENABLED", False)
@@ -310,8 +310,8 @@ def test_the_summary_never_claims_an_archive_that_nothing_performs(monkeypatch):
                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
     has_applier = any("apply" in name for name in functions)
 
-    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): 1.8}, TWO_LIVE)
-    now = _snap("2026-08-21", {("mod-a", "GOLDM"): 1.2}, TWO_LIVE)
+    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): -0.8}, TWO_LIVE)
+    now = _snap("2026-08-21", {("mod-a", "GOLDM"): -1.2}, TWO_LIVE)
     monkeypatch.setattr(ev, "AUTONOMOUS_ENABLED", True)
     text = ev.summarise(ev.plan([now, prev]))
 
@@ -350,14 +350,14 @@ def test_a_change_of_measurement_basis_resets_the_retirement_clock():
     comparing last week's basis against this week's would call a change of
     ruler a decline in edge, and retire a strategy for it.
     """
-    old = _snap("2026-08-21", {("mod-a", "GOLDM"): 1.8}, TWO_LIVE,
+    old = _snap("2026-08-21", {("mod-a", "GOLDM"): -0.8}, TWO_LIVE,
                 geometry="pooled-105d-nostop")
-    new = _snap("2026-08-28", {("mod-a", "GOLDM"): 1.2}, TWO_LIVE)
+    new = _snap("2026-08-28", {("mod-a", "GOLDM"): -1.2}, TWO_LIVE)
 
     assert ev.plan([new, old]) == [], "two bases are not two weeks of evidence"
 
     # Same numbers, same dates, same basis -> the retirement stands.
-    matched = _snap("2026-08-21", {("mod-a", "GOLDM"): 1.8}, TWO_LIVE)
+    matched = _snap("2026-08-21", {("mod-a", "GOLDM"): -0.8}, TWO_LIVE)
     assert ev.plan([new, matched]), "a same-basis decline must still retire"
 
 
@@ -369,7 +369,7 @@ def test_a_snapshot_written_before_the_field_existed_never_matches():
               "measurements": {"GOLDM": {"mod-a": {"n": 300, "t": 1.8,
                                                    "edge_atr": 0.2,
                                                    "accuracy": 50.0}}}}
-    new = _snap("2026-08-28", {("mod-a", "GOLDM"): 1.2}, TWO_LIVE)
+    new = _snap("2026-08-28", {("mod-a", "GOLDM"): -1.2}, TWO_LIVE)
     assert ev.plan([new, legacy]) == []
 
 
@@ -430,8 +430,8 @@ def test_the_orphan_reason_names_the_MODULE_not_the_decided_asset():
     wide = {"mod-a": {"strategy_id": "s-a", "name": "MacroBreakout",
                       "status": "SHADOW_MODE",
                       "scope": ["NIFTY", "BANKNIFTY", "SENSEX"]}}
-    prev = _snap("2026-10-02", {("mod-a", "NIFTY"): 0.78}, wide)
-    now = _snap("2026-10-09", {("mod-a", "NIFTY"): 1.51}, wide)
+    prev = _snap("2026-10-02", {("mod-a", "NIFTY"): -0.78}, wide)
+    now = _snap("2026-10-09", {("mod-a", "NIFTY"): -1.51}, wide)
 
     d, = [x for x in ev.plan([now, prev]) if x.action == "archive"]
     assert d.asset == "NIFTY"
@@ -452,8 +452,8 @@ def test_the_orphan_reason_reads_correctly_for_a_single_asset():
     """Grammar is not a nicety here -- the commander acts on this sentence."""
     only_live = {"mod-a": {"strategy_id": "s-a", "name": "Alpha",
                            "status": "SHADOW_MODE", "scope": ["GOLDM"]}}
-    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): 1.8}, only_live)
-    now = _snap("2026-08-21", {("mod-a", "GOLDM"): 1.2}, only_live)
+    prev = _snap("2026-08-14", {("mod-a", "GOLDM"): -0.8}, only_live)
+    now = _snap("2026-08-21", {("mod-a", "GOLDM"): -1.2}, only_live)
     d, = [x for x in ev.plan([now, prev]) if x.action == "archive"]
 
     assert "GOLDM with no live strategy" in d.blocked_reason
