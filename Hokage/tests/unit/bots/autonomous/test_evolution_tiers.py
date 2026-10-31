@@ -34,16 +34,40 @@ _sys.path.insert(0, str(_ROOT / "tools" / "research"))
 from weekly_audit import GEOMETRY  # noqa: E402,F401
 
 
+#: The one league every fixture asset is pooled under. RAIL 2 reads the
+#: module-wide number through it - see
+#: test_pooled_evidence_justifies_retirement.py.
+FIXTURE_LEAGUE = "Fixture League"
+
+
 def _snap(day: str, rows: dict, lineup: dict, bar: float = 2.0,
-          geometry: str = GEOMETRY) -> dict:
-    """rows: {(module, asset): t}"""
+          geometry: str = GEOMETRY, pooled: dict | None = None) -> dict:
+    """rows: {(module, asset): t}
+
+    The default pooled reading is the MEAN of the cell `t`s the fixture was
+    given - a fixture convenience, not a real pooled statistic. RAIL 2 needs
+    the module-wide reading to AGREE with the cell, and in production it
+    usually does, so this default keeps every test written before that rail
+    existed saying exactly what it always said. A test that needs the two to
+    DISAGREE passes `pooled=` and says so out loud.
+    """
     measurements: dict[str, dict] = {}
+    per_module: dict[str, list[float]] = {}
     for (module, asset), t in rows.items():
         measurements.setdefault(asset, {})[module] = {
             "n": 300, "t": t, "edge_atr": 0.2, "accuracy": 50.0
         }
+        per_module.setdefault(module, []).append(t)
+    if pooled is None:
+        pooled = {FIXTURE_LEAGUE: {
+            module: {"n": 300 * len(ts), "t": sum(ts) / len(ts),
+                     "edge_atr": 0.2, "accuracy": 50.0}
+            for module, ts in per_module.items()
+        }}
     return {"date": day, "ship_bar": bar, "lineup": lineup,
-            "geometry": geometry, "measurements": measurements}
+            "geometry": geometry, "measurements": measurements,
+            "leagues": {FIXTURE_LEAGUE: sorted(measurements)},
+            "pooled": pooled}
 
 
 #: Two live strategies, so archiving one never orphans an asset by default.

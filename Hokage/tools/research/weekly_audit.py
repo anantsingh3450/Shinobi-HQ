@@ -328,7 +328,9 @@ POOLED_CAVEAT = (
     "A league's assets move together, so pooled signals are correlated and the "
     "effective sample is well below the printed n. Treat the pooled t as an "
     "UPPER BOUND: good for ranking modules and spotting one worth watching, "
-    "never enough on its own to move capital."
+    "never enough on its own to move capital. Tier 1 reads it as a VETO only: "
+    "it can BLOCK a retirement the per-cell rule cleared, and can never clear "
+    "one by itself."
 )
 
 
@@ -809,9 +811,20 @@ def main() -> int:
         "failed_symbols": failed,
         "lineup": lineup,
         "measurements": measurements,
-        # Extra key by design: evolution.plan() reads only lineup and
-        # measurements, so pooling cannot move Tier 1 until someone
-        # deliberately wires it in.
+        # The leagues `pooled` is keyed by, and which assets each one pools.
+        # evolution.plan() maps a decided asset to its league to find the
+        # module-wide reading; stamped for the same reason as `geometry` and
+        # `parked_assets`, so a retirement stays reproducible from the
+        # snapshot alone rather than from whatever LEAGUES happens to say
+        # months later.
+        "leagues": {name: list(assets) for name, assets in LEAGUES},
+        # WIRED INTO TIER 1 on 2026-10-31, and only as a VETO. Until then this
+        # was an extra key by design - plan() read lineup and measurements
+        # only - and the consequence was that a module-wide retirement was
+        # justified by a single CELL. On 2026-10-31 that meant EventRider
+        # cleared on its CRUDEOIL cell: a parked asset it has never traded.
+        # The pooled t is an upper bound on significance, so it may BLOCK a
+        # retirement the per-cell rule cleared and may never clear one itself.
         "pooled": pool(raw_hold),
     }
 
