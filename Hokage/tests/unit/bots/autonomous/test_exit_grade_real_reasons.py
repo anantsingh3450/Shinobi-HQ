@@ -103,6 +103,27 @@ def test_a_bare_tp_no_longer_false_matches(engine):
                   exit_price=440.0) == "PREMATURE"
 
 
+def test_a_bare_sl_no_longer_false_matches(engine):
+    """"SL" was the same landmine as "TP", still armed after that fix: it was
+    a bare substring, so it matched SLIPPAGE and graded a quote problem as a
+    stop loss. Whole-word now."""
+    assert _grade(engine, "SLIPPAGE guard tripped on the exit quote",
+                  exit_price=380.0, entry=429.70) == "PREMATURE"
+
+
+def test_a_bare_tsl_no_longer_false_matches(engine):
+    """"TSL" matched TSLA, and the thesis-stop reason interpolates the
+    underlying's own name into its text."""
+    assert _grade(engine, "Position closed on the TSLA correlation cap",
+                  exit_price=440.0) == "PREMATURE"
+
+
+def test_the_whole_words_themselves_still_match(engine):
+    """Tokenising must not drop the real tokens it was protecting."""
+    assert _grade(engine, "TSL raised to 536.70", exit_price=440.0) == "TRAILING"
+    assert _grade(engine, "SL hit", exit_price=380.0, entry=429.70) == "STOP_HIT"
+
+
 # ------------------------------------------------------- the lesson that followed
 def test_a_target_hit_no_longer_generates_a_premature_lesson(engine):
     """The grade is not cosmetic — it writes the autopsy ImprovementBot reads."""

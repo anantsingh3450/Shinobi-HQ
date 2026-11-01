@@ -27,7 +27,14 @@ def _review(engine: PositionReviewEngine, **kwargs) -> PositionReview:
         stop_price=175.0,
         target_price=210.0,
         conviction_score=84,
-        position_size_pct=2.0,
+        # Percent of the strategy's war chest committed, not percent of total
+        # capital. At conviction 84 the entitlement is 33 * 0.84 = 27.72, so
+        # 20.0 sits inside the CORRECT band (13.86 .. 41.58).
+        position_size_pct=20.0,
+        # The adverse excursion the hold recorded. Entry quality is graded on
+        # this and nothing else; without it the grade is UNKNOWN, which is
+        # the honest answer and makes for a poor default fixture.
+        mae_pct=-2.0,
         holding_days=3,
         exit_reason="Take Profit Triggered",
         pnl=1200.0,
@@ -59,9 +66,9 @@ def test_review_contains_symbol(engine):
 
 def test_review_contains_all_quality_fields(engine):
     r = _review(engine)
-    assert r.entry_quality in ("EXCELLENT", "GOOD", "FAIR", "POOR")
+    assert r.entry_quality in ("EXCELLENT", "GOOD", "FAIR", "POOR", "UNKNOWN")
     assert r.exit_quality in ("ON_TARGET", "STOP_HIT", "PREMATURE", "TRAILING")
-    assert r.sizing_quality in ("OVERSIZED", "CORRECT", "UNDERSIZED")
+    assert r.sizing_quality in ("OVERSIZED", "CORRECT", "UNDERSIZED", "UNKNOWN")
     assert r.stop_quality in ("TIGHT", "CORRECT", "WIDE")
 
 
@@ -116,20 +123,21 @@ def test_exit_quality_premature(engine):
 # ---------------------------------------------------------------------------
 
 def test_sizing_quality_correct(engine):
-    # 2.0 / 84 * 100 = 2.38 → within (0.5, 3.0) range = CORRECT
-    r = _review(engine, position_size_pct=2.0, conviction_score=84)
+    # Entitlement at conviction 84 is 33% * 0.84 = 27.72% of the chest.
+    # 20.0 is inside the 13.86 .. 41.58 band.
+    r = _review(engine, position_size_pct=20.0, conviction_score=84)
     assert r.sizing_quality == "CORRECT"
 
 
 def test_sizing_quality_oversized(engine):
-    # 5.0 / 30 * 100 = 16.7 → > 3.0 → OVERSIZED
-    r = _review(engine, position_size_pct=5.0, conviction_score=30)
+    # Entitlement at conviction 30 is 9.9%; 30.0 is 3.03x it.
+    r = _review(engine, position_size_pct=30.0, conviction_score=30)
     assert r.sizing_quality == "OVERSIZED"
 
 
 def test_sizing_quality_undersized(engine):
-    # 0.2 / 90 * 100 = 0.22 → < 0.5 → UNDERSIZED
-    r = _review(engine, position_size_pct=0.2, conviction_score=90)
+    # Entitlement at conviction 90 is 29.7%; 5.0 is 0.17x it.
+    r = _review(engine, position_size_pct=5.0, conviction_score=90)
     assert r.sizing_quality == "UNDERSIZED"
 
 
@@ -192,7 +200,7 @@ def test_lesson_mentions_pnl(engine):
 
 
 def test_lesson_flags_oversized(engine):
-    r = _review(engine, position_size_pct=5.0, conviction_score=30)
+    r = _review(engine, position_size_pct=30.0, conviction_score=30)
     assert "oversized" in r.lesson.lower() or "reduce" in r.lesson.lower()
 
 

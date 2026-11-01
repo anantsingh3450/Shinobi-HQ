@@ -4,11 +4,19 @@ Performs post-exit quality analysis for every closed trade.
 Runs asynchronously after exit to preserve Layer 1 execution speed.
 
 Reviews:
-    - Entry quality  : How close to ideal entry price?
+    - Entry quality  : How much heat did the hold take after the entry?
     - Exit quality   : TSL / TP / Premature / Trailing?
-    - Sizing quality : Was position size calibrated to conviction?
+    - Sizing quality : Was the premium committed calibrated to conviction?
     - Stop quality   : Was stop too tight, correct, or too wide?
     - Lesson         : Auto-generated structured lesson text
+
+A GRADE MUST BE ABLE TO SAY IT DOES NOT KNOW. Two of these four were constants
+until 2026-11-01 — entry read POOR on 436 of 488 reviews because the entry
+price cancelled out of its own formula, and sizing read CORRECT on 487 of 488
+because it fabricated a default for an input that two of the three entry paths
+never wrote. Both now return UNKNOWN rather than invent an answer, because
+these lessons are forwarded to long-term memory and an invented grade there is
+indelible. See `absent-is-not-false`.
 
 Storage: hokage_brain/reviews/position_reviews.jsonl
 Lessons are also forwarded to MemoryManager for long-term retention.
@@ -17,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +33,7 @@ from typing import Any, TYPE_CHECKING
 
 from hokage.memory.resolver import PathResolver
 from bots.autonomous.models import PositionReview
+from bots.execution.options_router import MAX_PREMIUM_CHEST_FRACTION
 
 if TYPE_CHECKING:
     from bots.autonomous.memory import MemoryManager
@@ -33,15 +43,50 @@ logger = logging.getLogger("Hokage.PositionReview")
 # ---------------------------------------------------------------------------
 # Quality grade constants
 # ---------------------------------------------------------------------------
-_ENTRY_EXCELLENT_THRESHOLD = 0.005   # within 0.5% of entry
-_ENTRY_GOOD_THRESHOLD      = 0.01    # within 1%
-_ENTRY_FAIR_THRESHOLD      = 0.02    # within 2%
+#: Returned when the input a grade needs was never recorded. NOT a grade, and
+#: deliberately not a neutral one: "absent" and "average" are different facts,
+#: and the lesson generator stays silent on this value.
+UNKNOWN = "UNKNOWN"
+
+#: Entry quality is graded from the ADVERSE excursion the hold actually
+#: recorded, as a percentage of the entry premium. Hokage only ever BUYS
+#: premium, so these are negative and ordered worst-last.
+#:
+#: The boundaries are read off his own tape, not invented. Bucketing the 110
+#: real closed trades in trade_autopsies.jsonl by max_adverse_excursion_pct on
+#: 2026-11-01 gave:
+#:
+#:     MAE >= -3%     n=39   win 87.2%   net +82,496
+#:     -8% .. -3%     n=26   win 42.3%   net  +9,887
+#:     -15% .. -8%    n=23   win  8.7%   net -34,679
+#:     MAE < -15%     n= 6   win  0.0%   net -14,422
+#:
+#: Monotone in both win rate and money, which is the whole reason to grade on
+#: it. It is also IN-SAMPLE — the buckets were cut on the corpus they
+#: describe — so this is a descriptive label for an autopsy, NOT a measured
+#: edge and NOT a gate. Nothing here may size a position or open a trade.
+_ENTRY_MAE_EXCELLENT = -3.0
+_ENTRY_MAE_GOOD      = -8.0
+_ENTRY_MAE_FAIR      = -15.0
 
 _STOP_TIGHT_RATIO   = 0.03   # stop < 3% from entry
 _STOP_WIDE_RATIO    = 0.10   # stop > 10% from entry
 
-_SIZING_OVER        = 3.0    # size > 3% per conviction unit = oversized
-_SIZING_UNDER       = 0.5    # size < 0.5% per conviction unit = undersized
+#: Sizing is graded against the cap the options router already enforces —
+#: MAX_PREMIUM_CHEST_FRACTION, one position's premium against its strategy's
+#: war chest — scaled by conviction, so a 100-conviction trade is entitled to
+#: the whole cap and a 50-conviction trade to half of it. These two numbers
+#: are the tolerance band around that entitlement. They are GRADING
+#: tolerances: they change no order, no size, no stop and no gate.
+_SIZING_OVER_MULT   = 1.5
+_SIZING_UNDER_MULT  = 0.5
+
+#: Whole-word matchers for the exit reason. The bare substrings these replace
+#: were the same landmine the "TP" test already proved: "SL" also matches
+#: SLIPPAGE and "TSL" also matches TSLA, and the thesis-stop reason
+#: interpolates the underlying's own name straight into the text.
+_SL_TOKEN  = re.compile(r"\bSL\b")
+_TSL_TOKEN = re.compile(r"\bTSL\b")
 
 
 def _format_hold(holding_days: int, holding_seconds: float | None) -> str:
@@ -106,20 +151,28 @@ class PositionReviewEngine:
         stop_price: float,
         target_price: float,
         conviction_score: int,
-        position_size_pct: float,
+        position_size_pct: float | None,
         holding_days: int,
         exit_reason: str,
         pnl: float,
         decision_id: str = "",
         return_pct: float = 0.0,
         holding_seconds: float | None = None,
+        mae_pct: float | None = None,
     ) -> PositionReview:
         """Generate a PositionReview for a closed trade.
+
+        `position_size_pct` is the premium committed at entry as a percentage
+        of that strategy's war chest — the denominator the premium cap is
+        already written in. `mae_pct` is the worst unrealized move against the
+        position during the hold, in percent of entry, recorded live by the
+        exit ladder. Both accept None, meaning the entry record never carried
+        the fact; the grade that needs it then reads UNKNOWN.
 
         Returns a frozen PositionReview dataclass and persists to disk.
         Lesson is forwarded to MemoryManager if available.
         """
-        entry_quality  = self._grade_entry_quality(entry_price, target_price, stop_price)
+        entry_quality  = self._grade_entry_quality(mae_pct)
         exit_quality   = self._grade_exit_quality(exit_reason, exit_price, target_price, stop_price, entry_price)
         sizing_quality = self._grade_sizing_quality(position_size_pct, conviction_score)
         stop_quality   = self._grade_stop_quality(entry_price, stop_price)
@@ -164,26 +217,67 @@ class PositionReviewEngine:
     # Grading helpers
     # ------------------------------------------------------------------
 
-    def _grade_entry_quality(
-        self,
-        entry_price: float,
-        target_price: float,
-        stop_price: float,
-    ) -> str:
-        """Assess how close the actual entry was to the ideal entry zone."""
-        if entry_price <= 0 or target_price <= 0:
-            return "FAIR"
-        trade_range = abs(target_price - stop_price)
-        if trade_range == 0:
-            return "FAIR"
-        # Ideal entry is at or below stop + 10% of range
-        ideal_entry_zone = stop_price + trade_range * 0.10
-        deviation = abs(entry_price - ideal_entry_zone) / trade_range
-        if deviation <= _ENTRY_EXCELLENT_THRESHOLD * 10:
+    def _grade_entry_quality(self, mae_pct: float | None) -> str:
+        """Grade the entry on the heat it took, measured live during the hold.
+
+        WHAT THIS REPLACED, AND WHY (2026-11-01)
+        The old grade compared the entry price to an "ideal entry zone" at
+        stop + 10% of the stop-to-target range. But all three of Hokage's
+        entry paths derive BOTH levels from the entry itself:
+
+            stop   = entry * (1 - tsl_percent)
+            target = entry * (1 + tp_percent)
+
+        so the entry price cancels out of the formula completely. Substituting
+        the production 5%/10% geometry:
+
+            deviation = (0.9*tsl - 0.1*tp) / (tsl + tp) = 0.2333
+
+        for a 1-rupee option and a 184,000-rupee one alike — and 0.2333 is
+        past the 0.20 FAIR bound, so the answer was POOR for every trade ever
+        taken. The corpus agrees: 436 of 488 reviews read POOR. The grade was
+        a readout of the risk config, not of the entry.
+
+        The 52 that read otherwise were not better entries. They are records
+        where entry_price and the stop/target it was supposed to have
+        generated had come apart — BROKEN records. Which is why EXCELLENT
+        landed on exactly 5 trades, all 5 of them losses, together -7,721.75,
+        while POOR covered 64 trades worth +40,646.25. This did not merely
+        fail to inform: it pointed backwards, and _generate_lesson forwarded
+        "entry was placed too far from the ideal entry zone" into long-term
+        memory on every winner Hokage has ever had.
+
+        Adverse excursion is the honest measurement, and it was already being
+        taken — the exit ladder writes `trough_price` on every surveillance
+        tick and the exit path already computes MAE% from it for component
+        attribution. It was simply never handed to the review.
+
+        An MAE of exactly 0.00 is kept as a measurement, not discarded: the
+        ladder seeds `trough_price` AT the entry and lowers it on every tick,
+        so zero means "never once traded below entry" for any position the
+        ladder actually saw. It is indistinguishable from a position the
+        ladder never saw at all, which biases very short holds optimistic —
+        the trade-off is accepted because throwing the value away would lose
+        the real zeroes too, and they are the best entries he has.
+
+        A POSITIVE MAE is UNKNOWN, not EXCELLENT. Hokage only buys premium, so
+        the worst point of a hold cannot sit above the entry; 16 of the 110
+        real trades carry one anyway (together -26,671.75, 6% win rate), and
+        grading those EXCELLENT would rebuild the exact bug this replaces.
+        """
+        if mae_pct is None:
+            return UNKNOWN
+        try:
+            mae = float(mae_pct)
+        except (TypeError, ValueError):
+            return UNKNOWN
+        if mae > 0.0:
+            return UNKNOWN
+        if mae >= _ENTRY_MAE_EXCELLENT:
             return "EXCELLENT"
-        elif deviation <= _ENTRY_GOOD_THRESHOLD * 10:
+        if mae >= _ENTRY_MAE_GOOD:
             return "GOOD"
-        elif deviation <= _ENTRY_FAIR_THRESHOLD * 10:
+        if mae >= _ENTRY_MAE_FAIR:
             return "FAIR"
         return "POOR"
 
@@ -225,16 +319,31 @@ class PositionReviewEngine:
 
         The bare "TP" substring is also gone: it matched any reason containing
         those two letters anywhere, which is a false positive waiting to happen.
+        "SL" and "TSL" were the same landmine still armed — "SL" is inside
+        SLIPPAGE, "TSL" inside TSLA, and the thesis-stop reason interpolates
+        the underlying's name into the text — so both are whole-word now.
+
+        A MANDATED exit (EOD square-off, kill switch, commander instant-exit)
+        still reads PREMATURE. That is pinned, not overlooked: whether an exit
+        Hokage was ORDERED to take deserves the word "premature" is the
+        commander's judgement, and renaming it here would be a silent one.
+        See test_eod_squareoff_still_grades_premature.
         """
         reason_upper = exit_reason.upper()
         if "TARGET_HIT" in reason_upper or "TAKE PROFIT" in reason_upper:
             return "ON_TARGET"
         if ("TRAIL_LOCK" in reason_upper or "TRAILING" in reason_upper
-                or "TSL" in reason_upper):
+                or _TSL_TOKEN.search(reason_upper)):
             return "TRAILING"
-        if "STOP" in reason_upper or "SL" in reason_upper:
-            # Differentiate: did it hit stop near target (trailing) or early?
-            if target_price > entry_price and exit_price > entry_price:
+        if "STOP" in reason_upper or _SL_TOKEN.search(reason_upper):
+            # A stop that fired ABOVE the entry is the trailing floor doing its
+            # job, not the entry stop being hit.
+            #
+            # The `target_price > entry_price` term this used to carry as well
+            # was dead weight: every entry path sets target = entry * (1 +
+            # tp_percent), so it is true by construction and never once
+            # changed the answer.
+            if exit_price > entry_price:
                 return "TRAILING"
             return "STOP_HIT"
         # Everything left really did close before either level was reached —
@@ -243,16 +352,45 @@ class PositionReviewEngine:
 
     def _grade_sizing_quality(
         self,
-        position_size_pct: float,
+        chest_fraction_pct: float | None,
         conviction_score: int,
     ) -> str:
-        """Compare position size to conviction score ratio."""
-        if conviction_score <= 0:
-            return "CORRECT"
-        size_per_conviction = position_size_pct / conviction_score * 100.0
-        if size_per_conviction > _SIZING_OVER:
+        """Was the premium committed proportional to the conviction behind it?
+
+        WHY THIS WAS DEAD (2026-11-01)
+        It read `allocation_pct` off the entry record, and only ONE of the
+        three entry paths has ever written that key. The index options path
+        sets it; the MCX Arena path and the manual-entry path do not. So the
+        review fell to its `1.0` default, and 1.0/conviction*100 lands inside
+        the CORRECT band for every conviction Hokage scores. 487 of 488
+        reviews read CORRECT, 1 read OVERSIZED. The grade was a constant, and
+        it was a constant computed from a number nobody had measured.
+
+        The denominator is now the strategy's own war chest, recorded at entry
+        by every path, because that is the denominator the risk cap is already
+        written in: MAX_PREMIUM_CHEST_FRACTION caps one position's premium at
+        33% of its chest. Entitlement scales with conviction, and the grade is
+        where the trade actually sat against its own entitlement.
+
+        None stays UNKNOWN. Inventing a size for a trade that never recorded
+        one is precisely what made this grade useless, and the lesson built on
+        it goes to long-term memory.
+        """
+        if chest_fraction_pct is None:
+            return UNKNOWN
+        try:
+            used = float(chest_fraction_pct)
+        except (TypeError, ValueError):
+            return UNKNOWN
+        if used <= 0.0 or conviction_score <= 0:
+            return UNKNOWN
+        entitled = MAX_PREMIUM_CHEST_FRACTION * 100.0 * (conviction_score / 100.0)
+        if entitled <= 0.0:
+            return UNKNOWN
+        ratio = used / entitled
+        if ratio > _SIZING_OVER_MULT:
             return "OVERSIZED"
-        elif size_per_conviction < _SIZING_UNDER:
+        if ratio < _SIZING_UNDER_MULT:
             return "UNDERSIZED"
         return "CORRECT"
 
@@ -321,8 +459,21 @@ class PositionReviewEngine:
             f"conviction={conviction_score})."
         ]
 
-        if entry_quality in ("FAIR", "POOR"):
-            parts.append("Entry quality was suboptimal — entry was placed too far from the ideal entry zone.")
+        # UNKNOWN is deliberately absent from every test below. A grade that
+        # could not be computed must produce no sentence at all: this text is
+        # forwarded to long-term memory, where a guess is indelible.
+        if entry_quality == "POOR":
+            parts.append(
+                "Entry took heavy heat — the position ran more than 15% "
+                "against itself before this exit, which is the worst band in "
+                "Hokage's record and has never yet produced a win."
+            )
+        if entry_quality == "FAIR":
+            parts.append(
+                "Entry took real heat — the position ran 8-15% against itself "
+                "during the hold. Consider waiting for confirmation before "
+                "committing premium on similar setups."
+            )
         if exit_quality == "PREMATURE":
             parts.append("Exit was premature — trade closed before stop or target triggered.")
         if exit_quality == "STOP_HIT" and pnl < 0:

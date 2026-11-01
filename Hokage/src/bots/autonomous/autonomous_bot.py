@@ -648,6 +648,59 @@ class AutonomousTradingBot:
         from bots.strategy.portfolio import STRATEGY_STARTING_CAPITAL
         return STRATEGY_STARTING_CAPITAL
 
+    def _strategy_chest_size(self, strategy_id: str) -> float | None:
+        """Full war chest for one strategy (starting + realized), or None.
+
+        The denominator the premium cap is written in: MAX_PREMIUM_CHEST_FRACTION
+        caps a single position at 33% of THIS number.
+        `_strategy_available_capital` returns what is LEFT after open positions,
+        which is a moving target — the same trade would score differently
+        depending on what else happened to be open at the time.
+
+        None, never a default. `_strategy_available_capital` falls through to
+        STRATEGY_STARTING_CAPITAL for an id it does not recognise, which is the
+        fallback that hands an unresolvable strategy a full fresh chest; a
+        post-trade GRADE must say "unknown" rather than inherit that.
+        """
+        if not strategy_id:
+            return None
+        try:
+            deployed = self.strategy_deployed_capital()
+            portfolio_mgr = self._portfolio_manager_for_strategy(str(strategy_id))
+            for row in portfolio_mgr.get_capital_report(deployed):
+                if row["strategy_id"] == strategy_id:
+                    chest = float(row["starting_capital"]) + float(row["realized_pnl"])
+                    return chest if chest > 0 else None
+        except Exception as exc:
+            logger.debug(
+                "Could not resolve the war chest for %s: %s", strategy_id, exc
+            )
+        return None
+
+    def _chest_fraction_pct(
+        self,
+        strategy_id: str,
+        entry_price: float,
+        quantity: float,
+    ) -> float | None:
+        """Premium committed at entry as a percentage of the strategy's chest.
+
+        Frozen into the entry record because it is only knowable AT entry: the
+        chest moves with every realized exit, so asking this question after the
+        fact answers a different question. Stamped by all three entry paths —
+        index, MCX Arena and manual — so the sizing grade means one thing.
+        """
+        chest = self._strategy_chest_size(strategy_id)
+        if not chest or chest <= 0:
+            return None
+        try:
+            cost = float(entry_price) * float(quantity)
+        except (TypeError, ValueError):
+            return None
+        if cost <= 0:
+            return None
+        return round(cost / chest * 100.0, 4)
+
 
     def start(self) -> None:
         """Start the background autonomous thread."""
@@ -3351,6 +3404,12 @@ class AutonomousTradingBot:
             "target_price": tracked_entry_price * (1.0 + self.tp_percent),
             "decision_id": f"manual-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
             "strategy_id": manual_strategy_id,
+            # What the sizing grade is measured against. See
+            # _chest_fraction_pct: this path never recorded a size at all, so
+            # the review fabricated one and graded every manual trade CORRECT.
+            "chest_fraction_pct": self._chest_fraction_pct(
+                manual_strategy_id, tracked_entry_price, qty_filled
+            ),
             "side": side.value,
             "quantity": float(qty_filled),
             "venue_id": venue.venue_id,
@@ -4595,6 +4654,11 @@ class AutonomousTradingBot:
                     stored_target_price  = entry_meta.get("target_price", pos.average_price * 1.10)
                     stored_conviction    = entry_meta.get("conviction_score", 75)
                     stored_alloc_pct     = entry_meta.get("allocation_pct", 1.0)
+                    # No default. A missing size must reach the review as None
+                    # so the sizing grade can say UNKNOWN; the 1.0 above is
+                    # what made it answer CORRECT for every MCX and manual
+                    # trade ever taken.
+                    stored_chest_pct     = entry_meta.get("chest_fraction_pct")
                     stored_sector        = entry_meta.get("sector", self.portfolio_intel.symbol_sectors.get(symbol.upper(), "other"))
                     stored_personality   = entry_meta.get("personality_mode", "BALANCED")
                     stored_sector_flow   = entry_meta.get("sector_flow", "N/A")
@@ -4760,6 +4824,7 @@ class AutonomousTradingBot:
                         _target_price=stored_target_price,
                         _conviction=stored_conviction,
                         _alloc_pct=stored_alloc_pct,
+                        _chest_pct=stored_chest_pct,
                         _exit_reason=exit_reason,
                         _pnl=live_pnl,
                         _return_pct=return_pct,
@@ -4782,7 +4847,12 @@ class AutonomousTradingBot:
                                 stop_price=_stop_price,
                                 target_price=_target_price,
                                 conviction_score=_conviction,
-                                position_size_pct=_alloc_pct,
+                                # The chest fraction, not allocation_pct: see
+                                # the note where chest_fraction_pct is stamped.
+                                position_size_pct=_chest_pct,
+                                # The heat this hold actually took. Entry
+                                # quality is graded on this and nothing else.
+                                mae_pct=_mae_pct,
                                 holding_days=_held_days,
                                 holding_seconds=_held_seconds,
                                 exit_reason=_exit_reason,
@@ -5536,6 +5606,13 @@ class AutonomousTradingBot:
                 "decision_id": f"mcx-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
                 "strategy_id": selected_sid,
                 "conviction_score": int(win_conf),
+                # What the sizing grade is measured against. See
+                # _chest_fraction_pct: this path never recorded a size at all,
+                # so the review fabricated one and graded every commodity
+                # trade CORRECT.
+                "chest_fraction_pct": self._chest_fraction_pct(
+                    selected_sid, tracked_entry_price, qty_filled
+                ),
                 "side": side.value,
                 "quantity": float(qty_filled),
                 "venue_id": venue.venue_id,
@@ -6902,6 +6979,15 @@ class AutonomousTradingBot:
                     "strategy_id": selected_sid,
                     "conviction_score": int(committee_decision.decision_confidence),
                     "allocation_pct": alloc_pct,
+                    # NOT allocation_pct. That is a percentage of TOTAL
+                    # capital, this is a percentage of the strategy's own war
+                    # chest, and only the second one shares a denominator with
+                    # the premium cap the router enforces. Grading one trade in
+                    # each unit under a single field name is how sizing came to
+                    # read CORRECT 487 times out of 488.
+                    "chest_fraction_pct": self._chest_fraction_pct(
+                        selected_sid, tracked_entry_price, qty_filled
+                    ),
                     "sector": symbol_sec,
                     "personality_mode": personality_profile.get("active_mode", "BALANCED"),
                     "sector_flow": sector_rotation_dir,
