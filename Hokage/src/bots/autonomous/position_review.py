@@ -117,6 +117,26 @@ _SIZING_UNDER_MULT  = 0.5
 _SL_TOKEN  = re.compile(r"\bSL\b")
 _TSL_TOKEN = re.compile(r"\bTSL\b")
 
+#: Exits Hokage was ORDERED to take. The full vocabulary, read off the five
+#: places that can emit one rather than guessed:
+#:
+#:   "Time-Based Square-Off (EOD)"        rung 2 of _check_exit_conditions
+#:   "Manual Kill Switch Activated"       rung 1
+#:   "Commander instant-exit (hard sell)" rung 0, the default label
+#:   "MANUAL_KILL_SWITCH"                 _close_all_positions
+#:   "MANUAL_CLOSE_ALL"                   _close_all_positions
+#:
+#: All three rungs outrank every rung of the option ladder, so when one of
+#: these labels is on a record it IS the whole story — which is why this is
+#: tested first.
+_MANDATED_TOKENS = (
+    "SQUARE-OFF", "SQUARE OFF", "EOD",
+    "KILL SWITCH", "KILL_SWITCH",
+    "CLOSE_ALL", "CLOSE ALL",
+    "INSTANT-EXIT", "INSTANT EXIT",
+    "COMMANDER", "MANUAL",
+)
+
 
 def _format_hold(holding_days: int, holding_seconds: float | None) -> str:
     """Render the hold the way it was actually held.
@@ -363,13 +383,29 @@ class PositionReviewEngine:
         SLIPPAGE, "TSL" inside TSLA, and the thesis-stop reason interpolates
         the underlying's name into the text — so both are whole-word now.
 
-        A MANDATED exit (EOD square-off, kill switch, commander instant-exit)
-        still reads PREMATURE. That is pinned, not overlooked: whether an exit
-        Hokage was ORDERED to take deserves the word "premature" is the
-        commander's judgement, and renaming it here would be a silent one.
-        See test_eod_squareoff_still_grades_premature.
+        MANDATED, on the commander's word 2026-11-01. An EOD square-off, a
+        kill switch and a commander instant-exit are exits Hokage was ORDERED
+        to take, and calling them PREMATURE blamed the strategy for obeying a
+        hard rule — then told long-term memory the trade "closed before stop or
+        target triggered", which is true and is not the strategy's doing. 8 of
+        the 110 real trades are EOD square-offs.
+
+        It carries a second fact that matters more than the wording: a mandated
+        exit means the strategy's own geometry NEVER RESOLVED. The trade is not
+        evidence for or against the setup, and the lesson now says so.
+
+        AND THE FALLBACK IS NO LONGER A VERDICT. With MANDATED split out,
+        every reason this ladder can actually emit is classified, so anything
+        reaching the end is a string this matcher does not recognise — which
+        is not the same fact as "the trade closed early". Defaulting that to
+        the worst available grade is the bug this function has already been
+        fixed for twice (the English paraphrases in 2026-08, the bare "TP" and
+        "SL" substrings after). It reads UNKNOWN now, and the lesson stays
+        silent rather than inventing a verdict about an exit nobody can name.
         """
         reason_upper = exit_reason.upper()
+        if any(token in reason_upper for token in _MANDATED_TOKENS):
+            return "MANDATED"
         if "TARGET_HIT" in reason_upper or "TAKE PROFIT" in reason_upper:
             return "ON_TARGET"
         if ("TRAIL_LOCK" in reason_upper or "TRAILING" in reason_upper
@@ -386,9 +422,9 @@ class PositionReviewEngine:
             if exit_price > entry_price:
                 return "TRAILING"
             return "STOP_HIT"
-        # Everything left really did close before either level was reached —
-        # an EOD square-off, a kill switch, or a manual exit.
-        return "PREMATURE"
+        # Nothing left to recognise. See the UNKNOWN note in the docstring:
+        # an unrecognised reason is not a premature exit.
+        return UNKNOWN
 
     def _grade_sizing_quality(
         self,
@@ -580,6 +616,13 @@ class PositionReviewEngine:
                 "Entry took real heat — the position ran 8-15% against itself "
                 "during the hold. Consider waiting for confirmation before "
                 "committing premium on similar setups."
+            )
+        if exit_quality == "MANDATED":
+            parts.append(
+                "Exit was mandated — a square-off, kill switch or commander "
+                "instant-exit closed this, not the strategy's own stop or "
+                "target. The setup never resolved, so this trade is not "
+                "evidence for or against it."
             )
         if exit_quality == "PREMATURE":
             parts.append("Exit was premature — trade closed before stop or target triggered.")

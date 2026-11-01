@@ -47,6 +47,21 @@ stored ratio is blanked to 0.0 - the value this engine already treats as
 UNMEASURABLE, which keeps the field a float and makes the lesson drop its R:R
 clause instead of restating a number measured against the wrong base.
 
+WHY (mandated exits, 2026-11-01, on the commander's word)
+An EOD square-off, a kill switch and a commander instant-exit are exits Hokage
+was ORDERED to take. All five graded PREMATURE, and the lesson said the trade
+"closed before stop or target triggered" - true, and not the strategy's doing.
+Those ARE recoverable: the reason is in the autopsy, so the join flips them to
+MANDATED and rewrites the lesson.
+
+A STORED "PREMATURE" ON A ROW WHOSE REASON CANNOT BE RECOVERED IS BLANKED.
+PREMATURE is no longer an output the engine can produce: it was carrying two
+different facts at once - "ordered to exit" and "reason not recognised" - and
+with MANDATED split out and UNKNOWN as the fallback, neither of them is
+spelled that way any more. Without the reason there is no telling which one a
+stored PREMATURE meant, so it becomes UNKNOWN, and the sentence it generated
+is stripped.
+
 WHAT IT CAN AND CANNOT REPAIR
 The review record does NOT store the exit reason, so the grade cannot be
 recomputed from the review alone. The reason lives in the autopsy record, and
@@ -78,6 +93,8 @@ SAFETY
   * Only exit_quality, entry_quality, sizing_quality, stop_quality,
     risk_reward_achieved and lesson are touched; every other field is
     preserved byte-for-byte.
+  * A stored PREMATURE is blanked to UNKNOWN only where the exit reason could
+    not be recovered. Where it could, the row is regraded properly instead.
   * --sizing-only / --no-sizing scope the blanking of sizing AND stop, which
     touches far more rows than the other two and is the one change that
     REMOVES a value instead of correcting it.
@@ -136,6 +153,10 @@ _DEAD_CLAUSES = (
     "volatile sessions.",
     " Stop was too wide \u2014 poor risk management, exceeding normal "
     "risk-per-trade tolerance.",
+    # Emitted by a matcher whose PREMATURE meant "ordered to exit" OR "reason
+    # not recognised". Neither is "closed before stop or target triggered" as
+    # a criticism of the strategy.
+    " Exit was premature \u2014 trade closed before stop or target triggered.",
 )
 
 #: The R:R clauses carry their own number, so they are matched by prefix and
@@ -299,6 +320,13 @@ def main() -> int:
                     skipped_no_mae += 1
                 else:
                     new_entry = engine._grade_entry_quality(mae)
+
+        # See the docstring: PREMATURE conflated "ordered to exit" with "reason
+        # not recognised", and the engine no longer emits it under either
+        # meaning. Where the reason was recovered the line above has already
+        # replaced it; where it was not, there is nothing left to say.
+        if do_grades and new_exit == "PREMATURE":
+            new_exit = UNKNOWN
 
         # No excursion to grade from means the stored entry grade CANNOT be
         # kept. It was produced by a formula the entry price cancelled out of,

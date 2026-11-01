@@ -98,13 +98,19 @@ class PositionReview:
 
     decision_id:          str   # Links to DecisionJournal entry
     symbol:               str
-    # UNKNOWN is a legal value for entry_quality, sizing_quality and
-    # stop_quality, and it means the input the grade needs was never recorded
+    # UNKNOWN is a legal value for every grade below, and it means the input
+    # the grade needs was never recorded or could not be recognised
     # — not that the trade was average. Readers must skip it, never bucket it.
     # See position_review._grade_entry_quality / _grade_sizing_quality /
     # _grade_stop_quality.
     entry_quality:        str   # EXCELLENT / GOOD / FAIR / POOR / UNKNOWN
-    exit_quality:         str   # ON_TARGET / STOP_HIT / PREMATURE / TRAILING
+    # MANDATED means the exit was ORDERED — EOD square-off, kill switch or
+    # commander instant-exit — so the strategy's geometry never resolved and
+    # the trade is not evidence about the setup. PREMATURE is retained only
+    # for records written before 2026-11-01, when it was also the fallback for
+    # a reason the matcher did not recognise; that fallback is UNKNOWN now.
+    exit_quality:         str   # ON_TARGET / STOP_HIT / TRAILING / MANDATED
+                                # / UNKNOWN  (PREMATURE: legacy records only)
     sizing_quality:       str   # OVERSIZED / CORRECT / UNDERSIZED / UNKNOWN
     stop_quality:         str   # TIGHT / CORRECT / WIDE / UNKNOWN
     # Reward at exit over the risk WHICHEVER STOP BITES FIRST accepted, as an

@@ -10,7 +10,7 @@ exit ladder has never emitted. Production emits TOKENS. Across every exit in
 Hokage's history:
 
     Underlying Thesis Stop   26   STOP_HIT    matched by luck, "Stop"
-    EOD                      18   PREMATURE   fair
+    EOD                      18   PREMATURE   WRONG too, it is MANDATED (2026-11-01)
     TARGET_HIT               15   PREMATURE   WRONG, it is ON_TARGET
     Option Hard Backstop     12   STOP_HIT    matched, "stop" in "Backstop"
     TRAIL_LOCK                9   PREMATURE   WRONG, it is TRAILING
@@ -67,12 +67,14 @@ def test_option_hard_backstop_is_a_stop(engine):
                   exit_price=380.0, entry=429.70) == "STOP_HIT"
 
 
-def test_eod_squareoff_still_grades_premature(engine):
-    """Deliberately unchanged. An EOD square-off really did close before either
-    level was reached; whether a MANDATED exit deserves the word "premature" is
-    a judgement for the commander, not a silent rename."""
+def test_eod_squareoff_is_mandated(engine):
+    """The judgement this test used to reserve for the commander. He gave it on
+    2026-11-01: an exit Hokage was ORDERED to take is MANDATED, not premature.
+    8 of the 110 real trades are EOD square-offs."""
     assert _grade(engine, "EOD square-off at 15:20 IST",
-                  exit_price=435.0) == "PREMATURE"
+                  exit_price=435.0) == "MANDATED"
+    assert _grade(engine, "Time-Based Square-Off (EOD)",
+                  exit_price=435.0) == "MANDATED"
 
 
 # ------------------------------------------------------------ ordering matters
@@ -93,14 +95,16 @@ def test_english_phrases_are_still_honoured(engine):
     rather than swapping one guess for another."""
     assert _grade(engine, "Take Profit Triggered") == "ON_TARGET"
     assert _grade(engine, "Trailing Stop-Loss Triggered", exit_price=440.0) == "TRAILING"
-    assert _grade(engine, "Manual Exit", exit_price=440.0) == "PREMATURE"
+    # "Manual Exit" is a commander action, so it is MANDATED now, not
+    # premature. The vocabulary is still honoured; the verdict changed.
+    assert _grade(engine, "Manual Exit", exit_price=440.0) == "MANDATED"
 
 
 def test_a_bare_tp_no_longer_false_matches(engine):
     """The old matcher accepted "TP" anywhere in the string, so any reason
     containing those two letters graded as a target hit."""
     assert _grade(engine, "HTTP timeout while fetching quote",
-                  exit_price=440.0) == "PREMATURE"
+                  exit_price=440.0) == "UNKNOWN"
 
 
 def test_a_bare_sl_no_longer_false_matches(engine):
@@ -108,14 +112,14 @@ def test_a_bare_sl_no_longer_false_matches(engine):
     a bare substring, so it matched SLIPPAGE and graded a quote problem as a
     stop loss. Whole-word now."""
     assert _grade(engine, "SLIPPAGE guard tripped on the exit quote",
-                  exit_price=380.0, entry=429.70) == "PREMATURE"
+                  exit_price=380.0, entry=429.70) == "UNKNOWN"
 
 
 def test_a_bare_tsl_no_longer_false_matches(engine):
     """"TSL" matched TSLA, and the thesis-stop reason interpolates the
     underlying's own name into its text."""
     assert _grade(engine, "Position closed on the TSLA correlation cap",
-                  exit_price=440.0) == "PREMATURE"
+                  exit_price=440.0) == "UNKNOWN"
 
 
 def test_the_whole_words_themselves_still_match(engine):

@@ -70,7 +70,8 @@ def test_review_contains_symbol(engine):
 def test_review_contains_all_quality_fields(engine):
     r = _review(engine)
     assert r.entry_quality in ("EXCELLENT", "GOOD", "FAIR", "POOR", "UNKNOWN")
-    assert r.exit_quality in ("ON_TARGET", "STOP_HIT", "PREMATURE", "TRAILING")
+    assert r.exit_quality in (
+        "ON_TARGET", "STOP_HIT", "TRAILING", "MANDATED", "UNKNOWN")
     assert r.sizing_quality in ("OVERSIZED", "CORRECT", "UNDERSIZED", "UNKNOWN")
     assert r.stop_quality in ("TIGHT", "CORRECT", "WIDE", "UNKNOWN")
 
@@ -116,9 +117,15 @@ def test_exit_quality_trailing(engine):
     assert r.exit_quality == "TRAILING"
 
 
-def test_exit_quality_premature(engine):
+def test_exit_quality_mandated(engine):
     r = _review(engine, exit_reason="Manual Exit", exit_price=190.0)
-    assert r.exit_quality == "PREMATURE"
+    assert r.exit_quality == "MANDATED"
+
+
+def test_exit_quality_unknown_for_a_reason_nobody_can_name(engine):
+    """Not PREMATURE. An unrecognised string is not an early exit."""
+    r = _review(engine, exit_reason="venue returned 503", exit_price=190.0)
+    assert r.exit_quality == "UNKNOWN"
 
 
 # ---------------------------------------------------------------------------
