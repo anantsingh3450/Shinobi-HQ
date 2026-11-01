@@ -28,6 +28,15 @@ sizing is set to UNKNOWN rather than repaired. That is not a guess — every
 historical value provably came from a fabricated or wrongly-denominated input,
 and UNKNOWN is the only true statement left about it.
 
+WHY (stop quality, 2026-11-01)
+Same shape. It measured the distance from entry to `stop_price`, which on a
+bought option is the TRAIL_LOCK profit floor and cannot fire below entry - so
+it graded a number that stops nothing. After 9f0d6f4 froze the input it was a
+constant as well: entry * (1 - tsl_percent) on every path, distance 0.05,
+inside the old 0.03 .. 0.10 band, CORRECT always. It now reads `_risk_pct_for`,
+which needs the underlying ATR at entry, and NOTHING on disk recorded that. So
+stop is blanked to UNKNOWN for the same reason as sizing.
+
 WHAT IT CAN AND CANNOT REPAIR
 The review record does NOT store the exit reason, so the grade cannot be
 recomputed from the review alone. The reason lives in the autopsy record, and
@@ -49,18 +58,18 @@ looks like evidence.
 A trade_id whose autopsies disagree about the exit reason, or about the
 excursion, is also skipped, for the same reason.
 
-Sizing is the exception: it needs no join, because the answer is UNKNOWN for
-every row regardless of what is on it.
+Sizing and stop are the exception: they need no join, because the answer is
+UNKNOWN for every row regardless of what is on it.
 
 SAFETY
   * Dry run by default. --apply is required to write.
   * Timestamped backup taken before any write.
   * Atomic replace, so an interrupted run cannot truncate the corpus.
-  * Only exit_quality, entry_quality, sizing_quality and lesson are touched;
-    every other field is preserved byte-for-byte from the original record.
-  * --sizing-only / --no-sizing scope the sizing blanking, which touches far
-    more rows than the other two and is the one change that REMOVES a value
-    instead of correcting it.
+  * Only exit_quality, entry_quality, sizing_quality, stop_quality and lesson
+    are touched; every other field is preserved byte-for-byte.
+  * --sizing-only / --no-sizing scope the blanking of sizing AND stop, which
+    touches far more rows than the other two and is the one change that
+    REMOVES a value instead of correcting it.
   * STOP HOKAGE FIRST. He appends to this file when a position closes, and a
     rewrite racing an append loses the append.
 
@@ -112,6 +121,10 @@ _DEAD_CLAUSES = (
     "on similar setups.",
     " Position was undersized relative to conviction \u2014 review sizing "
     "model calibration.",
+    " Stop was placed too tightly \u2014 increased risk of stop hunting on "
+    "volatile sessions.",
+    " Stop was too wide \u2014 poor risk management, exceeding normal "
+    "risk-per-trade tolerance.",
 )
 
 #: The original lesson embeds the conviction score; the review record does not
@@ -240,6 +253,7 @@ def main() -> int:
         old_exit = row.get("exit_quality")
         old_entry = row.get("entry_quality")
         old_sizing = row.get("sizing_quality")
+        old_stop = row.get("stop_quality")
         new_exit, new_entry = old_exit, old_entry
 
         if do_grades:
@@ -275,9 +289,14 @@ def main() -> int:
         # TOTAL capital that shares no denominator with the premium cap the
         # grade is now written in. Neither is recoverable, so the only true
         # statement left is that it is not known.
+        # Stop is the same story: it measured a distance to the TRAIL_LOCK
+        # profit floor, and the underlying ATR the real grade needs was never
+        # written to any record. Nothing to recompute from.
         new_sizing = UNKNOWN if do_sizing else old_sizing
+        new_stop = UNKNOWN if do_sizing else old_stop
 
-        if (new_exit, new_entry, new_sizing) == (old_exit, old_entry, old_sizing):
+        if (new_exit, new_entry, new_sizing, new_stop) == (
+                old_exit, old_entry, old_sizing, old_stop):
             out.append(row)
             continue
 
@@ -293,12 +312,13 @@ def main() -> int:
         fixed["exit_quality"] = new_exit
         fixed["entry_quality"] = new_entry
         fixed["sizing_quality"] = new_sizing
+        fixed["stop_quality"] = new_stop
         fixed["lesson"] = engine._generate_lesson(
             symbol=row.get("symbol", "?"),
             entry_quality=new_entry,
             exit_quality=new_exit,
             sizing_quality=new_sizing,
-            stop_quality=row.get("stop_quality", "CORRECT"),
+            stop_quality=new_stop,
             rr_achieved=rr,
             pnl=float(row.get("pnl") or 0.0),
             holding_days=int(row.get("holding_days") or 0),
@@ -309,6 +329,7 @@ def main() -> int:
             "entry_quality": old_entry,
             "exit_quality": old_exit,
             "sizing_quality": old_sizing,
+            "stop_quality": old_stop,
         }
         out.append(fixed)
         # `_forward_lesson` keys memory events exactly this way. An id-less
@@ -328,6 +349,8 @@ def main() -> int:
             tally[("entry", old_entry, new_entry)] += 1
         if new_sizing != old_sizing:
             tally[("sizing", old_sizing, new_sizing)] += 1
+        if new_stop != old_stop:
+            tally[("stop", old_stop, new_stop)] += 1
 
     print("=" * 72)
     print("  REGRADE POSITION REVIEWS" + ("  [APPLY]" if apply else "  [dry run]"))

@@ -7,7 +7,7 @@ Reviews:
     - Entry quality  : How much heat did the hold take after the entry?
     - Exit quality   : TSL / TP / Premature / Trailing?
     - Sizing quality : Was the premium committed calibrated to conviction?
-    - Stop quality   : Was stop too tight, correct, or too wide?
+    - Stop quality   : Was the risk accepted sized to the noise he trades in?
     - Lesson         : Auto-generated structured lesson text
 
 A GRADE MUST BE ABLE TO SAY IT DOES NOT KNOW. Two of these four were constants
@@ -69,8 +69,37 @@ _ENTRY_MAE_EXCELLENT = -3.0
 _ENTRY_MAE_GOOD      = -8.0
 _ENTRY_MAE_FAIR      = -15.0
 
-_STOP_TIGHT_RATIO   = 0.03   # stop < 3% from entry
-_STOP_WIDE_RATIO    = 0.10   # stop > 10% from entry
+#: Stop quality is graded on the fraction of premium the position ACTUALLY
+#: risked — `_risk_pct_for`, min(premium backstop, ATR thesis stop) — not on a
+#: distance to `stop_price`, which for a bought option is the TRAIL_LOCK profit
+#: floor and stops nothing (see _grade_stop_quality).
+#:
+#: Both bounds are cut on his own tape, and deliberately on the two populations
+#: that are NOT circular. Judging a stop by how far trades ran against
+#: themselves would be circular for every trade the stop truncated, so:
+#:
+#: TIGHT is read off the heat his WINNERS took — noise the stop had to SURVIVE,
+#: which the stop did not cause. Over the 47 valid winners on 2026-11-01:
+#:
+#:     a stop at  3%  would have killed 13 of 47 winners  (27.7%)
+#:     a stop at  5%  would have killed  8 of 47           (17.0%)
+#:     a stop at  7%  would have killed  4 of 47           ( 8.5%)
+#:     a stop at 12%  would have killed  0 of 47
+#:
+#: 7.04% is the winners' p90 heat: below it, more than one winner in ten was
+#: carrying adverse movement the stop would have cut off. The old 0.03 was the
+#: right idea in the wrong unit — it is a third of the way inside his noise.
+#:
+#: WIDE is read off where his LOSERS actually resolved, because a stop beyond
+#: that never gets a chance to act. Over the same 47 losers: p50 8.90%,
+#: p90 17.01%, p95 22.11%, max 28.36%. Past 17% a stop is further out than 9
+#: of 10 of his realised losses ever reached.
+#:
+#: GRADING bounds. They change no order, no size, no stop and no gate — the
+#: real stops are _OPTION_BACKSTOP_TIERS and the ATR thesis multiple, and
+#: neither is touched here. In-sample, like the entry bands.
+_STOP_TIGHT_RATIO   = 0.07   # risk < 7% of premium = inside his own noise
+_STOP_WIDE_RATIO    = 0.17   # risk > 17% of premium = past where losses land
 
 #: Sizing is graded against the cap the options router already enforces —
 #: MAX_PREMIUM_CHEST_FRACTION, one position's premium against its strategy's
@@ -159,6 +188,7 @@ class PositionReviewEngine:
         return_pct: float = 0.0,
         holding_seconds: float | None = None,
         mae_pct: float | None = None,
+        risk_pct: float | None = None,
     ) -> PositionReview:
         """Generate a PositionReview for a closed trade.
 
@@ -166,8 +196,10 @@ class PositionReviewEngine:
         of that strategy's war chest — the denominator the premium cap is
         already written in. `mae_pct` is the worst unrealized move against the
         position during the hold, in percent of entry, recorded live by the
-        exit ladder. Both accept None, meaning the entry record never carried
-        the fact; the grade that needs it then reads UNKNOWN.
+        exit ladder. `risk_pct` is the fraction of premium the position
+        actually risked, frozen at entry by `_risk_pct_for`. All three accept
+        None, meaning the entry record never carried the fact; the grade that
+        needs it then reads UNKNOWN.
 
         Returns a frozen PositionReview dataclass and persists to disk.
         Lesson is forwarded to MemoryManager if available.
@@ -175,7 +207,7 @@ class PositionReviewEngine:
         entry_quality  = self._grade_entry_quality(mae_pct)
         exit_quality   = self._grade_exit_quality(exit_reason, exit_price, target_price, stop_price, entry_price)
         sizing_quality = self._grade_sizing_quality(position_size_pct, conviction_score)
-        stop_quality   = self._grade_stop_quality(entry_price, stop_price)
+        stop_quality   = self._grade_stop_quality(risk_pct)
         rr_measured    = self._compute_rr_achieved(entry_price, exit_price, stop_price)
         # The dataclass field stays a float so the JSONL stays valid JSON and
         # every existing reader keeps working; the lesson and the log line are
@@ -394,14 +426,50 @@ class PositionReviewEngine:
             return "UNDERSIZED"
         return "CORRECT"
 
-    def _grade_stop_quality(self, entry_price: float, stop_price: float) -> str:
-        """Grade stop placement relative to entry distance."""
-        if entry_price <= 0 or stop_price <= 0:
-            return "CORRECT"
-        stop_distance = abs(entry_price - stop_price) / entry_price
-        if stop_distance < _STOP_TIGHT_RATIO:
+    def _grade_stop_quality(self, risk_pct: float | None) -> str:
+        """Was the risk accepted sized to the noise this instrument produces?
+
+        WHAT THIS REPLACED, AND WHY (2026-11-01)
+        It measured the distance from entry to `stop_price`, and for a BOUGHT
+        option `stop_price` is not a stop. It is the TRAIL_LOCK profit floor:
+        rung 4 only arms once the peak clears entry * (1 + TRAIL_ARM_PCT), and
+        the floor it then sets is max(trail_floor, entry) — never below entry.
+        The value sitting in that field before arming is a seed that can never
+        fire. The grade was reading a number that cannot stop anything.
+
+        It was also a CONSTANT, and it became one as a side effect of the R:R
+        fix (9f0d6f4). Freezing `initial_stop_price` made the input exactly
+        entry * (1 - tsl_percent) on every path, so the distance was
+        tsl_percent = 0.05 for every trade, which sits inside the old
+        0.03 .. 0.10 band: CORRECT, always. The 20 TIGHT and 22 WIDE in the
+        corpus are all pre-fix records that read the live ratcheting floor —
+        which is why 14 of his 48 winners were filed TIGHT, the same
+        winners-only bias that fix was written to remove.
+
+        And the unit was wrong, which is what the commander flagged: 3% and
+        10% were calibrated for moves in an UNDERLYING and applied to option
+        PREMIUM, where 3% is routine tick noise.
+
+        The real risk is whichever stop bites first — the tiered premium
+        backstop or the ATR thesis stop on the underlying — and production
+        already computes exactly that in `_risk_pct_for`, validated against
+        real fills (it predicts ~4.1% for NATURALGAS where thesis exits landed
+        at 2.9-5.3%). It is now frozen at entry and read here.
+
+        UNKNOWN, not CORRECT, when it was never recorded. The old fallback
+        asserted the stop was right while admitting it could not see it.
+        """
+        if risk_pct is None:
+            return UNKNOWN
+        try:
+            risk = float(risk_pct)
+        except (TypeError, ValueError):
+            return UNKNOWN
+        if risk <= 0.0:
+            return UNKNOWN
+        if risk < _STOP_TIGHT_RATIO:
             return "TIGHT"
-        elif stop_distance > _STOP_WIDE_RATIO:
+        if risk > _STOP_WIDE_RATIO:
             return "WIDE"
         return "CORRECT"
 
@@ -483,9 +551,18 @@ class PositionReviewEngine:
         if sizing_quality == "UNDERSIZED":
             parts.append("Position was undersized relative to conviction — review sizing model calibration.")
         if stop_quality == "TIGHT":
-            parts.append("Stop was placed too tightly — increased risk of stop hunting on volatile sessions.")
+            parts.append(
+                "The risk accepted was inside this market's own noise — adverse "
+                "movement of this size has been survived by more than one in "
+                "ten of Hokage's winners, so a stop here gets taken out by "
+                "fluctuation rather than by the thesis failing."
+            )
         if stop_quality == "WIDE":
-            parts.append("Stop was too wide — poor risk management, exceeding normal risk-per-trade tolerance.")
+            parts.append(
+                "The risk accepted was further out than 9 of 10 realised losses "
+                "ever reach, so it was not protecting the position — review the "
+                "premium backstop tier and the ATR thesis multiple."
+            )
         # Both clauses stay silent when R:R is unmeasurable. Saying "Low R:R
         # of 0.00 despite profit - tighten target" to a trade that hit its
         # target is worse than saying nothing, and these lessons are forwarded

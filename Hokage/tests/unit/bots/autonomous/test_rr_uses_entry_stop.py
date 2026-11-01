@@ -37,22 +37,31 @@ def engine(tmp_path):
     return PositionReviewEngine(brain_root=tmp_path)
 
 
-def _review(engine, stop):
-    return engine.review_trade(
+def _review(engine, stop, **kwargs):
+    defaults = dict(
         symbol="GOLDM26NOV141000PE", entry_price=ENTRY, exit_price=EXIT,
         stop_price=stop, target_price=TARGET, conviction_score=59,
         position_size_pct=2.0, holding_days=0,
         exit_reason="TARGET_HIT: premium 3586.00 reached adaptive target",
         pnl=4335.0, decision_id="mcx-20261030113054", return_pct=0.1375,
     )
+    defaults.update(kwargs)
+    return engine.review_trade(**defaults)
 
 
 # ------------------------------------------------- the trade, measured right
 def test_the_real_trade_scores_its_real_ratio(engine):
     r = _review(engine, ENTRY_STOP)
     assert r.risk_reward_achieved == pytest.approx(2.75, abs=0.01)
-    assert r.stop_quality == "CORRECT"      # 5.0% away, not TIGHT
+    # The stop GRADE no longer reads this field at all. It said CORRECT here
+    # because 2994.875 is 5.0% from entry — but that 5% was never the stop:
+    # it is the seed of the TRAIL_LOCK profit floor, which cannot fire below
+    # entry. The grade now reads the risk frozen at entry and says UNKNOWN
+    # when, as here, the caller does not supply it. See
+    # _grade_stop_quality and test_stop_grade_reads_the_real_risk.py.
+    assert r.stop_quality == "UNKNOWN"
     assert "too tightly" not in r.lesson
+    assert "noise" not in r.lesson
     assert "Low R:R" not in r.lesson
     assert "Excellent R:R achieved: 2.75" in r.lesson
 

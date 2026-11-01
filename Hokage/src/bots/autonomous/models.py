@@ -98,14 +98,15 @@ class PositionReview:
 
     decision_id:          str   # Links to DecisionJournal entry
     symbol:               str
-    # UNKNOWN is a legal value for entry_quality and sizing_quality, and it
-    # means the input the grade needs was never recorded — not that the trade
-    # was average. Readers must skip it, never bucket it. See
-    # position_review._grade_entry_quality / _grade_sizing_quality.
+    # UNKNOWN is a legal value for entry_quality, sizing_quality and
+    # stop_quality, and it means the input the grade needs was never recorded
+    # — not that the trade was average. Readers must skip it, never bucket it.
+    # See position_review._grade_entry_quality / _grade_sizing_quality /
+    # _grade_stop_quality.
     entry_quality:        str   # EXCELLENT / GOOD / FAIR / POOR / UNKNOWN
     exit_quality:         str   # ON_TARGET / STOP_HIT / PREMATURE / TRAILING
     sizing_quality:       str   # OVERSIZED / CORRECT / UNDERSIZED / UNKNOWN
-    stop_quality:         str   # TIGHT / CORRECT / WIDE
+    stop_quality:         str   # TIGHT / CORRECT / WIDE / UNKNOWN
     risk_reward_achieved: float
     pnl:                  float
     return_pct:           float

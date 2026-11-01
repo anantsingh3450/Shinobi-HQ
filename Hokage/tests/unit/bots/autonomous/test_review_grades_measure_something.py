@@ -74,6 +74,9 @@ def _review(engine: PositionReviewEngine, **kwargs):
         return_pct=0.098,
         holding_seconds=372.0,
         mae_pct=-1.2,
+        # Fraction of premium actually at risk. See
+        # test_stop_grade_reads_the_real_risk.py for the stop grade itself.
+        risk_pct=0.10,
     )
     defaults.update(kwargs)
     return engine.review_trade(**defaults)

@@ -35,6 +35,9 @@ def _review(engine: PositionReviewEngine, **kwargs) -> PositionReview:
         # this and nothing else; without it the grade is UNKNOWN, which is
         # the honest answer and makes for a poor default fixture.
         mae_pct=-2.0,
+        # Fraction of premium whichever stop bites first actually risks.
+        # 0.10 sits inside the CORRECT band (0.07 .. 0.17).
+        risk_pct=0.10,
         holding_days=3,
         exit_reason="Take Profit Triggered",
         pnl=1200.0,
@@ -69,7 +72,7 @@ def test_review_contains_all_quality_fields(engine):
     assert r.entry_quality in ("EXCELLENT", "GOOD", "FAIR", "POOR", "UNKNOWN")
     assert r.exit_quality in ("ON_TARGET", "STOP_HIT", "PREMATURE", "TRAILING")
     assert r.sizing_quality in ("OVERSIZED", "CORRECT", "UNDERSIZED", "UNKNOWN")
-    assert r.stop_quality in ("TIGHT", "CORRECT", "WIDE")
+    assert r.stop_quality in ("TIGHT", "CORRECT", "WIDE", "UNKNOWN")
 
 
 def test_review_rr_achieved_is_float(engine):
@@ -146,21 +149,28 @@ def test_sizing_quality_undersized(engine):
 # ---------------------------------------------------------------------------
 
 def test_stop_quality_correct(engine):
-    # Stop 5% from entry: 185 * 0.05 = 9.25 → stop = 175 (5.4%) → CORRECT
-    r = _review(engine, entry_price=185.0, stop_price=175.0)
+    # 10% of premium at risk: clear of his noise, inside where losses land.
+    r = _review(engine, risk_pct=0.10)
     assert r.stop_quality == "CORRECT"
 
 
 def test_stop_quality_tight(engine):
-    # Stop < 3% from entry: 185 - 2 = 183 → 1.08%
-    r = _review(engine, entry_price=185.0, stop_price=183.0)
+    # 2% of premium: more than one winner in ten took more heat than this.
+    r = _review(engine, risk_pct=0.02)
     assert r.stop_quality == "TIGHT"
 
 
 def test_stop_quality_wide(engine):
-    # Stop > 10% from entry: 185 - 25 = 160 → 13.5%
-    r = _review(engine, entry_price=185.0, stop_price=160.0)
+    # 25% of premium: past the 90th percentile of his realised losses.
+    r = _review(engine, risk_pct=0.25)
     assert r.stop_quality == "WIDE"
+
+
+def test_stop_quality_ignores_the_stop_price_field(engine):
+    """`stop_price` is the TRAIL_LOCK profit floor on a bought option, not a
+    stop. Moving it must not move the grade."""
+    tight = _review(engine, risk_pct=0.02, stop_price=184.9).stop_quality
+    assert tight == _review(engine, risk_pct=0.02, stop_price=100.0).stop_quality
 
 
 # ---------------------------------------------------------------------------
@@ -205,8 +215,8 @@ def test_lesson_flags_oversized(engine):
 
 
 def test_lesson_flags_tight_stop(engine):
-    r = _review(engine, entry_price=185.0, stop_price=183.0)
-    assert "tight" in r.lesson.lower() or "stop" in r.lesson.lower()
+    r = _review(engine, risk_pct=0.02)
+    assert "noise" in r.lesson.lower()
 
 
 # ---------------------------------------------------------------------------

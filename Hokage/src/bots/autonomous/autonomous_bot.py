@@ -3410,6 +3410,13 @@ class AutonomousTradingBot:
             "chest_fraction_pct": self._chest_fraction_pct(
                 manual_strategy_id, tracked_entry_price, qty_filled
             ),
+            # What the stop grade is measured against: the fraction of premium
+            # whichever stop bites FIRST actually puts at risk. Frozen here
+            # because the ATR it is computed from is an entry-time fact.
+            "risk_pct_at_entry": self._risk_pct_for(
+                tracked_entry_price, float(entry_price), entry_und_atr,
+                manual_strategy_id, underlying,
+            ),
             "side": side.value,
             "quantity": float(qty_filled),
             "venue_id": venue.venue_id,
@@ -4659,6 +4666,10 @@ class AutonomousTradingBot:
                     # what made it answer CORRECT for every MCX and manual
                     # trade ever taken.
                     stored_chest_pct     = entry_meta.get("chest_fraction_pct")
+                    # No default here either. `stop_price` is NOT the stop on a
+                    # bought option — it is the TRAIL_LOCK profit floor — so
+                    # the stop grade reads the risk frozen at entry or nothing.
+                    stored_risk_pct      = entry_meta.get("risk_pct_at_entry")
                     stored_sector        = entry_meta.get("sector", self.portfolio_intel.symbol_sectors.get(symbol.upper(), "other"))
                     stored_personality   = entry_meta.get("personality_mode", "BALANCED")
                     stored_sector_flow   = entry_meta.get("sector_flow", "N/A")
@@ -4825,6 +4836,7 @@ class AutonomousTradingBot:
                         _conviction=stored_conviction,
                         _alloc_pct=stored_alloc_pct,
                         _chest_pct=stored_chest_pct,
+                        _risk_pct=stored_risk_pct,
                         _exit_reason=exit_reason,
                         _pnl=live_pnl,
                         _return_pct=return_pct,
@@ -4853,6 +4865,9 @@ class AutonomousTradingBot:
                                 # The heat this hold actually took. Entry
                                 # quality is graded on this and nothing else.
                                 mae_pct=_mae_pct,
+                                # The risk whichever stop bites first actually
+                                # accepted, frozen at entry.
+                                risk_pct=_risk_pct,
                                 holding_days=_held_days,
                                 holding_seconds=_held_seconds,
                                 exit_reason=_exit_reason,
@@ -5612,6 +5627,11 @@ class AutonomousTradingBot:
                 # trade CORRECT.
                 "chest_fraction_pct": self._chest_fraction_pct(
                     selected_sid, tracked_entry_price, qty_filled
+                ),
+                # What the stop grade is measured against. See the manual path.
+                "risk_pct_at_entry": self._risk_pct_for(
+                    tracked_entry_price, float(entry_price), _entry_atr,
+                    selected_sid, symbol,
                 ),
                 "side": side.value,
                 "quantity": float(qty_filled),
@@ -6911,6 +6931,13 @@ class AutonomousTradingBot:
                     option_tracking_extras = {
                         "entry_underlying_price": float(entry_price),
                         "entry_underlying_atr": float(entry_und_atr) if entry_und_atr else None,
+                        # What the stop grade is measured against. Stamped
+                        # inside the option block because the ATR it needs is
+                        # only fetched for an option-routed entry.
+                        "risk_pct_at_entry": self._risk_pct_for(
+                            tracked_entry_price, float(entry_price),
+                            entry_und_atr, selected_sid, symbol,
+                        ),
                         "lot_size": req_meta.get("lot_size"),
                         "option_type": req_meta.get("option_type"),
                         "strike": req_meta.get("strike"),
