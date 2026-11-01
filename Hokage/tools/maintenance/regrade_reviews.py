@@ -37,6 +37,16 @@ inside the old 0.03 .. 0.10 band, CORRECT always. It now reads `_risk_pct_for`,
 which needs the underlying ATR at entry, and NOTHING on disk recorded that. So
 stop is blanked to UNKNOWN for the same reason as sizing.
 
+WHY (R:R, 2026-11-01)
+Third time in the same family. `_compute_rr_achieved` divided by the distance
+to `initial_stop_price` = entry * (1 - tsl_percent), so the denominator was a
+flat 5% of premium on every trade - not the risk, and not even a stop. Every
+"Excellent R:R achieved: X" on disk is reward over 5% of premium. It now
+divides by `risk_pct_at_entry`, which no historical record carries, so the
+stored ratio is blanked to 0.0 - the value this engine already treats as
+UNMEASURABLE, which keeps the field a float and makes the lesson drop its R:R
+clause instead of restating a number measured against the wrong base.
+
 WHAT IT CAN AND CANNOT REPAIR
 The review record does NOT store the exit reason, so the grade cannot be
 recomputed from the review alone. The reason lives in the autopsy record, and
@@ -65,8 +75,9 @@ SAFETY
   * Dry run by default. --apply is required to write.
   * Timestamped backup taken before any write.
   * Atomic replace, so an interrupted run cannot truncate the corpus.
-  * Only exit_quality, entry_quality, sizing_quality, stop_quality and lesson
-    are touched; every other field is preserved byte-for-byte.
+  * Only exit_quality, entry_quality, sizing_quality, stop_quality,
+    risk_reward_achieved and lesson are touched; every other field is
+    preserved byte-for-byte.
   * --sizing-only / --no-sizing scope the blanking of sizing AND stop, which
     touches far more rows than the other two and is the one change that
     REMOVES a value instead of correcting it.
@@ -127,6 +138,15 @@ _DEAD_CLAUSES = (
     "risk-per-trade tolerance.",
 )
 
+#: The R:R clauses carry their own number, so they are matched by prefix and
+#: cut to the end of the sentence rather than compared whole. Same reason as
+#: _DEAD_CLAUSES: the ratio they quote is reward over 5% of premium, which was
+#: never the risk.
+_DEAD_PREFIXES = (
+    " Excellent R:R achieved:",
+    " Low R:R of",
+)
+
 #: The original lesson embeds the conviction score; the review record does not
 #: store it as a field. Recover it so the regenerated lesson keeps the same
 #: opening sentence rather than inventing a number.
@@ -144,6 +164,11 @@ def _strip_dead_clauses(text: str) -> str:
         # real characters once Python parses them, and re-decoding them
         # through latin-1 mangled the em-dash so nothing ever matched.
         text = text.replace(clause, "")
+    for prefix in _DEAD_PREFIXES:
+        while prefix in text:
+            start = text.index(prefix)
+            end = text.find(".", start)
+            text = text[:start] + (text[end + 1:] if end != -1 else "")
     return text.strip()
 
 
@@ -254,6 +279,7 @@ def main() -> int:
         old_entry = row.get("entry_quality")
         old_sizing = row.get("sizing_quality")
         old_stop = row.get("stop_quality")
+        old_rr = row.get("risk_reward_achieved")
         new_exit, new_entry = old_exit, old_entry
 
         if do_grades:
@@ -294,9 +320,12 @@ def main() -> int:
         # written to any record. Nothing to recompute from.
         new_sizing = UNKNOWN if do_sizing else old_sizing
         new_stop = UNKNOWN if do_sizing else old_stop
+        # 0.0 is this engine's UNMEASURABLE, so blanking the ratio and
+        # dropping its clause from the lesson are the same act.
+        new_rr = 0.0 if do_sizing else old_rr
 
-        if (new_exit, new_entry, new_sizing, new_stop) == (
-                old_exit, old_entry, old_sizing, old_stop):
+        if (new_exit, new_entry, new_sizing, new_stop, new_rr) == (
+                old_exit, old_entry, old_sizing, old_stop, old_rr):
             out.append(row)
             continue
 
@@ -306,13 +335,13 @@ def main() -> int:
         # as 0.0 would re-trigger "Low R:R of 0.00 despite profit" on exactly
         # the winners that fix was written to protect, so an ambiguous zero is
         # passed through as unmeasurable.
-        stored_rr = row.get("risk_reward_achieved")
-        rr = None if not stored_rr else float(stored_rr)
+        rr = None if not new_rr else float(new_rr)
         fixed = dict(row)
         fixed["exit_quality"] = new_exit
         fixed["entry_quality"] = new_entry
         fixed["sizing_quality"] = new_sizing
         fixed["stop_quality"] = new_stop
+        fixed["risk_reward_achieved"] = new_rr
         fixed["lesson"] = engine._generate_lesson(
             symbol=row.get("symbol", "?"),
             entry_quality=new_entry,
@@ -330,6 +359,7 @@ def main() -> int:
             "exit_quality": old_exit,
             "sizing_quality": old_sizing,
             "stop_quality": old_stop,
+            "risk_reward_achieved": old_rr,
         }
         out.append(fixed)
         # `_forward_lesson` keys memory events exactly this way. An id-less
@@ -351,6 +381,8 @@ def main() -> int:
             tally[("sizing", old_sizing, new_sizing)] += 1
         if new_stop != old_stop:
             tally[("stop", old_stop, new_stop)] += 1
+        if new_rr != old_rr:
+            tally[("R:R", "over 5% of premium", "unmeasurable")] += 1
 
     print("=" * 72)
     print("  REGRADE POSITION REVIEWS" + ("  [APPLY]" if apply else "  [dry run]"))

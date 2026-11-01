@@ -201,6 +201,14 @@ class PositionReviewEngine:
         None, meaning the entry record never carried the fact; the grade that
         needs it then reads UNKNOWN.
 
+        `stop_price` and `target_price` are NO LONGER INPUTS TO ANY GRADE. They
+        are kept because callers pass them and the record carries them, but
+        every grade that once read them was measuring a number that could not
+        do what its name said: `stop_price` is the TRAIL_LOCK profit floor on a
+        bought option, and `target_price` is recomputed on every tick. Do not
+        wire either of them back into a grade - test_rr_measures_the_real_risk
+        fails if you do.
+
         Returns a frozen PositionReview dataclass and persists to disk.
         Lesson is forwarded to MemoryManager if available.
         """
@@ -208,7 +216,7 @@ class PositionReviewEngine:
         exit_quality   = self._grade_exit_quality(exit_reason, exit_price, target_price, stop_price, entry_price)
         sizing_quality = self._grade_sizing_quality(position_size_pct, conviction_score)
         stop_quality   = self._grade_stop_quality(risk_pct)
-        rr_measured    = self._compute_rr_achieved(entry_price, exit_price, stop_price)
+        rr_measured    = self._compute_rr_achieved(entry_price, exit_price, risk_pct)
         # The dataclass field stays a float so the JSONL stays valid JSON and
         # every existing reader keeps working; the lesson and the log line are
         # told the difference between "zero" and "could not tell".
@@ -477,27 +485,58 @@ class PositionReviewEngine:
         self,
         entry_price: float,
         exit_price: float,
-        stop_price: float,
+        risk_pct: float | None,
     ) -> float | None:
         """Reward at exit over the risk accepted at entry, or None if unknown.
 
-        `stop_price` MUST be the stop as it stood at entry. The caller's
-        `tracking["stop_price"]` is a live trailing floor that the ladder
-        ratchets to break-even at Target 1 and higher after, so a trade that
-        ran far enough to win arrives here with stop == entry: risk zero.
-        That is why GOLDM26NOV141000PE, +13.8% and ON_TARGET on 2026-10-30,
-        was reviewed `stop=TIGHT R:R=0.00` at a true 2.75 - and why the
-        generated lesson told the commander to tighten the target on the best
-        trade of his day. The entry path now freezes `initial_stop_price`.
+        TWO FIXES, AND THE SECOND ONE IS WHY THE FIRST WAS NOT ENOUGH.
+
+        2026-10-30 (9f0d6f4): it divided by the distance to
+        `tracking["stop_price"]`, a LIVE trailing floor the ladder ratchets to
+        break-even at Target 1 and higher after — so a trade that ran far
+        enough to win arrived here with stop == entry and risk zero.
+        GOLDM26NOV141000PE, +13.8% and ON_TARGET, was reviewed
+        `stop=TIGHT R:R=0.00`, and the lesson told the commander to tighten the
+        target on the best trade of his day. The entry paths were made to
+        freeze `initial_stop_price`, and the grade read that instead.
+
+        2026-11-01: the frozen number is not the risk either. Every entry path
+        sets `initial_stop_price = entry * (1 - tsl_percent)`, so the
+        denominator was **5% of premium on every trade in both leagues** — a
+        constant, and one that stops nothing: on a bought option that field is
+        the TRAIL_LOCK profit floor, which arms only after +5% and can never
+        fire below entry (see _grade_stop_quality). Freezing it made R:R
+        *stable*, not *correct*.
+
+        The real risk is `_risk_pct_for` — min(premium backstop tier, the ATR
+        thesis stop through the ATM delta), "whichever stop bites first",
+        already in production and validated against real fills. Frozen at
+        entry as `risk_pct_at_entry` and passed in here.
+
+        This makes the number mean something structural. The thesis stop IS
+        1.0 R by construction, so a loss that went to it reads about -1.00,
+        and the adaptive target is floored at _OPTION_MIN_REWARD_RISK (1.5x)
+        of this same risk, so a TARGET_HIT reads about +1.50 or better. The
+        lesson's 2.0 and 1.0 thresholds are read against that floor: above 2.0
+        beat it by a third, below 1.0 means a winner did not make back one
+        unit of what it risked.
 
         None means UNMEASURABLE, which is not 0.00. A zero would be read as a
         trade that risked everything for nothing, and would pull the "Low R:R
-        despite profit" lesson onto a clean winner.
+        despite profit" lesson onto a clean winner. There is deliberately NO
+        fallback to the old stop-distance arithmetic: a plausible wrong number
+        is what kept this broken through one fix already.
         """
-        if entry_price <= 0 or stop_price <= 0:
+        if entry_price <= 0 or risk_pct is None:
             return None
-        risk = abs(entry_price - stop_price)
-        if risk == 0:
+        try:
+            risk_fraction = float(risk_pct)
+        except (TypeError, ValueError):
+            return None
+        if risk_fraction <= 0.0:
+            return None
+        risk = entry_price * risk_fraction
+        if risk <= 0:
             return None
         reward = exit_price - entry_price
         return round(reward / risk, 4)
@@ -567,10 +606,13 @@ class PositionReviewEngine:
         # of 0.00 despite profit - tighten target" to a trade that hit its
         # target is worse than saying nothing, and these lessons are forwarded
         # to long-term memory.
+        # Measured against the risk whichever stop bites first actually
+        # accepted, so these are R-multiples: the adaptive target is floored at
+        # 1.5 R and the thesis stop is 1.0 R by construction.
         if rr_achieved is not None and rr_achieved >= 2.0 and pnl >= 0:
-            parts.append(f"Excellent R:R achieved: {rr_achieved:.2f} — this setup should be replicated.")
+            parts.append(f"Excellent R:R achieved: {rr_achieved:.2f}x the risk accepted — this setup should be replicated.")
         if rr_achieved is not None and rr_achieved < 1.0 and pnl >= 0:
-            parts.append(f"Low R:R of {rr_achieved:.2f} despite profit — tighten target or improve exit timing.")
+            parts.append(f"Low R:R of {rr_achieved:.2f}x despite profit — the trade did not make back one unit of what it risked; tighten target or improve exit timing.")
 
         return " ".join(parts)
 

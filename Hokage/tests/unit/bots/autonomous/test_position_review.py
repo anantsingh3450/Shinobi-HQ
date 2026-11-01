@@ -178,21 +178,30 @@ def test_stop_quality_ignores_the_stop_price_field(engine):
 # ---------------------------------------------------------------------------
 
 def test_rr_achieved_profitable(engine):
-    # reward = 198.5 - 185 = 13.5, risk = 185 - 175 = 10 → R:R = 1.35
-    r = _review(engine, entry_price=185.0, exit_price=198.5, stop_price=175.0)
+    # reward = 198.5 - 185 = 13.5, risk = 185 * 0.0541 = 10 → R:R = 1.35
+    r = _review(engine, entry_price=185.0, exit_price=198.5, risk_pct=0.054054)
     assert r.risk_reward_achieved == pytest.approx(1.35, abs=0.01)
 
 
 def test_rr_achieved_loss(engine):
-    # reward = 170 - 185 = -15, risk = 185 - 175 = 10 → R:R = -1.5
-    r = _review(engine, entry_price=185.0, exit_price=170.0, stop_price=175.0, pnl=-800.0)
+    # reward = 170 - 185 = -15, risk = 10 → R:R = -1.5
+    r = _review(engine, entry_price=185.0, exit_price=170.0,
+                risk_pct=0.054054, pnl=-800.0)
     assert r.risk_reward_achieved == pytest.approx(-1.5, abs=0.01)
 
 
-def test_rr_zero_risk(engine):
-    # stop_price == entry_price → risk = 0 → return 0
-    r = _review(engine, entry_price=185.0, stop_price=185.0, exit_price=200.0)
+def test_rr_unmeasurable_risk(engine):
+    # No risk on record → 0.0, which means UNMEASURABLE, not break-even.
+    r = _review(engine, entry_price=185.0, risk_pct=None, exit_price=200.0)
     assert r.risk_reward_achieved == 0.0
+
+
+def test_rr_ignores_the_stop_price_field(engine):
+    """It is the TRAIL_LOCK profit floor, not a stop — and freezing it is what
+    made the old denominator a flat 5% of premium on every trade."""
+    r = _review(engine, entry_price=185.0, exit_price=198.5,
+                risk_pct=0.054054, stop_price=185.0)
+    assert r.risk_reward_achieved == pytest.approx(1.35, abs=0.01)
 
 
 # ---------------------------------------------------------------------------

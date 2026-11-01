@@ -107,6 +107,11 @@ class PositionReview:
     exit_quality:         str   # ON_TARGET / STOP_HIT / PREMATURE / TRAILING
     sizing_quality:       str   # OVERSIZED / CORRECT / UNDERSIZED / UNKNOWN
     stop_quality:         str   # TIGHT / CORRECT / WIDE / UNKNOWN
+    # Reward at exit over the risk WHICHEVER STOP BITES FIRST accepted, as an
+    # R-multiple. 0.0 means unmeasurable, not break-even: the field is a float
+    # so the JSONL stays valid, and the lesson stays silent instead of claiming
+    # a ratio. Records written before 2026-11-01 divided by a flat 5% of
+    # premium, which was never the risk — the repair blanks them to 0.0.
     risk_reward_achieved: float
     pnl:                  float
     return_pct:           float
