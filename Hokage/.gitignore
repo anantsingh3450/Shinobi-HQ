@@ -32,3 +32,9 @@ journal/
 .DS_Store
 Thumbs.db
 hokage_brain_archive/
+
+# A stray 0-byte hokage.db appeared in the repo root on 2026-10-29. Every real
+# writer uses BRAIN / "hokage.db" (C:\Hokage\hokage_brain), so a copy here is
+# a resolver falling back to the working directory. Anchored with a leading
+# slash: src/shared/persistence/hokage.db is tracked and must stay visible.
+/hokage.db
