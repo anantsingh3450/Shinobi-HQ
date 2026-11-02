@@ -42,6 +42,13 @@ eb_handler = EventBusLogHandler()
 eb_handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
 logging.getLogger("Hokage").addHandler(eb_handler)
 
+# Credentials out of the log, at the handler rather than the call site: a
+# call-site scrub cannot cover werkzeug, which logged the commander's Zerodha
+# request_token in full on every login. Called again below once the rotating
+# file handler exists.
+from shared.utils.log_redaction import install_log_redaction
+install_log_redaction("", "Hokage")
+
 
 class LifecycleState:
     INITIALIZING = "INITIALIZING"
@@ -102,6 +109,9 @@ class HokageBootManager:
             )
             file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
             logging.getLogger().addHandler(file_handler)
+            # This handler is born after the module-level call above, and it
+            # is the one that writes to disk.
+            install_log_redaction("", "Hokage")
 
             # 2. SQLite + Migrations
             self.publish_state(LifecycleState.LOADING_DATABASE)
@@ -159,6 +169,12 @@ class HokageBootManager:
             from hokage.dashboard.api import create_dashboard_api
             app = create_dashboard_api(brain_root=self.brain_root, orchestrator=self.orchestrator)
             app.boot_manager = self
+
+            # werkzeug is the logger that wrote the commander's request_token
+            # to disk, and it attaches a StreamHandler of its own if it cannot
+            # find a suitable one upstream. Root is wrapped already, so it
+            # normally will not - this covers the case where it does.
+            install_log_redaction("werkzeug")
 
             # A deliberate stop ends the moment he is back. Clear the marker
             # that tells the external liveness watch to stay quiet.
