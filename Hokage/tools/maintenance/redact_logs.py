@@ -93,7 +93,12 @@ def collect(paths: list[str]) -> list[Path]:
     found: list[Path] = []
     for d in _LOG_DIRS:
         if d.is_dir():
-            found.extend(sorted(d.glob("*.log")))
+            # "*.log*", not "*.log": RotatingFileHandler names its rolled
+            # files hokage.log.1 .. hokage.log.5, which "*.log" does not
+            # match. The first run of this tool reported the logs clean
+            # while 23 request_tokens sat in the rotations beside them.
+            # glob, not rglob, so redaction_backups/ stays out of the sweep.
+            found.extend(sorted(d.glob("*.log*")))
     return found
 
 
@@ -156,10 +161,17 @@ def main() -> int:
             vault = path.parent / "redaction_backups"
             vault.mkdir(exist_ok=True)
             stamp = now.astimezone().strftime("%Y%m%d_%H%M%S")
-            (vault / f"{path.stem}.{stamp}.bak").write_text(
-                original, encoding="utf-8", newline="")
+            # path.NAME with the dots flattened, not path.stem: every rotation
+            # of hokage.log.1 .. hokage.log.5 has the stem "hokage.log", so
+            # with one timestamp for the run all five backups collided on one
+            # filename and four were silently overwritten. Flattening also
+            # keeps ".log" out of the name, so the sweep's "*.log*" glob can
+            # never match a backup even if one lands beside a live log.
+            safe = path.name.replace(".", "_")
+            backup = vault / f"{safe}.{stamp}.bak"
+            backup.write_text(original, encoding="utf-8", newline="")
             _write_atomically(path, cleaned)
-            backups_written.append(vault / f"{path.stem}.{stamp}.bak")
+            backups_written.append(backup)
 
     verb = "redacted" if args.apply else "would redact"
     print(f"\n{verb} {total_lines} line(s) across {total_files} file(s)")
@@ -168,7 +180,11 @@ def main() -> int:
     if backups_written:
         print(f"\n{len(backups_written)} backup(s) written to redaction_backups/ -- THESE STILL "
               f"HOLD THE CREDENTIAL IN PLAINTEXT.\nCheck the rewrite, then delete them:")
-        print(f"  {backups_written[0].parent}")
+        # Every vault, not backups_written[0].parent: the logs live in two
+        # directories, so printing one left the other's plaintext copies
+        # unmentioned and they were nearly missed.
+        for vault_dir in sorted({b.parent for b in backups_written}):
+            print(f"  {vault_dir}")
     return 0
 
 
