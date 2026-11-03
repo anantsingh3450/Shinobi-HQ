@@ -34,14 +34,24 @@ a connection it never made has taught its reader to trust the next one.
 Deleted 2026-11-04 on the commander's word, with its two lines of pipeline
 wiring. This test is the rail: the next one cannot arrive quietly.
 
-WHAT STILL FAILS THIS, DELIBERATELY RECORDED. `institutional_venue.py`
-(`oanda_main`, "Connected to institutional Forex testing feed") is the same
-shape — no network imports, `connect()` returns CONNECTED with
-`latency_ms=5.0`, `get_account_balance()` returns a hardcoded 1,000,000. It is
-named in KNOWN_FABRICATED below because it is a known, reported debt awaiting
-his decision, not because it is acceptable. THAT SET MAY ONLY SHRINK. A new
-module added to it fails `test_the_known_list_is_exactly_what_we_know_about`,
-which is the point: the exemption cannot be used to admit the next one.
+ITS TWIN WENT THE SAME NIGHT. `institutional_venue.py` (`oanda_main`,
+"Connected to institutional Forex testing feed") was the same shape — no
+network imports, `connect()` returning CONNECTED with `latency_ms=5.0`, and
+`get_account_balance()` returning a hardcoded 1,000,000: SEVEN TIMES the Groww
+phantom, on an asset class outside the mandate entirely. It sat in
+KNOWN_FABRICATED as recorded debt for about three hours and was then deleted
+on his word, so that set is now empty. IT MAY ONLY SHRINK — a new module added
+to it fails `test_the_known_list_is_exactly_what_we_know_about`, which is the
+point: the exemption cannot become the door.
+
+WHAT REPLACED IT IS A LOUD FAILURE, AND THAT IS THE WHOLE ARGUMENT. `oanda`
+keeps its capability profile and its real `paper_oanda` venue, so paper is
+untouched. What it no longer has is a registered `oanda_main`. Ask the broker
+registry for a LIVE forex venue now and it raises KeyError — "Ensure
+credentials and connection adapters are configured before enabling LIVE mode."
+`alpaca_main` has sat in exactly that state all along, which is how we know
+the state is survivable. A venue that cannot trade forex and says so beats one
+that cannot trade forex and reports a million rupees.
 """
 from __future__ import annotations
 
@@ -56,9 +66,9 @@ BROKERS = Path(__file__).resolve().parents[3] / "src" / "integrations" / "broker
 #: truth for them. `base_venue` and the non-venue helpers are not venues.
 EXEMPT = {"paper_venue.py", "base_venue.py"}
 
-#: Modules that claim CONNECTED with no way to connect. Reported, awaiting a
-#: decision. ONLY EVER REMOVE FROM THIS SET.
-KNOWN_FABRICATED = {"institutional_venue.py"}
+#: Modules that claim CONNECTED with no way to connect. Empty, and the only
+#: legitimate edit to it is a deletion. ONLY EVER REMOVE FROM THIS SET.
+KNOWN_FABRICATED: set[str] = set()
 
 #: Evidence that a module can actually reach a broker: it speaks a protocol
 #: itself, or it delegates to something that does (KiteVenue.connect is one
@@ -153,12 +163,23 @@ def test_the_rail_catches_the_file_it_was_written_for():
     false positive above: the first version of the marker list passed this.
     """
     import subprocess
-    repo = BROKERS.parents[2]
-    out = subprocess.run(
-        ["git", "show", "HEAD:Hokage/src/integrations/brokers/groww_venue.py"],
-        cwd=repo.parent, capture_output=True, text=True)
+    rel = "Hokage/src/integrations/brokers/groww_venue.py"
+    cwd = BROKERS.parents[3]          # the git root; Hokage is a subdirectory
+
+    def git(*args: str):
+        return subprocess.run(["git", *args], cwd=cwd,
+                              capture_output=True, text=True)
+
+    # The last commit to touch the path is the one that deleted it, so the
+    # file lives in that commit's PARENT. Resolved rather than hardcoded: a
+    # pinned sha would make this test rot the moment history is rewritten,
+    # and a `HEAD:` read would simply skip forever now that it is gone.
+    deleting = git("rev-list", "-n", "1", "HEAD", "--", rel).stdout.strip()
+    if not deleting:
+        pytest.skip("no history for the deleted file; the rail outlives it")
+    out = git("show", f"{deleting}^:{rel}")
     if out.returncode != 0:
-        pytest.skip("the deleted file is no longer in HEAD; the rail outlives it")
+        pytest.skip("the deleted file is not reachable from history")
     source = out.stdout
     assert "static_proxy_ip" in source, "replayed the wrong file"
     assert _claims_connected(source), "connect() did return CONNECTED"
@@ -195,8 +216,58 @@ def test_the_venues_that_remain_are_still_registered():
     """Deleting one venue must not quietly unregister the real ones."""
     pipeline = (BROKERS.parents[1] / "hokage" / "orchestrator" / "pipeline.py")
     source = pipeline.read_text(encoding="utf-8")
-    for venue in ("paper_zerodha", "kite_main", "coindcx_main", "oanda_main"):
+    for venue in ("paper_main", "paper_mcx", "kite_main", "coindcx_main"):
         assert venue in source, f"{venue} is no longer registered"
+    # The per-broker paper venues are not literals here — they are built in a
+    # loop from `profile.paper_venue_id`, which is why `paper_oanda` survives
+    # the deletion: it comes from the capability profile, not from the venue
+    # class. `test_forex_keeps_its_paper_venue_and_its_profile` holds that end.
+    assert "profile.paper_venue_id" in source
+
+
+def test_the_institutional_venue_is_gone():
+    assert not (BROKERS / "institutional_venue.py").exists()
+    pipeline = (BROKERS.parents[1] / "hokage" / "orchestrator" / "pipeline.py")
+    source = pipeline.read_text(encoding="utf-8")
+    assert "InstitutionalVenue" not in source
+    assert "oanda_main" not in source, "pipeline still registers the deleted venue"
+
+
+def test_forex_keeps_its_paper_venue_and_its_profile():
+    """Deleting the fake LIVE venue must not cost `oanda` its real paper one.
+
+    `paper_oanda` is a genuine PaperVenue and several exit-loop tests count on
+    it being registered. The capability profile stays too: the broker is still
+    a real broker, it simply has no live adapter here.
+    """
+    import sys
+    sys.path.insert(0, str(BROKERS.parents[1]))
+    from integrations.brokers.broker_registry import _FALLBACK_BROKER_CAPABILITIES
+
+    profile = _FALLBACK_BROKER_CAPABILITIES["oanda"]
+    assert profile["paper_venue_id"] == "paper_oanda"
+    assert profile["supported_exchanges"] == ["FOREX"]
+
+
+def test_a_live_forex_request_now_fails_loudly_instead_of_inventing_a_million():
+    """The replacement for a fabricated venue is an honest KeyError.
+
+    `get_live_venue` resolves `profile.live_venue_id` and raises when it is not
+    registered, naming the venue and telling the reader to configure
+    credentials and adapters first. `alpaca_main` has been in that state all
+    along, so this is the system's existing, survivable behaviour — not a new
+    cliff introduced by the deletion. What is gone is the alternative: a
+    `connect()` that said CONNECTED and a balance of 1,000,000 that no broker
+    had ever confirmed.
+    """
+    registry_src = (BROKERS / "broker_registry.py").read_text(encoding="utf-8")
+    assert '"live_venue_id": "oanda_main"' in registry_src, (
+        "the profile still points at oanda_main, which is what makes the "
+        "KeyError name the missing venue")
+    assert "is not registered" in registry_src
+    assert "before enabling LIVE mode" in registry_src
+    assert not (BROKERS / "institutional_venue.py").exists(), (
+        "nothing registers oanda_main any more, so that lookup now raises")
 
 
 def test_pipeline_still_parses():

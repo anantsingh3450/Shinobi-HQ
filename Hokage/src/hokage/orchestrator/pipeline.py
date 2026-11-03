@@ -48,7 +48,6 @@ from integrations.brokers.interfaces import ExecutionVenueRegistry
 from integrations.brokers.paper_venue import PaperVenue
 from integrations.brokers.kite_venue import KiteVenue
 from integrations.brokers.coindcx_venue import CoinDcxVenue
-from integrations.brokers.institutional_venue import InstitutionalVenue
 from integrations.brokers.secrets import SecretManager
 from integrations.brokers.kite_connection import KiteConnectionManager
 from integrations.brokers.kite_market_data_provider import KiteMarketDataProvider
@@ -237,12 +236,6 @@ class HokageOrchestrator:
             context=self.context
         )
         self.registry.register_venue(self.coindcx_venue)
-
-        self.institutional_venue = InstitutionalVenue(
-            venue_id="oanda_main",
-            context=self.context
-        )
-        self.registry.register_venue(self.institutional_venue)
 
         self.autonomous_bot = AutonomousTradingBot(self)
         self.improvement_bot = ImprovementBot(
