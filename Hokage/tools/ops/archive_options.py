@@ -41,7 +41,51 @@ from hokage.memory import option_archive, trading_calendar  # noqa: E402
 UNDERLYINGS = {
     "NIFTY": ("NFO", "NSE:NIFTY 50"),
     "SENSEX": ("BFO", "BSE:SENSEX"),
+    # MCX, added 2026-11-03. The mirror experiment ("every time it takes a
+    # call, take a put") runs on NATURALGAS and could not be settled, because
+    # the losing side never fills and so has no premium path — and there was
+    # no MCX chain here to reconstruct one from. A mirror only wins where the
+    # original was wrong about DIRECTION rather than about MOVEMENT, and both
+    # sides pay theta, so that distinction exists ONLY in premium terms.
+    #
+    # The anchor is None because an MCX option is written on the FRONT FUTURE,
+    # not on a spot index, and that future rolls. It is resolved from the
+    # instrument dump on every run; hardcoding it is how a roll silently
+    # prices a chain off a contract that stopped trading.
+    "NATURALGAS": ("MCX", None),
+    "GOLDM": ("MCX", None),
+    "SILVERM": ("MCX", None),
+    "CRUDEOIL": ("MCX", None),
 }
+
+#: One instrument dump per segment per run. The four MCX underlyings share a
+#: single dump, and it is a large download to repeat four times.
+_DUMP_CACHE: dict[str, list] = {}
+
+
+def _instruments(kite, segment: str) -> list:
+    if segment not in _DUMP_CACHE:
+        _DUMP_CACHE[segment] = kite.instruments(segment)
+    return _DUMP_CACHE[segment]
+
+
+def _front_future(instruments: list, symbol: str, today) -> str | None:
+    """`EXCHANGE:TRADINGSYMBOL` of the nearest future still alive, or None.
+
+    Nearest EXPIRY, not nearest alphabetically: NATURALGAS26NOVFUT sorts
+    before NATURALGAS26OCTFUT, and October is the live contract until it
+    expires. Sorting the wrong way prices a chain off a contract that has
+    stopped trading — the same error that once deleted three months of tape.
+    """
+    futures = []
+    for i in instruments:
+        if i.get("name") != symbol or i.get("instrument_type") != "FUT":
+            continue
+        expiry = i.get("expiry")
+        expiry = expiry.date() if hasattr(expiry, "date") else expiry
+        if expiry and expiry >= today:
+            futures.append((expiry, f"{i['exchange']}:{i['tradingsymbol']}"))
+    return min(futures)[1] if futures else None
 
 #: How many expiries forward to keep. A short-premium structure lives in the
 #: front two; beyond that the quotes thin out and the rows are noise.
@@ -50,21 +94,34 @@ EXPIRIES_FORWARD = 2
 
 def capture(kite, symbol: str, segment: str, spot_key: str,
             when: dt.datetime) -> list[dict]:
-    """The rows for one underlying's chain around the money."""
+    """The rows for one underlying's chain around the money.
+
+    `spot_key` of None means the anchor is this underlying's front future,
+    resolved from the dump — the MCX case, where options are written on the
+    future rather than on a spot index.
+    """
+    dump = _instruments(kite, segment)
+    today = when.date()
+
+    if spot_key is None:
+        spot_key = _front_future(dump, symbol, today)
+        if spot_key is None:
+            print(f"  {symbol}: no live future to anchor strikes to")
+            return []
+
     try:
         spot = kite.ltp(spot_key)[spot_key]["last_price"]
     except Exception as exc:
         print(f"  {symbol}: could not read spot ({str(exc)[:70]})")
         return []
 
-    instruments = [i for i in kite.instruments(segment)
+    instruments = [i for i in dump
                    if i["name"] == symbol
                    and i["instrument_type"] in ("CE", "PE")]
     if not instruments:
         print(f"  {symbol}: no option contracts in the {segment} dump")
         return []
 
-    today = when.date()
     expiries = sorted({
         (i["expiry"].date() if hasattr(i["expiry"], "date") else i["expiry"])
         for i in instruments
@@ -176,10 +233,16 @@ def main() -> int:
         print("  Capturing anyway — unknown is not the same as shut — but a "
               "holiday would pass unnoticed here.")
 
-    if not option_archive.is_after_close(when):
-        print(f"\n  NOTE: it is {when.strftime('%H:%M')} IST and the session "
-              f"ends at 15:30.")
-        print("  These rows will be stamped as intraday marks, and")
+    # PER MARKET, not one 15:30 for both: at 16:00 a NIFTY row is a close
+    # and a NATURALGAS row is a live intraday mark, and saying "the
+    # session ends at 15:30" over an MCX capture would simply be untrue.
+    live = [s for s in UNDERLYINGS
+            if not option_archive.is_after_close(when, s)]
+    if live:
+        print(f"\n  NOTE: it is {when.strftime('%H:%M')} IST and "
+              f"{', '.join(live)} {'has' if len(live) == 1 else 'have'} "
+              f"not closed yet.")
+        print("  Those rows will be stamped as intraday marks, and")
         print("  closing_snapshots() will correctly exclude them.")
 
     from signal_lab import _kite

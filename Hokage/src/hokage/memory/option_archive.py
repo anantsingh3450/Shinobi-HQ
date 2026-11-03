@@ -55,6 +55,26 @@ IST = ZoneInfo("Asia/Kolkata")
 #: after this is a settled close; one taken before it is an intraday mark.
 SESSION_END = dt.time(15, 30)
 
+#: MCX runs eight hours past the index close, so one SESSION_END cannot judge
+#: both. A chain captured at 16:00 is a genuine close for NIFTY and a LIVE
+#: intraday mark for NATURALGAS, and reading the second as the first would put
+#: mid-session premium into the corpus labelled as a day's settle. The
+#: scheduled run is at 23:40, after both, so this only bites a manual run --
+#: which is exactly when someone is looking at the numbers.
+SESSION_END_BY_SEGMENT = {
+    "NSE": dt.time(15, 30),
+    "MCX": dt.time(23, 30),
+}
+
+
+def session_end_for(symbol: str | None) -> dt.time:
+    """When this underlying's session ends. Unknown symbols get the index
+    close, which is the EARLIER of the two and therefore the permissive
+    answer -- so a new symbol is never silently excluded, only possibly
+    stamped too generously, and the calendar still guards the day itself."""
+    segment = CALENDAR_SEGMENT.get(str(symbol or "").upper(), "NSE")
+    return SESSION_END_BY_SEGMENT.get(segment, SESSION_END)
+
 #: How many strikes either side of at-the-money to keep. A vertical spread
 #: lives within a few strikes of the money, and the wings are where the
 #: quotes go stale and the spreads go wide. Twenty-one strikes per expiry per
@@ -123,10 +143,15 @@ def now_ist() -> dt.datetime:
     return dt.datetime.now(IST)
 
 
-def is_after_close(when: dt.datetime | None = None) -> bool:
-    """Has the index-option session ended for the day this snapshot belongs to?"""
+def is_after_close(when: dt.datetime | None = None,
+                   symbol: str | None = None) -> bool:
+    """Has this underlying's session ended for the day this snapshot belongs to?
+
+    With no symbol this answers for the index session, which is what every
+    caller meant before MCX was archived.
+    """
     when = when or now_ist()
-    return when.time() >= SESSION_END
+    return when.time() >= session_end_for(symbol)
 
 
 def atm_strikes(strikes: list[float], spot: float,
@@ -249,7 +274,7 @@ def closing_snapshots(symbol: str | None = None) -> list[dict]:
     # caught it on the first run. Parsing the stamp means the answer does not
     # depend on how SQLite chooses to interpret an offset.
     return [r for r in rows
-            if _captured_after_close(r.get("captured_at"))
+            if _captured_after_close(r.get("captured_at"), r.get("symbol"))
             and _market_traded_that_day(r.get("symbol"), r.get("day"))]
 
 
@@ -264,7 +289,7 @@ def _market_traded_that_day(symbol, day) -> bool:
     return market_was_open(str(symbol or ""), parsed) is not False
 
 
-def _captured_after_close(stamp: str | None) -> bool:
+def _captured_after_close(stamp: str | None, symbol: str | None = None) -> bool:
     if not stamp:
         return False
     try:
@@ -273,7 +298,7 @@ def _captured_after_close(stamp: str | None) -> bool:
         return False
     if when.tzinfo is not None:
         when = when.astimezone(IST)
-    return when.time() >= SESSION_END
+    return when.time() >= session_end_for(symbol)
 
 
 def coverage() -> dict:
