@@ -47,7 +47,6 @@ from hokage.memory.bootstrap import BrainBootstrapper
 from integrations.brokers.interfaces import ExecutionVenueRegistry
 from integrations.brokers.paper_venue import PaperVenue
 from integrations.brokers.kite_venue import KiteVenue
-from integrations.brokers.groww_venue import GrowwVenue
 from integrations.brokers.coindcx_venue import CoinDcxVenue
 from integrations.brokers.institutional_venue import InstitutionalVenue
 from integrations.brokers.secrets import SecretManager
@@ -232,12 +231,6 @@ class HokageOrchestrator:
             context=self.context
         )
         self.registry.register_venue(self.kite_venue)
-
-        self.groww_venue = GrowwVenue(
-            venue_id="groww_main",
-            context=self.context
-        )
-        self.registry.register_venue(self.groww_venue)
 
         self.coindcx_venue = CoinDcxVenue(
             venue_id="coindcx_main",
