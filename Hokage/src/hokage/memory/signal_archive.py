@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS auction_signals (
     filled      INTEGER,
     underlying  REAL,
     reason      TEXT,
+    option_symbol  TEXT,
+    option_premium REAL,
     PRIMARY KEY (scanned_at, symbol, strategy_id)
 );
 CREATE INDEX IF NOT EXISTS idx_auction_signals_cell
@@ -81,11 +83,25 @@ def db_path() -> Path:
     return brain_root() / "candles.db"
 
 
+#: Columns added after the table was first created. CREATE TABLE IF NOT
+#: EXISTS does nothing to a table that already exists, so a new column has to
+#: be added by hand or every existing brain keeps writing the old shape and
+#: the lab silently reads NULLs forever.
+_ADDED_COLUMNS = (
+    ("option_symbol", "TEXT"),
+    ("option_premium", "REAL"),
+)
+
+
 def connect() -> sqlite3.Connection:
     path = db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
+    have = {r[1] for r in conn.execute("PRAGMA table_info(auction_signals)")}
+    for name, kind in _ADDED_COLUMNS:
+        if name not in have:
+            conn.execute(f"ALTER TABLE auction_signals ADD COLUMN {name} {kind}")
     return conn
 
 
@@ -109,11 +125,20 @@ def remember_scan(
     winner_strategy_id: str | None = None,
     underlying: float | None = None,
     when: dt.datetime | None = None,
+    premiums: dict | None = None,
 ) -> int:
     """Record one scan: every module that was asked, and what it answered.
 
     `verdicts` is an iterable of (strategy_id, module_id, signal) where signal
     exposes should_enter / direction / confidence / reason.
+
+    `premiums` maps a lowercase direction ("long"/"short") to
+    (option_symbol, premium): what the contract that side would have BOUGHT
+    cost at this instant. It is the only part of a scan that cannot be
+    recovered later — an option's history dies with its contract — and it is
+    what separates "wrong about direction" from "wrong about movement" for a
+    module that never fills, because both sides buy premium and both pay
+    theta. Absent or unpriceable sides are written as NULL, never as 0.0.
 
     Returns rows written. Never raises: this runs inside the scan loop.
     """
@@ -130,16 +155,26 @@ def remember_scan(
         if not strategy_id or sig is None:
             continue
         fired = bool(getattr(sig, "should_enter", False))
+        direction = (getattr(sig, "direction", None) or None) if fired else None
+        # Only a side that FIRED has a contract it would have bought. A
+        # stand-aside has no direction, so pricing one would be inventing a
+        # trade nobody proposed.
+        option_symbol, option_premium = None, None
+        if fired and premiums:
+            quoted = premiums.get(str(direction or "").lower())
+            if quoted:
+                option_symbol, option_premium = quoted[0], _num(quoted[1])
         rows.append((
             stamp, day, str(symbol).upper(), str(strategy_id),
             str(module_id) if module_id else None,
             1 if fired else 0,
-            (getattr(sig, "direction", None) or None) if fired else None,
+            direction,
             _num(getattr(sig, "confidence", None)) if fired else None,
             1 if (winner_strategy_id and strategy_id == winner_strategy_id) else 0,
             None,                       # filled: stamped later by mark_filled
             _num(underlying),
             (getattr(sig, "reason", None) or None),
+            option_symbol, option_premium,
         ))
     if not rows:
         return 0
@@ -149,7 +184,8 @@ def remember_scan(
             conn.executemany(
                 "INSERT OR IGNORE INTO auction_signals (scanned_at, day, symbol, "
                 "strategy_id, module_id, fired, direction, confidence, won, "
-                "filled, underlying, reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "filled, underlying, reason, option_symbol, option_premium) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 rows)
             return conn.total_changes - before
     except sqlite3.Error:

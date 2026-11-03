@@ -238,9 +238,34 @@ def main() -> int:
     print("  version of the same question — hold both sides overnight and compare")
     print("  — which is a different experiment from the one the arena runs, and")
     print("  needs enough sessions behind it to mean anything.")
-    print("\n  To settle the INTRADAY question the premium has to be captured at")
-    print("  the moment each side fires, because an option's history dies with")
-    print("  its contract and no amount of later archiving can go back for it.")
+
+    print("\nSCAN-TIME PREMIUM  (what settles the intraday question)")
+    try:
+        paired = con.execute(
+            "SELECT COUNT(*) n, MIN(day) first_day, MAX(day) last_day"
+            " FROM auction_signals WHERE fired = 1 AND option_premium IS NOT NULL"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        paired = None
+    if paired is None:
+        print("  the option_premium column does not exist in this archive yet.")
+    elif not paired["n"]:
+        print("  no firing has been priced yet. The capture writes one CE and one")
+        print("  PE per scan from the next boot onward; it cannot be backfilled,")
+        print("  because an option's history dies with its contract.")
+    else:
+        print(f"  priced firings: {paired['n']}  "
+              f"({paired['first_day']}..{paired['last_day']})")
+        for r in con.execute(
+            "SELECT module_id, COUNT(*) n, ROUND(AVG(option_premium), 2) avg_prem"
+            " FROM auction_signals WHERE fired = 1 AND option_premium IS NOT NULL"
+            " GROUP BY module_id ORDER BY n DESC"
+        ):
+            print(f"    {str(r['module_id'])[:26]:28} {r['n']:>4} priced  "
+                  f"avg premium {r['avg_prem']}")
+        print("\n  A PRICED PAIR IS NOT YET AN ANSWER. This is the ENTRY cost of")
+        print("  both sides; the exit still has to come from the premium path of")
+        print("  whichever side actually filled, or from the next close.")
     return 0
 
 

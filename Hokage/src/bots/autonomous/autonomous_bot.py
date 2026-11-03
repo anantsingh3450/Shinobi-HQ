@@ -4332,11 +4332,66 @@ class AutonomousTradingBot:
                 winner_strategy_id=winner_sid,
                 underlying=getattr(mkt_ctx, "price", None),
                 when=stamp,
+                premiums=self._scan_premiums(
+                    symbol, scan_verdicts, getattr(mkt_ctx, "price", None)),
             )
             return stamp.isoformat()
         except Exception as exc:
             logger.debug(f"Could not archive the {symbol} scan: {exc}")
             return None
+
+    def _scan_premiums(self, symbol, scan_verdicts, price) -> dict:
+        """{direction: (option_symbol, premium)} for the sides that FIRED.
+
+        WHY THIS COSTS A QUOTE. An option's premium history dies with its
+        contract, so the cost of the trade a losing side would have taken can
+        only ever be recorded at the instant it was proposed. The mirror
+        experiment ran eleven days without it and could not be settled: both
+        sides BUY options, both pay theta and the spread, so a mirror only
+        wins where its original was wrong about DIRECTION rather than about
+        MOVEMENT — and that distinction exists in premium and nowhere else.
+        On the underlying a mirror's edge is exactly minus its original's,
+        which is no information at all.
+
+        AT MOST TWO QUOTES PER SCAN. The map is keyed by direction, not by
+        module, so a mirror and its original share one resolution each way and
+        a scan can never cost more than a CE and a PE however many modules
+        fired.
+
+        NEVER RAISES, AND NEVER DELAYS A DECISION. It runs after the auction
+        has already been settled, so a dead feed or a thin chain costs a NULL
+        column and nothing else. An unpriceable side is omitted rather than
+        written as zero: 0.0 is a premium the venue might really have quoted.
+        """
+        out: dict[str, tuple[str, float]] = {}
+        if not price or price <= 0:
+            return out
+        source = getattr(self.orchestrator, "price_source", None)
+        resolver = getattr(source, "resolve_option_contract", None)
+        if resolver is None:
+            return out
+
+        wanted = {
+            (getattr(sig, "direction", "") or "").lower()
+            for _sid, _mid, sig in scan_verdicts or ()
+            if getattr(sig, "should_enter", False)
+        }
+        for direction in wanted:
+            option_type = {"long": "CE", "short": "PE"}.get(direction)
+            if option_type is None:
+                continue
+            try:
+                contract = resolver(symbol, option_type, float(price))
+                tradingsymbol = (contract or {}).get("tradingsymbol")
+                if not tradingsymbol:
+                    continue
+                premium = float(source.get_quote(tradingsymbol).price)
+                if premium > 0:
+                    out[direction] = (tradingsymbol, premium)
+            except Exception as exc:
+                logger.debug(
+                    f"Could not price the {direction} side of {symbol}: {exc}")
+        return out
 
     def _archive_mark(
         self,
