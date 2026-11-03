@@ -3235,7 +3235,13 @@ class AutonomousTradingBot:
             for sym, pos in self._active_positions_tracking.items():
                 entry = float(pos.get("entry_price", 0.0))
                 qty = float(pos.get("quantity", 0.0))
-                stop = pos.get("stop_price")
+                # The level that can actually fire, not the seeded stop_price.
+                # Printing the latter told the commander he had a 5% stop when
+                # his real exposure was the 12% backstop — on GOLDM that was
+                # the difference between Rs 1,910 and Rs 6,325.
+                stop, stop_rung = self._effective_premium_floor(
+                    entry, float(pos.get("peak_price") or entry), pos)
+                stop = stop or None
                 target = pos.get("target_price")
                 try:
                     ltp = self.orchestrator.price_source.get_price(sym)
@@ -3249,7 +3255,8 @@ class AutonomousTradingBot:
                     ltp_str = f"{ltp:.2f}"
                     pnl = (ltp - entry) * qty * direction_sign
                     pnl_str = f"₹{pnl:+.2f}"
-                stop_str = f"{stop:.2f}" if isinstance(stop, (int, float)) else "N/A"
+                stop_str = (f"{stop:.2f} ({stop_rung})"
+                            if isinstance(stop, (int, float)) else "N/A")
                 target_str = f"{target:.2f}" if isinstance(target, (int, float)) else "N/A"
                 lines.append(
                     f"• *{sym}* {side} qty={qty:g} | entry={entry:.2f} LTP={ltp_str} "
@@ -4285,6 +4292,54 @@ class AutonomousTradingBot:
     #: A new peak must beat the last traced one by this much to be worth a line.
     _LADDER_TRACE_PEAK_STEP = 0.02
 
+    def _effective_premium_floor(
+        self, entry_premium: float, peak_premium: float, tracking: dict[str, Any],
+    ) -> tuple[float, str]:
+        """The premium level that would ACTUALLY trigger an exit, and its name.
+
+        WHY THIS EXISTS. `tracking["stop_price"]` is SEEDED at entry x (1 -
+        tsl_percent) — 5% below entry — and every display read it as "the live
+        protective level". On a bought option it is not a stop at all. Rung 4
+        is PROFIT protection: it arms only once the peak clears
+        `_OPTION_TRAIL_ARM_PCT` above entry, and its enforcement lives inside
+        `if floor_candidates:`, which is empty until then. So an un-armed
+        position's seeded floor is never compared to anything.
+
+        GOLDM26NOV138500PE, 2026-11-02: peaked +4.53%, missed arming by 16.83
+        points, and the archive holds SEVEN consecutive one-minute marks with
+        the premium 5-9% BELOW a floor of 3388.17 that every one of them
+        printed. It exited on the -12% backstop at -17.7%, Rs 6,325. The exit
+        was correct and the grades were already fixed (02dc802); the NUMBER ON
+        THE SCREEN was the lie, and it misled the commander and me both.
+
+        THE THESIS STOP IS NOT IN HERE, and cannot be: rung 2 fires on a move
+        in the UNDERLYING, which has no premium level. It is the rung that
+        actually ended both of 2026-11-03's trades. A caller showing this
+        number must not imply it is the only way out.
+
+        Returns (level, label). Never raises, and NEVER touches `stop_price` —
+        the ladder's enforcement reads that field directly, and this method
+        exists to describe the ladder, not to change it.
+        """
+        try:
+            entry_premium = float(entry_premium or 0.0)
+            if entry_premium <= 0:
+                return 0.0, "unknown"
+            backstop = entry_premium * (1.0 - self._backstop_pct_for(entry_premium))
+            armed = float(peak_premium or 0.0) >= entry_premium * (
+                1.0 + self._OPTION_TRAIL_ARM_PCT)
+            if not armed:
+                return backstop, "backstop"
+            # Once armed the ladder enforces stop_price itself, so that is the
+            # level in force — but the backstop never stops being live, and
+            # whichever sits HIGHER is the one a falling premium meets first.
+            trail = float(tracking.get("stop_price") or 0.0)
+            if trail > backstop:
+                return trail, "trail"
+            return backstop, "backstop"
+        except Exception:
+            return 0.0, "unknown"
+
     @staticmethod
     def _auction_key(conf: float, sid: str, module: object) -> tuple:
         """How the MCX arena ranks one firing module. Lowest key wins.
@@ -4442,6 +4497,12 @@ class AutonomousTradingBot:
                 target=tracking.get("target_price"),
                 decision_id=tracking.get("decision_id"),
                 when=now,
+                # Stored BESIDE floor, not instead of it: the 1,141 marks
+                # already written mean stop_price, and a floor study that
+                # mixed the two meanings would be comparing two things it
+                # believed were one.
+                effective_floor=self._effective_premium_floor(
+                    entry_premium, peak_premium, tracking)[0] or None,
             )
         except Exception as exc:
             logger.debug(f"Could not archive the premium mark for {symbol}: {exc}")
@@ -4474,6 +4535,13 @@ class AutonomousTradingBot:
         target = tracking.get("target_price")
         floor = float(tracking.get("stop_price") or 0.0)
         armed = peak_premium >= entry_premium * (1.0 + self._OPTION_TRAIL_ARM_PCT)
+        # What the line SAYS is the level that can actually fire, not the
+        # seeded stop_price it used to print. See _effective_premium_floor:
+        # for seven minutes on 2026-11-02 this line reported "floor 3388.17"
+        # while holding a position 5-9% below it, because rung 4 had never
+        # armed and nothing was checking that number.
+        live_floor, floor_rung = self._effective_premium_floor(
+            entry_premium, peak_premium, tracking)
 
         events: list[str] = []
         if armed and not tracking.get("_traced_armed"):
@@ -4484,7 +4552,18 @@ class AutonomousTradingBot:
         last_floor = float(tracking.get("_traced_floor") or 0.0)
         if floor > last_floor + 0.005:
             tracking["_traced_floor"] = floor
-            events.append(f"floor RATCHETED {last_floor:.2f} -> {floor:.2f}")
+            if armed:
+                events.append(f"floor RATCHETED {last_floor:.2f} -> {floor:.2f}")
+            else:
+                # THE LINE THAT MISLED EVERYONE. "floor RATCHETED 0.00 ->
+                # 3388.17" was the first thing both GOLDM losses printed, and
+                # it reads as protection arriving. Nothing arrived: that is
+                # stop_price being SEEDED at entry x (1 - tsl_percent), and
+                # rung 4 will not look at it until the peak clears +5%.
+                events.append(
+                    f"stop_price seeded at {floor:.2f} — NOT live, the trail "
+                    f"arms at {entry_premium * (1.0 + self._OPTION_TRAIL_ARM_PCT):.2f} "
+                    f"(+{self._OPTION_TRAIL_ARM_PCT:.0%})")
 
         last_peak = float(tracking.get("_traced_peak") or entry_premium)
         if peak_premium >= last_peak * (1.0 + self._LADDER_TRACE_PEAK_STEP):
@@ -4495,10 +4574,14 @@ class AutonomousTradingBot:
         if not events:
             return
         logger.info(
-            "Exit ladder %s: %s | now %.2f (%+.1f%%) peak %.2f floor %s target %s",
+            "Exit ladder %s: %s | now %.2f (%+.1f%%) peak %.2f floor %s "
+            "target %s | + thesis stop on the underlying",
             symbol, "; ".join(events), current_premium,
             (current_premium / entry_premium - 1.0) * 100.0, peak_premium,
-            f"{floor:.2f}" if floor else "none",
+            # The rung is named because "floor 3138.52" and "floor 3566.50"
+            # are different promises, and a reader cannot tell which they are
+            # looking at from the number alone.
+            f"{live_floor:.2f} ({floor_rung})" if live_floor else "none",
             f"{target:.2f}" if target else "not set",
         )
 

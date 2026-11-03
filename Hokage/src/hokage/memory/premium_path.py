@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS position_marks (
     floor       REAL,
     target      REAL,
     decision_id TEXT,
+    effective_floor REAL,
     PRIMARY KEY (symbol, observed_at)
 );
 CREATE INDEX IF NOT EXISTS idx_position_marks_day
@@ -99,11 +100,23 @@ def db_path() -> Path:
     return brain_root() / "candles.db"
 
 
+#: Columns added after the table was first created. CREATE TABLE IF NOT
+#: EXISTS does nothing to a table that already exists, so without this every
+#: brain in the field keeps writing the old shape forever.
+_ADDED_COLUMNS = (
+    ("effective_floor", "REAL"),
+)
+
+
 def connect() -> sqlite3.Connection:
     path = db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
+    have = {r[1] for r in conn.execute("PRAGMA table_info(position_marks)")}
+    for name, kind in _ADDED_COLUMNS:
+        if name not in have:
+            conn.execute(f"ALTER TABLE position_marks ADD COLUMN {name} {kind}")
     return conn
 
 
@@ -131,8 +144,16 @@ def remember(
     target=None,
     decision_id: str | None = None,
     when: dt.datetime | None = None,
+    effective_floor=None,
 ) -> bool:
     """Record one mark on one open position. True if a row was written.
+
+    `floor` is `tracking["stop_price"]` verbatim — seeded at entry x (1 -
+    tsl_percent) and ratcheted by rung 4. `effective_floor` is the level that
+    would ACTUALLY have fired at this mark. THEY ARE DIFFERENT NUMBERS and
+    both are stored, rather than redefining `floor`, because 1,141 marks were
+    written under the old meaning and silently re-pointing a column is how a
+    study comes to compare two things it believes are one.
 
     Refuses rather than guesses:
       * a premium at or below zero is a bad print or a dead quote, never a
@@ -156,10 +177,12 @@ def remember(
             conn.execute(
                 "INSERT OR IGNORE INTO position_marks "
                 "(symbol, observed_at, day, premium, entry, peak, floor, "
-                " target, decision_id) VALUES (?,?,?,?,?,?,?,?,?)",
+                " target, decision_id, effective_floor) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (str(symbol).upper(), when.isoformat(), when.date().isoformat(),
                  premium, entry, _opt(peak), _opt(floor), _opt(target),
-                 str(decision_id) if decision_id else None),
+                 str(decision_id) if decision_id else None,
+                 _opt(effective_floor)),
             )
             return conn.total_changes > before
     except sqlite3.Error:

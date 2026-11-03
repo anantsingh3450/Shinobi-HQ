@@ -39,10 +39,22 @@ from bots.autonomous.autonomous_bot import AutonomousTradingBot as Bot
 
 # ============================================================ 1. exit ladder
 class _Ladder:
-    """Just enough bot to exercise _trace_ladder."""
+    """Just enough bot to exercise _trace_ladder.
+
+    It now also carries `_effective_premium_floor` and the backstop tiers,
+    because the trace line reports the floor that would ACTUALLY fire rather
+    than the seeded `stop_price` it used to print — see
+    tests/unit/bots/test_effective_premium_floor.py. Borrowed from Bot rather
+    than reimplemented: a double that computes the floor its own way would
+    pass while the real line said something else.
+    """
 
     _OPTION_TRAIL_ARM_PCT = Bot._OPTION_TRAIL_ARM_PCT
+    _OPTION_TRAIL_LOCK_FRACTION = Bot._OPTION_TRAIL_LOCK_FRACTION
+    _OPTION_BACKSTOP_TIERS = Bot._OPTION_BACKSTOP_TIERS
     _LADDER_TRACE_PEAK_STEP = Bot._LADDER_TRACE_PEAK_STEP
+    _backstop_pct_for = Bot._backstop_pct_for
+    _effective_premium_floor = Bot._effective_premium_floor
     _trace_ladder = Bot._trace_ladder
 
 
