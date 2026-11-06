@@ -44,6 +44,16 @@ def _scrub(text: object) -> str:
     return _TOKEN_IN_URL.sub("/bot<REDACTED>", str(text))
 
 
+#: One deferred queue per queue FILE, shared by every uplink in this process.
+#:
+#: Keyed by the file and not by the class, because the test suite points
+#: HOKAGE_BRAIN_ROOT at a fresh tmp_path per test: a class-level dict would
+#: leak one test's deferred alarm into the next test's "assert not _deferred".
+#: The file is also exactly the thing being shared, so it is the honest key.
+_QUEUE_REGISTRY: dict[str, tuple[dict, dict, threading.RLock]] = {}
+_QUEUE_REGISTRY_GUARD = threading.Lock()
+
+
 class TelegramBotUplink:
     """Manages Telegram bot communications, TOTP token requests, fills/exits and EOD updates."""
 
@@ -76,10 +86,11 @@ class TelegramBotUplink:
         # Alerts the network swallowed, keyed by text so identical alarms
         # collapse. See _defer: on 2026-10-13 a 27-minute DNS outage dropped 26
         # of them and the commander was never told.
-        self._deferred: dict[str, dict] = {}
-        # Reentrant because _save_deferred is called from inside the critical
-        # sections that mutate the queue; a plain Lock deadlocks there.
-        self._deferred_lock = threading.RLock()
+        #
+        # SHARED WITH EVERY UPLINK IN THIS PROCESS that persists to the same
+        # file, and the lock with it. Hokage builds one uplink per league, and
+        # two private queues loading the same file both deliver what it holds.
+        self._deferred, self._inflight, self._deferred_lock = self._shared_queue()
         # A queue that only lives in memory still loses the alarm if the
         # process restarts during the outage, which is exactly when someone
         # tends to restart it.
@@ -262,7 +273,10 @@ class TelegramBotUplink:
         """
         now = time.time()
         with self._deferred_lock:
-            entry = self._deferred.get(text)
+            # An in-flight copy counts as queued. Raising the same alarm again
+            # while its first copy is mid-send must bump that one, not start a
+            # second entry that arrives moments after it.
+            entry = self._deferred.get(text) or self._inflight.get(text)
             if entry is None:
                 if len(self._deferred) >= self._DEFERRED_MAX_ENTRIES:
                     # SPEND A PERISHABLE ALERT FIRST. Evicting purely by age
@@ -306,6 +320,34 @@ class TelegramBotUplink:
         state_dir.mkdir(parents=True, exist_ok=True)
         return state_dir / "telegram_deferred.json"
 
+    def _shared_queue(self) -> tuple[dict, dict, threading.RLock]:
+        """The queue this uplink works on, the in-flight set, and their lock.
+
+        2026-11-06 14:28:55, four seconds after a restart: the 12:45 "HOKAGE IS
+        NOT TRADING" alarm, correctly held across the restart, was delivered
+        TWICE, 166 ms apart. Two uplinks (one per league) each hold a private
+        dict and each load the same file, so whatever disk is carrying goes out
+        once per uplink. Sharing the dict makes a claim by one a claim for all.
+
+        Reentrant lock because _save_deferred is called from inside the
+        critical sections that mutate the queue; a plain Lock deadlocks there.
+
+        Falls back to a private queue if the path cannot be resolved -- an
+        uplink that cannot find its brain is still worth having in memory, and
+        a constructor that raises here takes the whole bot down with it.
+        """
+        try:
+            key = str(self._deferred_path())
+        except Exception as e:
+            logger.warning(
+                "Deferred queue is private to this uplink; its path could not "
+                "be resolved: %s", _scrub(e))
+            return {}, {}, threading.RLock()
+        with _QUEUE_REGISTRY_GUARD:
+            if key not in _QUEUE_REGISTRY:
+                _QUEUE_REGISTRY[key] = ({}, {}, threading.RLock())
+            return _QUEUE_REGISTRY[key]
+
     def _save_deferred(self) -> None:
         """Persist the durable queue. NEVER raises.
 
@@ -317,11 +359,16 @@ class TelegramBotUplink:
 
         Only durable alerts are stored. A perishable one has no business
         surviving the process that raised it.
+
+        IN-FLIGHT ALERTS ARE STORED TOO. An alert claimed by a flush is out of
+        the queue but not yet delivered, and a send that is still waiting on a
+        10s timeout is exactly when a restart tends to land. Leaving it out of
+        the file would make the claim itself a way to lose the alarm.
         """
         try:
             import json
             with self._deferred_lock:
-                keep = {t: e for t, e in self._deferred.items()
+                keep = {t: e for t, e in {**self._inflight, **self._deferred}.items()
                         if not self._is_perishable(t)}
             path = self._deferred_path()
             if not keep:
@@ -349,23 +396,31 @@ class TelegramBotUplink:
                 return
             now = time.time()
             restored, expired = 0, 0
-            for text, entry in raw.items():
-                try:
-                    first = float(entry["first"])
-                    last = float(entry.get("last", first))
-                    count = int(entry.get("count", 1))
-                except (KeyError, TypeError, ValueError):
-                    continue
-                if self._is_perishable(text):
-                    continue
-                if now - first > self._DEFERRED_RESTART_MAX_AGE_SECONDS:
-                    expired += 1
-                    continue
-                self._deferred[text] = {
-                    "first": first, "last": last,
-                    "count": count, "restored": True,
-                }
-                restored += 1
+            with self._deferred_lock:
+                for text, entry in raw.items():
+                    try:
+                        first = float(entry["first"])
+                        last = float(entry.get("last", first))
+                        count = int(entry.get("count", 1))
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if self._is_perishable(text):
+                        continue
+                    if text in self._deferred or text in self._inflight:
+                        # Already live in this process. The file is a carrier
+                        # BETWEEN processes, not a second source of truth: a
+                        # reload must not restamp a live alert as "restored"
+                        # and claim it outlived a restart it never saw, nor
+                        # resurrect one a sibling uplink is mid-delivery on.
+                        continue
+                    if now - first > self._DEFERRED_RESTART_MAX_AGE_SECONDS:
+                        expired += 1
+                        continue
+                    self._deferred[text] = {
+                        "first": first, "last": last,
+                        "count": count, "restored": True,
+                    }
+                    restored += 1
             if restored:
                 logger.warning(
                     "Restored %d undelivered Telegram alert(s) queued before "
@@ -445,23 +500,59 @@ class TelegramBotUplink:
                 key=lambda kv: (self._is_perishable(kv[0]), kv[1]["first"]),
             )
             batch = batch[: self._DEFERRED_FLUSH_BATCH]
+            # CLAIMED HERE, NOT AFTER THE SEND. This used to leave the batch in
+            # the queue until each _post returned, so two threads flushing at
+            # once took the same snapshot and both delivered all of it -- and
+            # the flush runs at the top of EVERY send, from every thread
+            # Hokage has. Removing them under the lock means a second thread
+            # finds an empty queue and sends nothing; _requeue puts back
+            # anything the network then refused.
+            for text, entry in batch:
+                self._deferred.pop(text, None)
+                self._inflight[text] = entry
 
         sent = 0
-        for text, entry in batch:
+        for i, (text, entry) in enumerate(batch):
             body = self._deferred_preamble(entry, time.time()) + text
             if not self._post(body):
-                # Still down. Leave the rest queued; do not spend the loop's
-                # time on messages that will fail the same way.
+                # Still down. Put back what was claimed and not delivered; do
+                # not spend the loop's time on messages that will fail the
+                # same way.
+                self._requeue(batch[i:])
                 break
             with self._deferred_lock:
-                self._deferred.pop(text, None)
+                self._inflight.pop(text, None)
+                # Only now is it safe to drop from the file: he has been told.
+                self._save_deferred()
             sent += 1
         if sent:
             logger.info("Delivered %d deferred Telegram alert(s).", sent)
-            # Persist the shrunken queue, so a restart right after a partial
-            # drain does not resurrect what he has already been told.
-            self._save_deferred()
         return sent
+
+    def _requeue(self, claimed) -> None:
+        """Return claimed-but-undelivered alerts to the queue.
+
+        The claim is what stops a second thread sending the same alarm. Losing
+        it when the send fails would trade one duplicate for the exact defect
+        this queue exists to prevent, so a failed flush must leave the queue
+        as it found it.
+        """
+        with self._deferred_lock:
+            for text, entry in claimed:
+                self._inflight.pop(text, None)
+                live = self._deferred.get(text)
+                if live is None:
+                    self._deferred[text] = dict(entry)
+                    continue
+                # An identical alarm was raised while this copy was in flight.
+                # Keep the older start, the newer sighting, and both counts --
+                # the preamble reports all of it as one alert.
+                live["first"] = min(live["first"], entry["first"])
+                live["last"] = max(live["last"], entry["last"])
+                live["count"] = live["count"] + entry["count"]
+                if entry.get("restored"):
+                    live["restored"] = True
+            self._save_deferred()
 
     def send_message(self, text: str) -> bool:
         """Send a message to the configured Telegram chat.

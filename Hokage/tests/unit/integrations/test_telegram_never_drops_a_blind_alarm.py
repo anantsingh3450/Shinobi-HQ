@@ -101,6 +101,23 @@ def _age(bot, text, seconds):
     bot._deferred[text]["first"] = time.time() - seconds
 
 
+def _restart() -> TelegramBotUplink:
+    """A NEW PROCESS, which is what "restart" has to mean here.
+
+    Since 2026-11-06 the deferred queue is shared by every uplink in one
+    process, keyed by its file - two uplinks (Hokage runs one per league) each
+    loading that file both delivered what it held, 166 ms apart. So merely
+    constructing a second uplink now models a SIBLING, not a restart: it
+    attaches to the live queue and never reads disk.
+
+    A restart is the registry being empty, so clear it. Everything after that
+    comes from the file, which is the behaviour these tests are about.
+    """
+    from integrations.notifications import telegram_bot as _mod
+    _mod._QUEUE_REGISTRY.clear()
+    return TelegramBotUplink(bot_token=TOKEN, chat_id="999")
+
+
 # ===================================================== the incident itself
 @pytest.mark.parametrize("durable", [BLIND, LOGIN, BLACKOUT, EXIT])
 def test_a_durable_alarm_is_never_dropped_for_age(bot, monkeypatch, durable):
@@ -227,7 +244,7 @@ def test_a_durable_alarm_survives_a_restart(bot, monkeypatch):
     _sends(monkeypatch, [DNS])
     bot.send_message(BLIND)
 
-    reborn = TelegramBotUplink(bot_token=TOKEN, chat_id="999")
+    reborn = _restart()
     assert BLIND in reborn._deferred, "the alarm died with the process"
     assert reborn._deferred[BLIND]["restored"] is True
 
@@ -243,7 +260,7 @@ def test_a_restored_alarm_admits_it_may_be_stale(bot):
 def test_a_perishable_alert_does_not_survive_a_restart(bot, monkeypatch):
     _sends(monkeypatch, [DNS])
     bot.send_message(EOD)
-    reborn = TelegramBotUplink(bot_token=TOKEN, chat_id="999")
+    reborn = _restart()
     assert EOD not in reborn._deferred
 
 
@@ -256,7 +273,7 @@ def test_a_day_old_alarm_is_let_go_on_restart(bot, monkeypatch, caplog):
     bot._save_deferred()
 
     with caplog.at_level("WARNING", logger="Hokage.TelegramBot"):
-        reborn = TelegramBotUplink(bot_token=TOKEN, chat_id="999")
+        reborn = _restart()
     assert BLIND not in reborn._deferred
     assert "Let go of 1" in caplog.text
 
@@ -269,7 +286,7 @@ def test_delivery_is_not_undone_by_a_restart(bot, monkeypatch):
     bot.send_message("x")
     assert not bot._deferred
 
-    reborn = TelegramBotUplink(bot_token=TOKEN, chat_id="999")
+    reborn = _restart()
     assert not reborn._deferred, "a delivered alarm came back from disk"
 
 
@@ -279,7 +296,7 @@ def test_a_corrupt_queue_file_does_not_stop_the_uplink(bot, monkeypatch):
     never the ability to send the next alert."""
     bot._deferred_path().write_text("{not json at all", encoding="utf-8")
 
-    reborn = TelegramBotUplink(bot_token=TOKEN, chat_id="999")
+    reborn = _restart()
     assert reborn._deferred == {}
     reborn.enabled = True
     sent = _sends(monkeypatch, [_Response(200)])
@@ -296,7 +313,7 @@ def test_a_bom_in_the_queue_file_is_tolerated(bot, monkeypatch):
         "﻿" + json.dumps({BLIND: {"first": now, "last": now, "count": 2}}),
         encoding="utf-8")
 
-    reborn = TelegramBotUplink(bot_token=TOKEN, chat_id="999")
+    reborn = _restart()
     assert BLIND in reborn._deferred
 
 
