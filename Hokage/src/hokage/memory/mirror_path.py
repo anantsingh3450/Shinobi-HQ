@@ -202,9 +202,19 @@ def path_for(held_symbol: str, day: str | dt.date | None = None) -> list[dict]:
 
 
 def coverage() -> dict:
-    """What a lab can expect to find, so a study can state its own n."""
+    """What a lab can expect to find, so a study can state its own n.
+
+    `armed` SEPARATES "NOT WIRED YET" FROM "NOTHING TO SHOW". The table is
+    created by the first `remember()`, so before any fill it does not exist -
+    and a reading of rows=0 then means "no write has ever been attempted",
+    which is indistinguishable from "the write path is broken". On 2026-11-06
+    this read zeros a few minutes after the restart that shipped the path, and
+    I reported the archive as live and empty when the truth was that it had
+    not been reached yet. Same number, two very different facts.
+    """
     db = db_path()
-    empty = {"rows": 0, "pairs": 0, "first_day": None, "last_day": None}
+    empty = {"rows": 0, "pairs": 0, "first_day": None, "last_day": None,
+             "armed": False}
     if not db.exists():
         return empty
     try:
@@ -216,7 +226,7 @@ def coverage() -> dict:
             "SELECT COUNT(*), COUNT(DISTINCT held_symbol || day), "
             "MIN(day), MAX(day) FROM mirror_marks").fetchone()
         return {"rows": rows or 0, "pairs": pairs or 0,
-                "first_day": first, "last_day": last}
+                "first_day": first, "last_day": last, "armed": True}
     except sqlite3.Error:
         return empty
     finally:

@@ -167,7 +167,28 @@ def test_an_instant_is_never_overwritten(archive):
 def test_reading_an_archive_that_does_not_exist_is_empty_not_an_error(archive):
     assert archive.path_for(HELD) == []
     assert archive.coverage() == {
-        "rows": 0, "pairs": 0, "first_day": None, "last_day": None}
+        "rows": 0, "pairs": 0, "first_day": None, "last_day": None,
+        "armed": False}
+
+
+def test_coverage_says_whether_the_table_exists_at_all(archive):
+    """ROWS=0 IS TWO DIFFERENT FACTS. The table is born on the first write, so
+    before any fill it is absent - and I read that as "live and empty" on
+    2026-11-06, which is also exactly what a broken write path would look
+    like. A reader has to be able to tell them apart."""
+    assert archive.coverage()["armed"] is False
+    archive.remember(MIRROR, 15.60, MIRROR_ENTRY, held_symbol=HELD, when=T0)
+    assert archive.coverage()["armed"] is True
+
+
+def test_an_archive_whose_writes_were_all_refused_is_still_armed(archive):
+    """The distinction has to survive the case it exists for: the table was
+    reached, every print in it was bad, so rows=0 with armed=True says the
+    wiring works and the data did not."""
+    assert archive.remember(MIRROR, 0.0, MIRROR_ENTRY, held_symbol=HELD) is False
+    archive.connect().close()
+    cov = archive.coverage()
+    assert cov["rows"] == 0 and cov["armed"] is True
 
 
 def test_coverage_counts_pairs_so_a_study_can_state_its_n(archive):
