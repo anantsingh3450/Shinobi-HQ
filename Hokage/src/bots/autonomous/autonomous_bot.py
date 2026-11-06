@@ -3399,6 +3399,10 @@ class AutonomousTradingBot:
         tracked_symbol = req.instrument.symbol
         tracked_entry_price = float(req_meta.get("premium_at_entry", entry_price)) if req_meta.get("is_option") else float(entry_price)
         entry_und_atr = self._get_atr_for_symbol(underlying)
+        _target, _target_adaptive = self._seed_target_price(
+            tracked_entry_price, underlying, float(entry_price),
+            entry_und_atr, manual_strategy_id,
+        )
         self._active_positions_tracking[tracked_symbol] = {
             "entry_price": tracked_entry_price,
             "peak_price": tracked_entry_price,
@@ -3408,7 +3412,11 @@ class AutonomousTradingBot:
             # break-even and beyond; reading it after the fact
             # measures nothing. See _compute_rr_achieved.
             "initial_stop_price": tracked_entry_price * (1.0 - self.tsl_percent),
-            "target_price": tracked_entry_price * (1.0 + self.tp_percent),
+            "target_price": _target,
+            # False means the TARGET_HIT rung cannot fire for this position,
+            # so the alert must not call the stored figure a target. See
+            # _seed_target_price.
+            "target_is_adaptive": _target_adaptive,
             "decision_id": f"manual-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
             "strategy_id": manual_strategy_id,
             # What the sizing grade is measured against. See
@@ -3441,7 +3449,8 @@ class AutonomousTradingBot:
             try:
                 self.telegram_bot.notify_entry(
                     symbol=tracked_symbol, cmp=tracked_entry_price,
-                    target=self._active_positions_tracking[tracked_symbol]["target_price"], edge=100.0,
+                    target=self._active_positions_tracking[tracked_symbol]["target_price"],
+                    target_adaptive=_target_adaptive, edge=100.0,
                     strategy=self._strategy_display_name(
                         self._active_positions_tracking[tracked_symbol].get("strategy_id")),
                 )
@@ -3696,9 +3705,7 @@ class AutonomousTradingBot:
 
         symbol_upper = symbol.upper()
         is_option = symbol_upper.endswith("CE") or symbol_upper.endswith("PE")
-        is_mcx_instrument = symbol_upper.startswith(("CRUDEOIL", "GOLD", "SILVER", "NATURALGAS")) or (
-            venue is not None and "mcx" in venue.venue_id.lower()
-        )
+        is_mcx_instrument = self._is_mcx_symbol(symbol_upper, venue)
 
         # 2. Time-Based Square-Off (loss protection outranks profit-taking;
         # MCX instruments are recognized by symbol so paper-venue commodity
@@ -4144,6 +4151,122 @@ class AutonomousTradingBot:
             None if mae is None else round(mae, 4),
         )
 
+    #: MCX underlyings, recognised by symbol so paper-venue commodity options
+    #: still use the 23:15 MCX close and the 5-minute bar rather than the NSE
+    #: 15:20/15-minute pair. Extracted from the exit path so the entry path can
+    #: size its target against the SAME session clock; two different clocks
+    #: would reintroduce the divergence _adaptive_premium_target exists to end.
+    _MCX_UNDERLYING_PREFIXES = ("CRUDEOIL", "GOLD", "SILVER", "NATURALGAS")
+
+    def _is_mcx_symbol(self, symbol: str, venue: Any | None = None) -> bool:
+        return str(symbol).upper().startswith(self._MCX_UNDERLYING_PREFIXES) or (
+            venue is not None and "mcx" in str(venue.venue_id).lower()
+        )
+
+    def _adaptive_premium_target(
+        self,
+        entry_premium: float,
+        entry_und_price: float | None,
+        entry_und_atr: float | None,
+        strategy_id: str | None,
+        underlying: str | None,
+        is_mcx: bool,
+        now_ist: datetime | None = None,
+    ) -> float | None:
+        """The ONE premium target. Returns None when no target rung is live.
+
+        THERE USED TO BE TWO, AND THE COMMANDER WAS SHOWN THE DEAD ONE.
+        Every entry path seeded `target_price` as entry * (1 + tp_percent) —
+        10% — and the entry alert quoted that. About sixty seconds later the
+        first exit-ladder tick overwrote it with the number computed here, and
+        the revised value was never announced again.
+
+        On 2026-11-06 the gas 280 CE was bought at 14.55. The alert said the
+        target was ₹16.01. The engine wanted ₹16.73, decaying to ₹16.61.
+        Premium crossed ₹16.01 at 11:28:01 and stayed above it for nine price
+        marks, so for twenty-eight minutes the commander watched a position
+        sitting past its stated target and not selling, and asked whether that
+        was deliberate. It was not: he had been given a number nothing in the
+        system acts on. Same shape as the `floor` that could not stop anything
+        (fixed 2026-11-04) — and that one had already cost a real 7% on GOLDM.
+
+        So the formula lives here, in one place, and the entry path seeds the
+        tracking record by calling it. The number in the alert is now the
+        number the exit engine uses.
+
+        It does still MOVE: the target is sized from the underlying's ATR
+        times the square root of the bars left in the session, so it decays as
+        the day runs out of time to deliver the move. That is a property of
+        the design, not a defect, which is why the alert says so out loud
+        instead of printing a figure that looks fixed.
+
+        None means the TARGET_HIT rung cannot fire for this position at all —
+        without an entry ATR there is nothing to calibrate against, and the
+        ladder has always skipped the rung rather than fabricate a level.
+        Callers must say "no target" in that case, never substitute 10%.
+        """
+        if not entry_und_atr or entry_premium <= 0:
+            return None
+        import math
+
+        now_ist = now_ist or self._now_ist()
+        bar_minutes = 5 if is_mcx else 15
+        close_hour, close_min = (23, 15) if is_mcx else (15, 20)
+        minutes_left = (close_hour - now_ist.hour) * 60 + (close_min - now_ist.minute)
+        bars_left = max(0.0, minutes_left / bar_minutes)
+        expected_move = float(entry_und_atr) * math.sqrt(bars_left)
+        raw_target = entry_premium + (
+            self._OPTION_TARGET_MOVE_FRACTION * self._OPTION_TARGET_ATM_DELTA * expected_move
+        )
+        # Floor the target at the risk this position is ACTUALLY taking —
+        # measured with THIS strategy's stop distance, so reward:risk stays
+        # honest for a strategy running a non-default stop.
+        min_pct = self._risk_pct_for(
+            entry_premium, entry_und_price, entry_und_atr,
+            strategy_id, underlying,
+        ) * self._OPTION_MIN_REWARD_RISK
+        return min(
+            max(raw_target, entry_premium * (1.0 + min_pct)),
+            entry_premium * (1.0 + max(self._OPTION_TARGET_MAX_PCT, min_pct)),
+        )
+
+    def _seed_target_price(
+        self,
+        entry_premium: float,
+        underlying: str | None,
+        entry_und_price: float | None,
+        entry_und_atr: float | None,
+        strategy_id: str | None,
+        now_ist: datetime | None = None,
+    ) -> tuple[float, bool]:
+        """What goes in tracking["target_price"] at fill. (value, is_adaptive).
+
+        All three entry paths used to write entry * (1 + tp_percent) here and
+        hand that figure straight to the entry alert, which is how the
+        commander came to be told ₹16.01 on a position the engine would only
+        sell at ₹16.61. See _adaptive_premium_target.
+
+        When is_adaptive is False the TARGET_HIT rung CANNOT FIRE for this
+        position — there was no entry ATR to calibrate against. The
+        tp_percent figure is still stored, because the dashboard, the premium
+        mark archive and the review all expect a float there, but it is NOT an
+        exit level and the alert must not present it as one. That is what the
+        second element of this tuple is for.
+
+        `now_ist` defaults to the live clock. It is injectable because the
+        target depends on how much of the session is LEFT, so a test that
+        cannot fix the clock cannot pin the number against the figure the
+        ladder printed on the real trade.
+        """
+        target = self._adaptive_premium_target(
+            entry_premium, entry_und_price, entry_und_atr,
+            strategy_id, underlying, self._is_mcx_symbol(underlying or ""),
+            now_ist,
+        )
+        if target is None:
+            return round(entry_premium * (1.0 + self.tp_percent), 2), False
+        return round(target, 2), True
+
     def _evaluate_option_exit_ladder(
         self,
         symbol: str,
@@ -4202,26 +4325,12 @@ class AutonomousTradingBot:
 
         # Rung 3 — TARGET_HIT: adaptive, move-calibrated premium target sized
         # to how much the market can plausibly still move today.
-        if entry_und_atr:
-            bar_minutes = 5 if is_mcx else 15
-            close_hour, close_min = (23, 15) if is_mcx else (15, 20)
-            minutes_left = (close_hour - now_ist.hour) * 60 + (close_min - now_ist.minute)
-            bars_left = max(0.0, minutes_left / bar_minutes)
-            expected_move = float(entry_und_atr) * math.sqrt(bars_left)
-            raw_target = entry_premium + (
-                self._OPTION_TARGET_MOVE_FRACTION * self._OPTION_TARGET_ATM_DELTA * expected_move
-            )
-            # Floor the target at the risk this position is ACTUALLY taking —
-            # measured with THIS strategy's stop distance, so reward:risk stays
-            # honest for a strategy running a non-default stop.
-            min_pct = self._risk_pct_for(
-                entry_premium, entry_und_price, entry_und_atr,
-                tracking.get("strategy_id"), tracking.get("underlying"),
-            ) * self._OPTION_MIN_REWARD_RISK
-            target = min(
-                max(raw_target, entry_premium * (1.0 + min_pct)),
-                entry_premium * (1.0 + max(self._OPTION_TARGET_MAX_PCT, min_pct)),
-            )
+        target = self._adaptive_premium_target(
+            entry_premium, entry_und_price, entry_und_atr,
+            tracking.get("strategy_id"), tracking.get("underlying"),
+            is_mcx, now_ist,
+        )
+        if target is not None:
             tracking["target_price"] = round(target, 2)
             if current_premium >= target:
                 return True, (
@@ -5726,6 +5835,12 @@ class AutonomousTradingBot:
             tracked_symbol = req.instrument.symbol
             tracked_entry_price = float(req_meta.get("premium_at_entry", entry_price))
             entry_und_atr = _entry_atr
+            # The SAME target the exit ladder will use, not entry * 1.10. The
+            # alert quotes this, so the two can no longer disagree.
+            _target, _target_adaptive = self._seed_target_price(
+                tracked_entry_price, symbol, float(entry_price),
+                entry_und_atr, selected_sid,
+            )
 
             self.strategy_engine.record_trade(_playbook_id, symbol, now_ist.strftime("%Y-%m-%d"))
 
@@ -5755,7 +5870,11 @@ class AutonomousTradingBot:
                 # break-even and beyond; reading it after the fact
                 # measures nothing. See _compute_rr_achieved.
                 "initial_stop_price": tracked_entry_price * (1.0 - self.tsl_percent),
-                "target_price": tracked_entry_price * (1.0 + self.tp_percent),
+                "target_price": _target,
+                # False means the TARGET_HIT rung cannot fire for this
+                # position, so the alert must not call the stored figure a
+                # target. See _seed_target_price.
+                "target_is_adaptive": _target_adaptive,
                 "decision_id": f"mcx-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
                 "strategy_id": selected_sid,
                 "conviction_score": int(win_conf),
@@ -5791,6 +5910,7 @@ class AutonomousTradingBot:
                     self.telegram_bot.notify_entry(
                         symbol=tracked_symbol, cmp=tracked_entry_price,
                         target=_track["target_price"],
+                        target_adaptive=_track.get("target_is_adaptive"),
                         edge=win_conf,
                         strategy=self._strategy_display_name(_track.get("strategy_id")),
                         context=self._trade_context(
@@ -7059,6 +7179,10 @@ class AutonomousTradingBot:
                 tracked_side = req.side
                 tracked_entry_price = entry_price
                 option_tracking_extras: dict[str, Any] = {}
+                # Only the option ladder has an adaptive target; a non-option
+                # entry keeps the percentage take-profit, and says so.
+                _target = round(tracked_entry_price * (1.0 + self.tp_percent), 2)
+                _target_adaptive = False
                 req_meta = req.instrument.metadata or {}
                 if req_meta.get("is_option"):
                     tracked_entry_price = float(req_meta.get("premium_at_entry", entry_price))
@@ -7081,6 +7205,12 @@ class AutonomousTradingBot:
                         "strike": req_meta.get("strike"),
                         "expiry": req_meta.get("expiry"),
                     }
+                    # The SAME target the exit ladder will use. Computed here,
+                    # after tracked_entry_price has become the premium.
+                    _target, _target_adaptive = self._seed_target_price(
+                        tracked_entry_price, symbol, float(entry_price),
+                        entry_und_atr, selected_sid,
+                    )
 
                 self.strategy_engine.record_trade(playbook_id, symbol, current_date_str)
                 bus.publish("EXECUTION_COMPLETED", {
@@ -7139,7 +7269,11 @@ class AutonomousTradingBot:
                     # break-even and beyond; reading it after the fact
                     # measures nothing. See _compute_rr_achieved.
                     "initial_stop_price": tracked_entry_price * (1.0 - self.tsl_percent),
-                    "target_price": tracked_entry_price * (1.0 + self.tp_percent),
+                    "target_price": _target,
+                    # False means the TARGET_HIT rung cannot fire for this
+                    # position, so the alert must not call the stored figure a
+                    # target. See _seed_target_price.
+                    "target_is_adaptive": _target_adaptive,
                     "decision_id": decision_id,
                     "strategy_id": selected_sid,
                     "conviction_score": int(committee_decision.decision_confidence),
@@ -7171,6 +7305,8 @@ class AutonomousTradingBot:
                         symbol=tracked_symbol,
                         cmp=tracked_entry_price,
                         target=self._active_positions_tracking[tracked_symbol]["target_price"],
+                        target_adaptive=self._active_positions_tracking[
+                            tracked_symbol].get("target_is_adaptive"),
                         edge=float(committee_decision.decision_confidence),
                         strategy=self._strategy_display_name(
                             self._active_positions_tracking[tracked_symbol].get("strategy_id")),

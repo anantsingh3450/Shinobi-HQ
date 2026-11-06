@@ -587,8 +587,33 @@ class TelegramBotUplink:
         edge: float,
         strategy: str | None = None,
         context: Any | None = None,
+        target_adaptive: bool | None = None,
     ) -> None:
         """Send a real-time entry notification.
+
+        `target_adaptive` says what KIND of number `target` is, and the alert
+        is worded accordingly:
+
+          True  - the adaptive premium target the exit ladder will actually
+                  use. It decays through the session as the day runs out of
+                  time to deliver the move, so the alert says so rather than
+                  printing a figure that looks fixed.
+          False - there is NO live target rung for this position. The figure
+                  is the percentage take-profit, which the option ladder does
+                  not consult; the alert says exits come from the trail or the
+                  stop instead of naming a level nothing acts on.
+          None  - the caller did not say. Printed bare, as before.
+
+        WHY THIS ARGUMENT EXISTS. Until 2026-11-06 every entry path seeded
+        target_price as entry * (1 + tp_percent) and this alert quoted it,
+        while the exit ladder overwrote that value with its own adaptive
+        target about a minute later and never announced the new one. The gas
+        280 CE was bought at 14.55: the alert said ₹16.01, the engine wanted
+        ₹16.61. The premium crossed 16.01 at 11:28 and sat above it for nine
+        marks, so the commander watched a position pass its stated target and
+        not sell, and had to ask whether that was a feature. It was a number
+        nothing in the system acted on - the same defect as the `floor` that
+        could not stop anything.
 
         `context` is an optional TradeContext. When supplied, a plain-English
         paragraph is appended explaining the trade to someone who does not
@@ -602,11 +627,20 @@ class TelegramBotUplink:
         one to promote. Optional so older//manual call sites keep working.
         """
         who = f"• *Strategy*: {self.escape_markdown(strategy)}\n" if strategy else ""
+        if target_adaptive is False:
+            target_line = "• *Target*: none — exits on the trail or the stop\n"
+        elif target_adaptive:
+            target_line = (
+                f"• *Target*: ₹{target:,.2f} _(adaptive — drifts down as the "
+                f"session runs out of time)_\n"
+            )
+        else:
+            target_line = f"• *Target*: ₹{target:,.2f}\n"
         msg = (
             f"🚀 *ENTRY · {self.escape_markdown(self._instrument_line(symbol))}*\n"
             f"{who}"
             f"• *Premium paid*: ₹{cmp:,.2f}\n"
-            f"• *Target*: ₹{target:,.2f}\n"
+            f"{target_line}"
             f"• *Edge*: {edge:.1f}%\n"
             f"{self._plain_terms(context)}"
             f"\n`{self.escape_markdown(symbol)}`"
