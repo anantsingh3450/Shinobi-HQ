@@ -266,7 +266,105 @@ def main() -> int:
         print("\n  A PRICED PAIR IS NOT YET AN ANSWER. This is the ENTRY cost of")
         print("  both sides; the exit still has to come from the premium path of")
         print("  whichever side actually filled, or from the next close.")
+
+    print("\nPREMIUM PAIRS  (the question, finally in the right units)")
+    print(report_pairs(con))
     return 0
+
+
+def pairs_scored(con) -> list[dict]:
+    """One row per held position that has an opposing path beside it.
+
+    Both sides are read at the SAME instants, because mirror_marks stores them
+    on one row. The window is the real position's: entry to its last mark,
+    which is where the ladder closed it. The mirror has no exit of its own -
+    no stop, no trail, no target - so this is "what the opposite option was
+    worth while the real trade was open", not a simulated round trip.
+    """
+    try:
+        rows = con.execute(
+            "SELECT held_symbol, day, symbol, module_id,"
+            " MIN(observed_at) first_at, MAX(observed_at) last_at,"
+            " COUNT(*) marks FROM mirror_marks"
+            " GROUP BY held_symbol, day, symbol ORDER BY day, first_at"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+    out = []
+    for r in rows:
+        last = con.execute(
+            "SELECT premium, entry, held_premium, held_entry FROM mirror_marks"
+            " WHERE held_symbol = ? AND day = ? AND symbol = ?"
+            " ORDER BY observed_at DESC LIMIT 1",
+            (r["held_symbol"], r["day"], r["symbol"]),
+        ).fetchone()
+        if not last or not last["entry"] or not last["held_entry"]:
+            continue
+        peak = con.execute(
+            "SELECT MAX(premium) p, MAX(held_premium) h FROM mirror_marks"
+            " WHERE held_symbol = ? AND day = ? AND symbol = ?",
+            (r["held_symbol"], r["day"], r["symbol"]),
+        ).fetchone()
+        out.append({
+            "day": r["day"], "held": r["held_symbol"], "mirror": r["symbol"],
+            "module": r["module_id"], "marks": r["marks"],
+            "held_entry": last["held_entry"], "mirror_entry": last["entry"],
+            "held_pct": 100.0 * (last["held_premium"] - last["held_entry"])
+                        / last["held_entry"] if last["held_premium"] else None,
+            "mirror_pct": 100.0 * (last["premium"] - last["entry"]) / last["entry"],
+            "held_peak_pct": 100.0 * (peak["h"] - last["held_entry"])
+                             / last["held_entry"] if peak and peak["h"] else None,
+            "mirror_peak_pct": 100.0 * (peak["p"] - last["entry"]) / last["entry"]
+                               if peak and peak["p"] else None,
+        })
+    return out
+
+
+def report_pairs(con) -> str:
+    """Printed even when there is nothing yet, and especially then.
+
+    The first version of this experiment ran eleven days and was never read
+    once. A lab that says "no data" out loud is the difference between an
+    experiment that is waiting and one that has been forgotten.
+    """
+    scored = pairs_scored(con)
+    if not scored:
+        return (
+            "  no paired path yet. The opposing leg is priced on the same tick\n"
+            "  as the held position from the next boot onward, so the first pair\n"
+            "  appears with the next MCX fill. It cannot be backfilled: an\n"
+            "  option's premium history dies with its contract."
+        )
+    lines = [
+        f"  {'day':11} {'held':22} {'held %':>8} {'other %':>8} "
+        f"{'held pk':>8} {'oth pk':>8} {'marks':>6}"
+    ]
+    deltas = []
+    for p in scored:
+        def _f(v):
+            return f"{v:+.1f}" if v is not None else "    -"
+        lines.append(
+            f"  {p['day']:11} {p['held'][:20]:22} {_f(p['held_pct']):>8} "
+            f"{_f(p['mirror_pct']):>8} {_f(p['held_peak_pct']):>8} "
+            f"{_f(p['mirror_peak_pct']):>8} {p['marks']:>6}")
+        if p["held_pct"] is not None:
+            deltas.append(p["held_pct"] - p["mirror_pct"])
+    if deltas:
+        mean = sum(deltas) / len(deltas)
+        t = t_stat(deltas)
+        lines.append("")
+        lines.append(
+            f"  n={len(deltas)}  mean held-minus-other {mean:+.2f} pct points"
+            f"  t={t:+.2f}" if t is not None else
+            f"  n={len(deltas)}  mean held-minus-other {mean:+.2f} pct points")
+        lines.append(
+            "  POSITIVE MEANS THE ARENA IS RIGHT and the mirror would have paid")
+        lines.append(
+            "  to be wrong. Both sides BUY, so both pay theta: a difference")
+        lines.append(
+            "  smaller than the spread is not tradable by either of them.")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

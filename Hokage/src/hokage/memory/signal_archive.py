@@ -214,6 +214,53 @@ def mark_filled(symbol: str, strategy_id: str, scanned_at: str,
         return False
 
 
+def opposing_leg(symbol: str, scanned_at: str,
+                 held_option: str | None = None) -> dict | None:
+    """The priced contract a LOSING side of this scan would have bought.
+
+    One leg at most, and deliberately: `remember_scan`'s premium map is keyed
+    by DIRECTION, so however many modules fired, a scan holds at most one CE
+    and one PE. The leg returned is the one whose contract is not the one that
+    filled - which, for a mirror and its original, is exactly the opposite
+    option the commander's 2026-10-23 hypothesis is about.
+
+    Returns None rather than guessing when the losing side was unpriceable
+    (a thin chain, a dead feed), because a leg with no entry premium cannot
+    start a path. Absent is not zero.
+    """
+    db = db_path()
+    if not db.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("SELECT 1 FROM auction_signals LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.close()
+        return None
+    try:
+        rows = conn.execute(
+            "SELECT module_id, strategy_id, direction, option_symbol,"
+            " option_premium, reason FROM auction_signals"
+            " WHERE scanned_at = ? AND symbol = ? AND fired = 1 AND won = 0"
+            " AND option_symbol IS NOT NULL AND option_premium > 0",
+            (str(scanned_at), str(symbol).upper()),
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    held = str(held_option).upper() if held_option else None
+    for row in rows:
+        if held and str(row["option_symbol"]).upper() == held:
+            continue            # the loser proposed the same contract
+        return dict(row)
+    return None
+
+
 def signals_for(strategy_id: str, symbol: str | None = None,
                 fired_only: bool = True) -> list[dict]:
     """Every recorded signal for one cell, oldest first."""

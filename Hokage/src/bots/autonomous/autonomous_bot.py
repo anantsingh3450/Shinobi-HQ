@@ -4557,6 +4557,83 @@ class AutonomousTradingBot:
                     f"Could not price the {direction} side of {symbol}: {exc}")
         return out
 
+    def _opposing_leg_for(
+        self, underlying: str, scanned_at: str | None, held_option: str,
+    ) -> dict[str, Any] | None:
+        """The losing side's contract and what it cost, or None.
+
+        Read back out of the scan archive rather than threaded down from the
+        auction, so there is one definition of "what the other side would have
+        bought" and it is the one already being recorded. NEVER RAISES: this
+        sits in the entry path, and a position must not fail to be tracked
+        because an experiment could not be set up.
+        """
+        if not scanned_at:
+            return None
+        try:
+            from hokage.memory import signal_archive
+
+            leg = signal_archive.opposing_leg(underlying, scanned_at, held_option)
+            if not leg:
+                return None
+            return {
+                "symbol": str(leg["option_symbol"]).upper(),
+                "entry": float(leg["option_premium"]),
+                "module_id": leg.get("module_id"),
+                "direction": leg.get("direction"),
+                "scanned_at": str(scanned_at),
+            }
+        except Exception as exc:
+            logger.debug(f"No opposing leg recorded for {held_option}: {exc}")
+            return None
+
+    def _archive_mirror_mark(
+        self,
+        held_symbol: str,
+        held_entry: float,
+        held_premium: float,
+        tracking: dict[str, Any],
+        when,
+    ) -> None:
+        """Price the side that lost the auction, on the same tick as the one
+        that won.
+
+        ONE EXTRA QUOTE PER MARK, and only while a position is open. The leg
+        is fixed at entry, so this cannot fan out: a scan prices at most one
+        CE and one PE however many modules fired.
+
+        NEVER RAISES, and deliberately runs AFTER the real mark is written -
+        the held position's path is the one the trail study needs, and an
+        experiment must not be able to cost it a row.
+        """
+        leg = tracking.get("mirror_leg")
+        if not isinstance(leg, dict) or not leg.get("symbol"):
+            return
+        try:
+            source = getattr(self.orchestrator, "price_source", None)
+            if source is None:
+                return
+            premium = float(source.get_quote(leg["symbol"]).price)
+            if premium <= 0:
+                return
+            from hokage.memory import mirror_path
+
+            mirror_path.remember(
+                leg["symbol"],
+                premium,
+                float(leg["entry"]),
+                held_symbol=held_symbol,
+                held_premium=held_premium,
+                held_entry=held_entry,
+                module_id=leg.get("module_id"),
+                decision_id=tracking.get("decision_id"),
+                scanned_at=leg.get("scanned_at"),
+                when=when,
+            )
+        except Exception as exc:
+            logger.debug(
+                f"Could not price the opposing leg of {held_symbol}: {exc}")
+
     def _archive_mark(
         self,
         symbol: str,
@@ -4613,6 +4690,8 @@ class AutonomousTradingBot:
                 effective_floor=self._effective_premium_floor(
                     entry_premium, peak_premium, tracking)[0] or None,
             )
+            self._archive_mirror_mark(
+                symbol, entry_premium, current_premium, tracking, now)
         except Exception as exc:
             logger.debug(f"Could not archive the premium mark for {symbol}: {exc}")
 
@@ -5876,6 +5955,14 @@ class AutonomousTradingBot:
                 # target. See _seed_target_price.
                 "target_is_adaptive": _target_adaptive,
                 "decision_id": f"mcx-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
+                # THE OPPOSITE OPTION, so it can be priced for as long as this
+                # position lives. The mirror never fills, so its contract had
+                # exactly one price in the whole brain - what it cost at the
+                # instant it was proposed - and one number is not a round
+                # trip. Plain str/float only: this dict is json.dump'ed to
+                # active_positions.json on every tick. See mirror_path.
+                "mirror_leg": self._opposing_leg_for(
+                    symbol, _scan_stamp, tracked_symbol),
                 "strategy_id": selected_sid,
                 "conviction_score": int(win_conf),
                 # What the sizing grade is measured against. See
