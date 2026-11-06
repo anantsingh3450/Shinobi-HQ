@@ -77,7 +77,13 @@ class TelegramBotUplink:
         # collapse. See _defer: on 2026-10-13 a 27-minute DNS outage dropped 26
         # of them and the commander was never told.
         self._deferred: dict[str, dict] = {}
-        self._deferred_lock = threading.Lock()
+        # Reentrant because _save_deferred is called from inside the critical
+        # sections that mutate the queue; a plain Lock deadlocks there.
+        self._deferred_lock = threading.RLock()
+        # A queue that only lives in memory still loses the alarm if the
+        # process restarts during the outage, which is exactly when someone
+        # tends to restart it.
+        self._load_deferred()
 
     def _prompt_state_path(self):
         from pathlib import Path
@@ -190,9 +196,47 @@ class TelegramBotUplink:
     #: collapse into one entry, so the real bound is on DISTINCT alerts.
     _DEFERRED_MAX_ENTRIES = 40
 
-    #: An alert older than this describes a world that no longer exists. Two
-    #: hours after the fact, "HOKAGE IS BLIND" is archaeology, not an alarm.
+    #: An alert older than this describes a world that no longer exists -- for
+    #: the alerts that genuinely expire. It does NOT apply to durable ones.
+    #:
+    #: THIS CONSTANT USED TO DELETE THE ONLY ALARM THAT MATTERED. From 22:38 on
+    #: 2026-11-04 the host stopped resolving DNS for eleven hours. "HOKAGE IS
+    #: BLIND -- MARKET DATA UNREACHABLE" was raised 104 times into a dead pipe,
+    #: held here, and then dropped at 01:46 for being 183 minutes old. The
+    #: commander woke to a system that had been blind all night and a queue
+    #: that had thrown the evidence away. The old comment said two hours after
+    #: the fact "HOKAGE IS BLIND" is archaeology -- which is true of the
+    #: SENTENCE and false of the FACT: the blindness was still going on, and
+    #: outlived the alert telling him about it by nine hours.
     _DEFERRED_MAX_AGE_SECONDS = 7200
+
+    #: Alerts that really do expire, matched case-insensitively against the
+    #: message text. Everything NOT on this list is DURABLE and is never
+    #: dropped for age.
+    #:
+    #: THE DEFAULT IS DELIBERATELY "DURABLE". Listing what to keep would mean a
+    #: future alarm nobody remembered to list gets silently deleted during the
+    #: exact outage it was written for -- the shape of
+    #: absent-is-not-false. A report of a day that has ended is genuinely
+    #: worthless late; an alarm about the system's ability to trade is not.
+    _PERISHABLE_MARKERS = (
+        "how today went",        # the end-of-day report, per league
+        "morning system",        # the pre-open system check
+        "daily briefing",
+        "delayed alert",         # a preamble must never be re-queued
+    )
+
+    def _is_perishable(self, text: str) -> bool:
+        """True only for alerts whose value really does decay to nothing.
+
+        Durability is decided by the TEXT because that is all the queue has:
+        _defer is handed a finished string by send_message, with no severity
+        and no caller identity. Matching the text is crude, and it is honest
+        about being crude -- the default protects anything it does not
+        recognise.
+        """
+        low = " ".join(str(text).split()).lower()
+        return any(marker in low for marker in self._PERISHABLE_MARKERS)
 
     #: Sent per flush. A drain of twenty messages at a 10s timeout each would
     #: stall whichever loop happened to trigger it.
@@ -221,17 +265,118 @@ class TelegramBotUplink:
             entry = self._deferred.get(text)
             if entry is None:
                 if len(self._deferred) >= self._DEFERRED_MAX_ENTRIES:
-                    logger.warning(
-                        "Deferred Telegram queue is full (%d distinct alerts); "
-                        "dropping the oldest to make room.",
-                        self._DEFERRED_MAX_ENTRIES,
-                    )
-                    oldest = min(self._deferred, key=lambda k: self._deferred[k]["first"])
+                    # SPEND A PERISHABLE ALERT FIRST. Evicting purely by age
+                    # would let forty routine messages push the blind alarm
+                    # out of a full queue, which is the same loss by a
+                    # different door.
+                    spendable = [t for t in self._deferred if self._is_perishable(t)]
+                    pool = spendable or list(self._deferred)
+                    oldest = min(pool, key=lambda k: self._deferred[k]["first"])
+                    if spendable:
+                        logger.warning(
+                            "Deferred Telegram queue is full (%d distinct "
+                            "alerts); dropping the oldest expendable one.",
+                            self._DEFERRED_MAX_ENTRIES,
+                        )
+                    else:
+                        # Every single one is load-bearing. Say so at the level
+                        # that matches: something is being lost.
+                        logger.critical(
+                            "Deferred Telegram queue is full of %d DURABLE "
+                            "alerts; dropping the oldest: %s",
+                            self._DEFERRED_MAX_ENTRIES,
+                            " ".join(oldest.split())[:self._AUDIT_PREVIEW_CHARS],
+                        )
                     self._deferred.pop(oldest, None)
                 self._deferred[text] = {"first": now, "last": now, "count": 1}
             else:
                 entry["last"] = now
                 entry["count"] += 1
+        self._save_deferred()
+
+    #: On restart, a durable alert older than this is let go. A day-old
+    #: "HOKAGE IS BLIND" tells him nothing he cannot read in the log, and
+    #: replaying it would compete with whatever is true now.
+    _DEFERRED_RESTART_MAX_AGE_SECONDS = 86400
+
+    def _deferred_path(self):
+        from pathlib import Path
+        from hokage.memory.resolver import PathResolver
+        state_dir = PathResolver().resolve_brain_root() / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        return state_dir / "telegram_deferred.json"
+
+    def _save_deferred(self) -> None:
+        """Persist the durable queue. NEVER raises.
+
+        Written temp-then-rename for the reason active_positions.json was: on
+        2026-10-28 a json.dump straight into an open "w" handle truncated that
+        file 168 times while positions were open, because the truncate happens
+        before the first value is serialised. A failure here must cost the new
+        copy, never the queue already on disk.
+
+        Only durable alerts are stored. A perishable one has no business
+        surviving the process that raised it.
+        """
+        try:
+            import json
+            with self._deferred_lock:
+                keep = {t: e for t, e in self._deferred.items()
+                        if not self._is_perishable(t)}
+            path = self._deferred_path()
+            if not keep:
+                path.unlink(missing_ok=True)
+                return
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps(keep, default=str, ensure_ascii=False),
+                encoding="utf-8")
+            tmp.replace(path)
+        except Exception as e:
+            logger.warning(f"Could not persist the deferred alert queue: {_scrub(e)}")
+
+    def _load_deferred(self) -> None:
+        """Restore durable alerts queued before a restart. NEVER raises."""
+        try:
+            import json
+            path = self._deferred_path()
+            if not path.exists():
+                return
+            # utf-8-sig: a file ever rewritten by PowerShell carries a BOM,
+            # and json.loads treats that as a parse error.
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
+            if not isinstance(raw, dict):
+                return
+            now = time.time()
+            restored, expired = 0, 0
+            for text, entry in raw.items():
+                try:
+                    first = float(entry["first"])
+                    last = float(entry.get("last", first))
+                    count = int(entry.get("count", 1))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if self._is_perishable(text):
+                    continue
+                if now - first > self._DEFERRED_RESTART_MAX_AGE_SECONDS:
+                    expired += 1
+                    continue
+                self._deferred[text] = {
+                    "first": first, "last": last,
+                    "count": count, "restored": True,
+                }
+                restored += 1
+            if restored:
+                logger.warning(
+                    "Restored %d undelivered Telegram alert(s) queued before "
+                    "this restart; they will be sent with their real age.",
+                    restored)
+            if expired:
+                logger.warning(
+                    "Let go of %d deferred alert(s) older than %d hours.",
+                    expired, self._DEFERRED_RESTART_MAX_AGE_SECONDS // 3600)
+        except Exception as e:
+            logger.warning(f"Could not restore the deferred alert queue: {_scrub(e)}")
 
     def _deferred_preamble(self, entry: dict, now: float) -> str:
         """Say that this alert is OLD, and how old, before its own words.
@@ -256,6 +401,11 @@ class TelegramBotUplink:
                 f"\n_Raised {entry['count']} times, "
                 f"{first.strftime('%H:%M')}-{last.strftime('%H:%M')} IST._"
             )
+        if entry.get("restored"):
+            # He needs to know this one outlived the process that raised it,
+            # because the condition it describes may have been fixed by the
+            # very restart that queued it here.
+            head += "\n_Held across a restart; the condition may have cleared._"
         return head + "\n\n"
 
     def _flush_deferred(self) -> int:
@@ -269,9 +419,13 @@ class TelegramBotUplink:
             if not self._deferred:
                 return 0
             now = time.time()
+            # AGE ONLY RETIRES PERISHABLE ALERTS. A durable one waits as long
+            # as it has to; it is delivered with its real age on the front, so
+            # a long wait costs honesty nothing.
             stale = [
                 t for t, e in self._deferred.items()
                 if now - e["first"] > self._DEFERRED_MAX_AGE_SECONDS
+                and self._is_perishable(t)
             ]
             for t in stale:
                 e = self._deferred.pop(t)
@@ -281,7 +435,15 @@ class TelegramBotUplink:
                     int((now - e["first"]) / 60), e["count"],
                     " ".join(t.split())[:self._AUDIT_PREVIEW_CHARS],
                 )
-            batch = sorted(self._deferred.items(), key=lambda kv: kv[1]["first"])
+            if stale:
+                self._save_deferred()
+            # Durable first, then oldest first. Only _DEFERRED_FLUSH_BATCH go
+            # per flush, so a queue holding ten end-of-day reports and one
+            # blind alarm must not spend the whole batch on the reports.
+            batch = sorted(
+                self._deferred.items(),
+                key=lambda kv: (self._is_perishable(kv[0]), kv[1]["first"]),
+            )
             batch = batch[: self._DEFERRED_FLUSH_BATCH]
 
         sent = 0
@@ -296,6 +458,9 @@ class TelegramBotUplink:
             sent += 1
         if sent:
             logger.info("Delivered %d deferred Telegram alert(s).", sent)
+            # Persist the shrunken queue, so a restart right after a partial
+            # drain does not resurrect what he has already been told.
+            self._save_deferred()
         return sent
 
     def send_message(self, text: str) -> bool:

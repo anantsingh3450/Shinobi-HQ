@@ -47,13 +47,19 @@ class _Response:
 
 
 @pytest.fixture
-def bot(monkeypatch) -> TelegramBotUplink:
+def bot(monkeypatch, tmp_path) -> TelegramBotUplink:
     """A bot that believes it is configured but can never reach the network.
 
     HOKAGE_DISABLE_TELEGRAM is set for the whole suite, so `enabled` is forced
     off and nothing here can post for real; it is re-enabled on this instance
     only, with requests.post replaced in every test.
+
+    PER-TEST BRAIN ROOT. The durable queue is persisted now, and the suite's
+    sandbox root is one directory for the whole session - so without this, an
+    alarm deferred by one test is restored by the next test's constructor and
+    every "assert not bot._deferred" becomes a coin toss.
     """
+    monkeypatch.setenv("HOKAGE_BRAIN_ROOT", str(tmp_path))
     b = TelegramBotUplink(bot_token="111:fake-not-a-real-token", chat_id="999")
     b.enabled = True
     monkeypatch.setattr(
@@ -220,18 +226,20 @@ def test_the_queue_is_bounded(bot, monkeypatch):
     assert len(bot._deferred) <= bot._DEFERRED_MAX_ENTRIES
 
 
-def test_an_alert_too_old_to_matter_is_dropped_loudly(bot, monkeypatch, caplog):
-    """Two hours on, "HOKAGE IS BLIND" is archaeology. Dropping it is right;
-    dropping it silently is how the original defect happened."""
+def test_a_perishable_alert_too_old_to_matter_is_dropped_loudly(
+        bot, monkeypatch, caplog):
+    """A report of a day that has ended really is worthless late. Dropping it
+    is right; dropping it silently is how the original defect happened."""
+    stale = "📊 Hokage — how today went (MCX Arena — Wednesday, 04 Nov 2026)"
     _sends(monkeypatch, [DNS])
-    bot.send_message(ALARM)
-    bot._deferred[ALARM]["first"] = time.time() - bot._DEFERRED_MAX_AGE_SECONDS - 60
+    bot.send_message(stale)
+    bot._deferred[stale]["first"] = time.time() - bot._DEFERRED_MAX_AGE_SECONDS - 60
 
     _sends(monkeypatch, [_Response(200)])
     with caplog.at_level("WARNING", logger="Hokage.TelegramBot"):
         bot.send_message("x")
 
-    assert ALARM not in bot._deferred
+    assert stale not in bot._deferred
     assert "too old" in caplog.text
 
 
