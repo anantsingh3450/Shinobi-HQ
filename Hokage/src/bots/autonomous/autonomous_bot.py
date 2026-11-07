@@ -2997,7 +2997,7 @@ class AutonomousTradingBot:
         try:
             from hokage.memory import trading_calendar
 
-            return trading_calendar.anything_trades(self._now_ist().date()) is False
+            return trading_calendar.nothing_trades(self._now_ist().date())
         except Exception:
             # A calendar that cannot be read must not silence an alarm.
             return False

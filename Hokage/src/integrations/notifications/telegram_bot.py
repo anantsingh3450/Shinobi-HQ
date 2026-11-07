@@ -1034,8 +1034,32 @@ class TelegramBotUplink:
                 # 1. Handle daily 06:30 AM IST TOTP request
                 ist_now = datetime.now(timezone.utc).astimezone(tz)
                 current_date_str = ist_now.strftime("%Y-%m-%d")
-                
-                if ist_now.hour > 6 or (ist_now.hour == 6 and ist_now.minute >= 30):
+
+                # NOTHING TO LOG IN FOR ON A DAY NOTHING TRADES. Both prompts
+                # below demand a Zerodha session: the 06:30 login brief and the
+                # 09:00 confirmation that answers "Login Missing - Autonomous
+                # execution halted". The token expires every single night, so
+                # on every weekend and every holiday both fired about a market
+                # that was shut - two of the three alerts the commander got on
+                # Saturday 2026-11-07.
+                #
+                # SILENCE NEEDS A POSITIVE CLOSURE. trading_calendar.nothing_
+                # trades is False for an unknown date and for an evening-only
+                # holiday, so an unmaintained calendar goes back to prompting
+                # rather than going quiet. A calendar that cannot be imported
+                # changes nothing.
+                # Guards the two prompts only. The rest of this loop still runs:
+                # his own /commands must keep working on a Saturday, and a
+                # `continue` here would have duplicated the loop's sleep.
+                shut_today = False
+                try:
+                    from hokage.memory import trading_calendar
+                    shut_today = trading_calendar.nothing_trades(ist_now.date())
+                except Exception:
+                    shut_today = False
+
+                if not shut_today and (
+                        ist_now.hour > 6 or (ist_now.hour == 6 and ist_now.minute >= 30)):
                     if self._last_totp_request_date != current_date_str and self._may_retry_send():
                         try:
                             # Skip the prompt entirely when today's session is
@@ -1083,7 +1107,7 @@ class TelegramBotUplink:
                             logger.error(f"Failed to generate morning login brief: {_scrub(e)}")
 
                 # 1.5 Handle daily 09:00 AM IST Connection Confirmation
-                if ist_now.hour >= 9:
+                if not shut_today and ist_now.hour >= 9:
                     if self._last_confirmation_date != current_date_str and self._may_retry_send():
                         if self._validate_broker_session():
                             sent = self.send_message("✅ *Login Successful* - Broker Connected. Execution engines standing by.")

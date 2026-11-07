@@ -123,6 +123,26 @@ def anything_trades(day: dt.date) -> bool | None:
     return any(k in (FULL, EVENING) for k in kinds)
 
 
+def nothing_trades(day: dt.date) -> bool:
+    """True ONLY when this calendar positively says every segment is shut.
+
+    THE ONE PLACE THAT COMPARISON IS ALLOWED TO LIVE. `anything_trades`
+    answers None for a date outside the data, and the difference between
+
+        if anything_trades(day) is False:      # correct - unknown alarms
+        if not anything_trades(day):           # silences on None
+
+    is one word and a silent alarm. On 2026-11-07 four separate senders each
+    needed this question - the feed probe, the watchdog's staleness window,
+    the 08:45 morning checklist and the 09:00 login confirmation - and four
+    copies of that comparison is four chances to write the second one.
+
+    Callers that want to SUPPRESS something ask this. Nothing else should
+    compare `anything_trades` to a boolean.
+    """
+    return anything_trades(day) is False
+
+
 def describe(day: dt.date) -> str:
     """One line for a log or an alert."""
     nse = session_kind(day, "NSE")

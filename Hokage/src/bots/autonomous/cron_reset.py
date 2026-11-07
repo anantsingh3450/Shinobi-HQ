@@ -53,7 +53,28 @@ class CronScheduler(threading.Thread):
                     logger.info("CronScheduler: Free Mind reset complete. All locks lifted.")
                 
                 # 08:45 AM Morning Health Checklist
-                if now_ist.time() >= dt_time(8, 45) and last_checklist_date != curr_date:
+                #
+                # NOT ON A DAY WITH NO OPEN. This check exists to say whether
+                # Hokage is ready for 09:00, and its own wording is "Awaiting
+                # 09:00 Open" / "ACTION REQUIRED BEFORE OPEN". On 2026-11-07 it
+                # sent a red API: FAIL about a Saturday - the overnight token is
+                # always dead, so on every weekend and holiday this reports a
+                # failure that is simply the market being shut. Silence needs a
+                # POSITIVE closure: see trading_calendar.nothing_trades, which
+                # keeps the alarm on an unknown date.
+                shut_today, why_shut = False, ""
+                try:
+                    from hokage.memory import trading_calendar
+                    shut_today = trading_calendar.nothing_trades(now_ist.date())
+                    why_shut = trading_calendar.describe(now_ist.date())
+                except Exception:
+                    shut_today = False      # no calendar, no silence
+                if shut_today and last_checklist_date != curr_date:
+                    logger.info(
+                        "CronScheduler: skipping the morning checklist - %s", why_shut)
+                    last_checklist_date = curr_date
+                if (now_ist.time() >= dt_time(8, 45) and not shut_today
+                        and last_checklist_date != curr_date):
                     logger.info("CronScheduler: Triggering 08:45 AM Health Checklist.")
                     checklist_passed = True
                     try:

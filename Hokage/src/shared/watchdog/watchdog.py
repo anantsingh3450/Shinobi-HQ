@@ -152,7 +152,7 @@ class Watchdog:
         try:
             from hokage.memory import trading_calendar
 
-            if trading_calendar.anything_trades(now.date()) is False:
+            if trading_calendar.nothing_trades(now.date()):
                 return False
         except Exception:
             pass        # no calendar, no silence
