@@ -4587,6 +4587,98 @@ class AutonomousTradingBot:
             logger.debug(f"No opposing leg recorded for {held_option}: {exc}")
             return None
 
+    def _start_shadow_path(
+        self, symbol: str, scanned_at: str | None, reason: str,
+    ) -> None:
+        """Record the contract a BIAS-GATE refusal just prevented buying.
+
+        The gate is the only component here whose effect has never been
+        measurable: veto_lab can score it on the underlying over all history,
+        but a blocked trade is never bought, so nothing has ever priced one.
+        This writes the first mark of its path - the premium at the instant of
+        the refusal - and the tick polls it from there.
+
+        ONLY THE BIAS GATE. `_entry_conduct_gate` returns one reason string for
+        several refusals, the IV premium guard and the late-session cutoff
+        among them, and a shadow for those would be measuring something nobody
+        asked about.
+
+        NEVER RAISES. This sits in the entry path, immediately after a decision
+        not to trade, and an experiment must not be able to disturb the loop
+        that made it.
+        """
+        try:
+            from hokage.memory import shadow_path, signal_archive
+
+            if not scanned_at or not shadow_path.is_gate_block(reason):
+                return
+            # A symbol that already holds a position had no trade to lose, and
+            # a shadow already running is the trade it would have had open.
+            # One per underlying - see shadow_path's docstring for the bound.
+            if symbol in self._active_positions_tracking:
+                return
+            if any(s["underlying"] == symbol.upper() for s in shadow_path.live()):
+                return
+            leg = signal_archive.winning_leg(symbol, scanned_at)
+            if not leg:
+                return
+            premium = float(leg["option_premium"])
+            wrote = shadow_path.remember(
+                leg["option_symbol"], premium, premium,
+                underlying=symbol, scanned_at=str(scanned_at),
+                direction=leg.get("direction"), blocked_by=reason,
+                module_id=leg.get("module_id"),
+            )
+            if wrote:
+                logger.info(
+                    "Shadow path opened on %s: the gate refused %s at %.2f, "
+                    "pricing it for %d minutes to measure what the refusal "
+                    "was worth.", symbol, leg["option_symbol"], premium,
+                    shadow_path.WINDOW_MINUTES,
+                )
+        except Exception as exc:
+            logger.debug(f"Could not open a shadow path for {symbol}: {exc}")
+
+    def _poll_shadow_paths(self) -> None:
+        """Price every refused contract still inside its window.
+
+        AT MOST ONE QUOTE PER UNDERLYING PER TICK, bounded by
+        `shadow_path.live`, which keeps one shadow per asset. Four MCX assets
+        means at most four extra quotes, and only while a refusal is recent.
+
+        Runs on the position-monitoring tick rather than the entry scan because
+        a refusal produces NO position: there is no tracking loop to ride, and
+        the scan only fires every fifteen minutes. NEVER RAISES.
+        """
+        try:
+            from hokage.memory import shadow_path
+
+            shadows = shadow_path.live()
+            if not shadows:
+                return
+            source = getattr(self.orchestrator, "price_source", None)
+            if source is None:
+                return
+            when = shadow_path.now_ist()
+            for shadow in shadows:
+                try:
+                    premium = float(source.get_quote(shadow["symbol"]).price)
+                except Exception:
+                    continue          # a dead quote is not a price of zero
+                if premium <= 0:
+                    continue
+                shadow_path.remember(
+                    shadow["symbol"], premium, float(shadow["entry"]),
+                    underlying=shadow["underlying"],
+                    scanned_at=shadow["scanned_at"],
+                    direction=shadow.get("direction"),
+                    blocked_by=shadow.get("blocked_by"),
+                    module_id=shadow.get("module_id"),
+                    when=when,
+                )
+        except Exception as exc:
+            logger.debug(f"Shadow path polling failed: {exc}")
+
     def _archive_mirror_mark(
         self,
         held_symbol: str,
@@ -4778,6 +4870,12 @@ class AutonomousTradingBot:
         context = self.orchestrator.get_execution_context()
         if context.execution_mode == ExecutionMode.READ_ONLY:
             return
+
+        # A refused trade has no position, so this tick is the only loop that
+        # runs often enough to price one and runs whether or not anything is
+        # open. Before the exit work, because a shadow mark is cheap and an
+        # exception on the way out must not skip it.
+        self._poll_shadow_paths()
 
         # Determine all active venues based on execution mode
         active_venues = []
@@ -5753,6 +5851,12 @@ class AutonomousTradingBot:
             if not conduct_ok:
                 logger.info(f"MCX Arena entry blocked for {symbol}: {conduct_reason}")
                 self._journal_no_trade(symbol, [conduct_reason])
+                # THE ONLY RECORD THIS REFUSAL WILL EVER LEAVE IN PREMIUM.
+                # The journal row says the gate said no; nothing prices what
+                # it said no TO, so the gate has never been scored in the
+                # units Hokage trades. Written after the journal, so an
+                # experiment cannot cost the decision its audit row.
+                self._start_shadow_path(symbol, _scan_stamp, conduct_reason)
                 continue
 
             try:

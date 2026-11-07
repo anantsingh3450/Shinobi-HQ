@@ -261,6 +261,46 @@ def opposing_leg(symbol: str, scanned_at: str,
     return None
 
 
+def winning_leg(symbol: str, scanned_at: str) -> dict | None:
+    """The priced contract the WINNER of this scan would have bought.
+
+    The other half of `opposing_leg`, and it exists for the trade that never
+    happened: when a gate refuses an auction winner, this is the contract it
+    was about to buy and what that cost at the instant of the refusal. Without
+    it a blocked decision has no entry price, and a path with no entry cannot
+    be scored - see `hokage.memory.shadow_path`.
+
+    Returns None rather than guessing when the winning side was unpriceable
+    (a thin chain, a dead feed). Absent is not zero.
+    """
+    db = db_path()
+    if not db.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("SELECT 1 FROM auction_signals LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.close()
+        return None
+    try:
+        row = conn.execute(
+            "SELECT module_id, strategy_id, direction, option_symbol,"
+            " option_premium, reason FROM auction_signals"
+            " WHERE scanned_at = ? AND symbol = ? AND fired = 1 AND won = 1"
+            " AND option_symbol IS NOT NULL AND option_premium > 0 LIMIT 1",
+            (str(scanned_at), str(symbol).upper()),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    return dict(row) if row else None
+
+
 def signals_for(strategy_id: str, symbol: str | None = None,
                 fired_only: bool = True) -> list[dict]:
     """Every recorded signal for one cell, oldest first."""
