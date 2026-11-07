@@ -875,13 +875,22 @@ class AutonomousTradingBot:
                 if dt_time(15, 35) <= ist_time < dt_time(16, 30):
                     if self._eod_report_sent_date != current_date_str:
                         self._eod_report_sent_date = current_date_str
-                        try:
-                            report = self.build_eod_plain_report()
-                            if self.telegram_bot and self.telegram_bot.enabled:
-                                self.telegram_bot.send_message(report)
-                            logger.info("Sent plain-language end-of-day report.")
-                        except Exception as exc:
-                            logger.error(f"Failed to send EOD plain report: {exc}")
+                        if self._segment_shut_today("NSE"):
+                            # NOT A `continue`. Everything below in this tick -
+                            # the MCX report, the per-exchange shadow sessions -
+                            # still has to run, and the loop's own sleep is at
+                            # the bottom, so a continue here would busy-spin.
+                            logger.info(
+                                "Skipping the equity end-of-day report - %s",
+                                self._describe_today())
+                        else:
+                            try:
+                                report = self.build_eod_plain_report()
+                                if self.telegram_bot and self.telegram_bot.enabled:
+                                    self.telegram_bot.send_message(report)
+                                logger.info("Sent plain-language end-of-day report.")
+                            except Exception as exc:
+                                logger.error(f"Failed to send EOD plain report: {exc}")
 
                 # MCX Arena's own evening plain-language report, sent once
                 # shortly after its 23:15 square-off (commander-approved
@@ -889,16 +898,21 @@ class AutonomousTradingBot:
                 if dt_time(23, 35) <= ist_time < dt_time(23, 59, 59):
                     if self._mcx_eod_report_sent_date != current_date_str:
                         self._mcx_eod_report_sent_date = current_date_str
-                        try:
-                            mcx_report = self.build_eod_plain_report(
-                                account_id="paper_mcx", venue_id="paper_mcx",
-                                title=f"MCX Arena — {ist_now.strftime('%A, %d %b %Y')}",
-                            )
-                            if self.telegram_bot and self.telegram_bot.enabled:
-                                self.telegram_bot.send_message(mcx_report)
-                            logger.info("Sent MCX Arena plain-language end-of-day report.")
-                        except Exception as exc:
-                            logger.error(f"Failed to send MCX EOD plain report: {exc}")
+                        if self._segment_shut_today("MCX"):
+                            logger.info(
+                                "Skipping the MCX end-of-day report - %s",
+                                self._describe_today())
+                        else:
+                            try:
+                                mcx_report = self.build_eod_plain_report(
+                                    account_id="paper_mcx", venue_id="paper_mcx",
+                                    title=f"MCX Arena — {ist_now.strftime('%A, %d %b %Y')}",
+                                )
+                                if self.telegram_bot and self.telegram_bot.enabled:
+                                    self.telegram_bot.send_message(mcx_report)
+                                logger.info("Sent MCX Arena plain-language end-of-day report.")
+                            except Exception as exc:
+                                logger.error(f"Failed to send MCX EOD plain report: {exc}")
 
                 # Manage shadow sessions independently per exchange
                 for exchange in tracked_exchanges:
@@ -3001,6 +3015,42 @@ class AutonomousTradingBot:
         except Exception:
             # A calendar that cannot be read must not silence an alarm.
             return False
+
+    def _segment_shut_today(self, segment: str) -> bool:
+        """True ONLY when the calendar positively says THIS league is shut.
+
+        The daily plain-English report is not an alarm - nothing in it demands
+        action - but on 2026-11-07, a Saturday, it still arrived at 15:35 to
+        announce "No trades today" about a market that never opened. That is
+        the same defect as the login nagging: a message whose content is the
+        calendar, sent to someone who owns a calendar.
+
+        PER LEAGUE, not per system. `_nothing_trades_today` is the right
+        question for a whole-machine alarm and the wrong one here: on
+        2026-10-20 equities were shut and MCX traded from 17:00, so the 15:35
+        equity report was about nothing while the 23:35 MCX report was about
+        a real session. One answer cannot serve both.
+
+        Unknown still sends, for the same reason unknown still alarms.
+        """
+        try:
+            from hokage.memory import trading_calendar
+
+            return trading_calendar.segment_shut(self._now_ist().date(), segment)
+        except Exception:
+            # A calendar that cannot be read must not suppress a report.
+            return False
+
+    def _describe_today(self) -> str:
+        """The calendar's one-line reason, for the log that says why it stayed
+        quiet. A suppression with no stated reason is indistinguishable from a
+        sender that crashed."""
+        try:
+            from hokage.memory import trading_calendar
+
+            return trading_calendar.describe(self._now_ist().date())
+        except Exception as exc:
+            return f"calendar unreadable ({exc})"
 
     def _check_data_feed_session(self) -> None:
         """Probe the Kite market-data feed and alert once per IST date if blind.

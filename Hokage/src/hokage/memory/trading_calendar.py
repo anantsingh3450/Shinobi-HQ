@@ -143,6 +143,25 @@ def nothing_trades(day: dt.date) -> bool:
     return anything_trades(day) is False
 
 
+def segment_shut(day: dt.date, segment: str) -> bool:
+    """True ONLY when this calendar positively says THIS segment is shut.
+
+    THE SECOND PLACE THAT COMPARISON LIVES, and the only one allowed to ask
+    about one league on its own. `nothing_trades` is the right question for a
+    whole-system alarm; it is the WRONG question for a per-league report.
+
+    2026-10-20, Dussehra: equities CLOSED all day, MCX trading from 17:00. So
+    `nothing_trades` is False and the 15:35 equity report would still have
+    said "no trades today" about a market that never opened, while the 23:35
+    MCX report must fire, because MCX genuinely ran.
+
+    Unknown is not shut, exactly as in `nothing_trades`: outside the data
+    every report keeps sending. An unmaintained calendar must go back to
+    being noisy, never to being quiet.
+    """
+    return session_kind(day, segment) == CLOSED
+
+
 def describe(day: dt.date) -> str:
     """One line for a log or an alert."""
     nse = session_kind(day, "NSE")
