@@ -137,11 +137,16 @@ def test_session_manager_tradability_and_hours() -> None:
     assert mgr.get_exchange_status(Exchange.BINANCE, maint_time) == "MAINTENANCE"
     assert mgr.is_tradable("BTCUSDT", maint_time) is False
 
-    nse_open_utc = datetime(2026, 6, 26, 4, 30, 0, tzinfo=timezone.utc)
+    # 2026-06-26 WAS A HOLIDAY. This test asserted NSE was open on it, and
+    # passed for months because the engine kept its own hand-typed holiday
+    # list that did not include it. The verified calendar does, confirmed by
+    # an absence of NIFTY candles in the archive for that weekday, so the
+    # date moves to a Friday that genuinely traded.
+    nse_open_utc = datetime(2026, 6, 19, 4, 30, 0, tzinfo=timezone.utc)
     assert mgr.get_exchange_status(Exchange.NSE, nse_open_utc) == "OPEN"
     assert mgr.is_tradable("INFY", nse_open_utc) is True
 
-    nse_closed_utc = datetime(2026, 6, 26, 12, 30, 0, tzinfo=timezone.utc)
+    nse_closed_utc = datetime(2026, 6, 19, 12, 30, 0, tzinfo=timezone.utc)
     assert mgr.get_exchange_status(Exchange.NSE, nse_closed_utc) == "CLOSED"
     assert mgr.is_tradable("INFY", nse_closed_utc) is False
 

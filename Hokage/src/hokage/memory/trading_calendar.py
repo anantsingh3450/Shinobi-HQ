@@ -42,6 +42,7 @@ from hokage.memory.resolver import brain_root
 
 FULL = "FULL"
 EVENING = "EVENING"
+MUHURAT = "MUHURAT"
 CLOSED = "CLOSED"
 
 #: MCX's evening-only session on an equity holiday starts here.
@@ -85,6 +86,43 @@ _MCX_EVENING_ON_EQUITY_HOLIDAY: set[dt.date] = {
     dt.date(2026, 11, 24),
 }
 
+#: SPECIAL SESSIONS: days the exchange TRADES that every ordinary rule in
+#: this file would call shut. They exist, they are announced weeks ahead, and
+#: they are the one case where a weekend is not a weekend.
+#:
+#: 2026-11-07 is why this table is here. The five senders had just been taught
+#: to go quiet when the calendar says everything is closed, and the calendar
+#: answered CLOSED for Sunday 2026-11-08 on the weekend rule alone, without
+#: consulting any list. That is Diwali Muhurat trading. The gate shipped that
+#: afternoon would have silenced the feed alarm, the login prompt, the morning
+#: checklist and both reports THROUGH A LIVE SESSION - a silence far worse
+#: than the nagging it replaced, because nagging is visible and silence is not.
+#:
+#: THE WINDOW IS PER SEGMENT AND IT IS NOT THE USUAL ONE. Muhurat is an
+#: afternoon session, so MCX does NOT run its 17:00 evening here.
+#:
+#: NSE's window is the EQUITY F&O window, 14:20-15:40, because index options
+#: are the entire tradable universe. Cash equities close at 15:30 (15:15 for
+#: closing-auction stocks) and that difference is not Hokage's to care about.
+_SPECIAL_SESSIONS: dict[dt.date, dict] = {
+    dt.date(2026, 11, 8): {
+        "name": "Diwali Muhurat trading (Samvat 2083)",
+        "windows": {
+            "NSE": (dt.time(14, 20), dt.time(15, 40)),   # equity F&O
+            "MCX": (dt.time(14, 20), dt.time(15, 30)),
+        },
+        # The broker's own bulletin, which is the standard the 2026-10-20
+        # MCX evening entry was held to. Press reports disagreed on the
+        # close (15:30 vs 15:40) and on whether MCX ran at all; the bulletin
+        # for HIS account is the one that decides.
+        "source": "Zerodha bulletin 461711, 27 Oct 2026",
+        # Worth knowing before reading a fill: F&O credits and 06 Nov
+        # intraday equity profits are NOT in available funds during this
+        # session, because settlement is shut.
+        "settlement_holiday": True,
+    },
+}
+
 #: Dates the calendar covers. Outside this span every answer is None,
 #: because a 2027 date is not "open" simply because 2027 is not in a 2026
 #: holiday list.
@@ -101,6 +139,15 @@ def session_kind(day: dt.date, segment: str = "NSE") -> str | None:
         return None
     if not (_KNOWN_FROM <= day <= _KNOWN_TO):
         return None            # outside the data, not "normal"
+
+    # BEFORE the weekend rule, which is the whole point: a Muhurat session on
+    # a Sunday is a trading day, and asking "is it Saturday or Sunday" first
+    # is how a live session reads as closed.
+    special = _SPECIAL_SESSIONS.get(day)
+    if special is not None:
+        window = special["windows"].get(segment.upper())
+        return MUHURAT if window else CLOSED
+
     if day.weekday() >= 5:
         return CLOSED          # exchange rule, no list needed
     if day not in _EQUITY_HOLIDAYS_2026:
@@ -120,7 +167,7 @@ def anything_trades(day: dt.date) -> bool | None:
     kinds = [session_kind(day, s) for s in ("NSE", "MCX")]
     if any(k is None for k in kinds):
         return None
-    return any(k in (FULL, EVENING) for k in kinds)
+    return any(k in (FULL, EVENING, MUHURAT) for k in kinds)
 
 
 def nothing_trades(day: dt.date) -> bool:
@@ -162,6 +209,48 @@ def segment_shut(day: dt.date, segment: str) -> bool:
     return session_kind(day, segment) == CLOSED
 
 
+def special_session(day: dt.date) -> dict | None:
+    """The special-session record for this day, or None.
+
+    Callers that need the WINDOW rather than the verdict ask this - the
+    watchdog's staleness window and the engine's own session status both do.
+    """
+    if not isinstance(day, dt.date):
+        return None
+    return _SPECIAL_SESSIONS.get(day)
+
+
+def session_window(day: dt.date, segment: str) -> tuple[dt.time, dt.time] | None:
+    """When this segment actually trades, for a day whose hours are not the
+    usual ones. None means "the ordinary hours, or nothing" - it is NOT a
+    statement that the segment is shut, so ask `segment_shut` for that.
+
+    Only special sessions answer today. The ordinary 09:15-15:30 and the MCX
+    evening live in the engine's own session manager, and duplicating them
+    here would create a third calendar to disagree with the other two.
+    """
+    special = _SPECIAL_SESSIONS.get(day) if isinstance(day, dt.date) else None
+    if special is None:
+        return None
+    return special["windows"].get(segment.upper())
+
+
+def session_span(day: dt.date) -> tuple[dt.time, dt.time] | None:
+    """The widest window any segment trades on a special-session day.
+
+    For an alarm that only needs to know "should a quote be arriving right
+    now" rather than which league it belongs to. None means this day has no
+    special hours, which is NOT a statement that it is shut.
+    """
+    special = _SPECIAL_SESSIONS.get(day) if isinstance(day, dt.date) else None
+    if not special:
+        return None
+    windows = [w for w in special["windows"].values() if w]
+    if not windows:
+        return None
+    return min(w[0] for w in windows), max(w[1] for w in windows)
+
+
 def describe(day: dt.date) -> str:
     """One line for a log or an alert."""
     nse = session_kind(day, "NSE")
@@ -171,6 +260,18 @@ def describe(day: dt.date) -> str:
                 f"same as open")
     if nse == FULL:
         return f"{day}: normal session"
+
+    special = _SPECIAL_SESSIONS.get(day)
+    if special is not None:
+        parts = []
+        for segment in ("NSE", "MCX"):
+            window = special["windows"].get(segment)
+            if window:
+                parts.append(f"{segment} {window[0].strftime('%H:%M')}-"
+                             f"{window[1].strftime('%H:%M')}")
+        hours = ", ".join(parts) if parts else "no segment trading"
+        return f"{day}: {special['name']} — SPECIAL SESSION, {hours}"
+
     name = holiday_name(day) or "weekend"
     if mcx == EVENING:
         return (f"{day}: {name} — equities CLOSED, MCX evening session from "

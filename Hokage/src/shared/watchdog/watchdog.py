@@ -145,6 +145,21 @@ class Watchdog:
         unreadable calendar must leave the alarm exactly as it was.
         """
         now = now_local or datetime.now()
+
+        # A SPECIAL SESSION IS NOT A WEEKEND, AND IT KEEPS ITS OWN HOURS.
+        # Diwali Muhurat trading on Sunday 2026-11-08 runs 14:20-15:40, so
+        # `weekday() >= 5` would disarm the staleness alarm for the whole of a
+        # live session - and the regular 09:00 start would arm it five hours
+        # before the first quote could possibly arrive.
+        try:
+            from hokage.memory import trading_calendar
+
+            span = trading_calendar.session_span(now.date())
+        except Exception:
+            span = None
+        if span is not None:
+            return span[0] <= now.time() < span[1]
+
         if now.weekday() >= 5:
             return False
         if not (cls.FEED_WINDOW_START_IST <= now.time() < cls.FEED_WINDOW_END_IST):

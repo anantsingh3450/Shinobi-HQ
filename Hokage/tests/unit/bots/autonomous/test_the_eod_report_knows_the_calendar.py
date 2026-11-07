@@ -31,9 +31,10 @@ from hokage.memory import trading_calendar as tc
 
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 
-SATURDAY = dt.date(2026, 11, 7)
-SUNDAY = dt.date(2026, 11, 8)
-MONDAY = dt.date(2026, 11, 9)
+SATURDAY = dt.date(2026, 11, 14)
+SUNDAY = dt.date(2026, 11, 15)
+MONDAY = dt.date(2026, 11, 16)
+MUHURAT = dt.date(2026, 11, 8)          # a SUNDAY that trades, 14:20-15:40
 DUSSEHRA = dt.date(2026, 10, 20)        # equities CLOSED, MCX evening from 17:00
 BEYOND = dt.date(2027, 3, 2)            # a Tuesday outside the calendar's data
 
@@ -117,6 +118,13 @@ def test_both_leagues_are_shut_all_weekend(day):
     assert tc.segment_shut(day, "MCX") is True
 
 
+def test_a_weekend_is_not_decided_by_the_weekday():
+    """Both of these are Sundays. Only one is shut."""
+    assert SUNDAY.weekday() == MUHURAT.weekday() == 6
+    assert tc.segment_shut(SUNDAY, "NSE") is True
+    assert tc.segment_shut(MUHURAT, "NSE") is False
+
+
 def test_monday_is_shut_for_neither():
     assert tc.segment_shut(MONDAY, "NSE") is False
     assert tc.segment_shut(MONDAY, "MCX") is False
@@ -150,7 +158,18 @@ def test_a_skipped_equity_report_still_counts_as_done(monkeypatch):
     """The date latch must be stamped either way, or the skip log repeats on
     every tick of a 55-minute window."""
     telegram, bot = _run(SATURDAY, EQUITY_WINDOW, monkeypatch)
-    assert bot._eod_report_sent_date == "2026-11-07"
+    assert bot._eod_report_sent_date == "2026-11-14"
+
+
+def test_both_reports_arrive_on_the_muhurat_sunday(monkeypatch):
+    """THE DANGEROUS DIRECTION, and the reason the weekend rule had to stop
+    answering first. 2026-11-08 is a Sunday with a live session; a gate that
+    reads it off the weekday suppresses a report about real trades."""
+    telegram, _ = _run(MUHURAT, EQUITY_WINDOW, monkeypatch)
+    telegram.send_message.assert_called_once_with("report body")
+
+    telegram, _ = _run(MUHURAT, MCX_WINDOW, monkeypatch)
+    telegram.send_message.assert_called_once_with("report body")
 
 
 # ===================================================== the MCX report, 23:35
@@ -221,7 +240,10 @@ def test_nobody_asks_session_kind_by_hand_to_suppress_a_message():
 
     root = next(p for p in pathlib.Path(__file__).resolve().parents
                 if (p / "pyproject.toml").is_file())
-    allowed = {"trading_calendar.py", "option_archive.py"}
+    # session_manager asks in order to STATE whether the market is open, and
+    # option_archive in order to LABEL an archived day. Neither withholds a
+    # message, which is what this rail is about.
+    allowed = {"trading_calendar.py", "option_archive.py", "session_manager.py"}
     offenders = []
     for path in (root / "src").rglob("*.py"):
         if path.name in allowed:

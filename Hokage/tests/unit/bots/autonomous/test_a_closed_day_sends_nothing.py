@@ -13,7 +13,12 @@ assert the Telegram transport was never asked to send anything.
 
 SUNDAY, specifically. Saturday was the day of the incident and is the day every
 other test uses, so a bug that keyed on weekday 5 rather than "the exchange is
-shut" would pass everything and still nag on the 8th.
+shut" would pass everything and still nag on a Sunday.
+
+AND A DEAD SUNDAY, CHOSEN FROM THE CALENDAR RATHER THAN FROM THE WEEKDAY. The
+first version of this file used 2026-11-08, which is Diwali Muhurat trading -
+a live session. Every assertion of silence here was, for one day, an assertion
+that Hokage should sleep through a trading afternoon.
 """
 from __future__ import annotations
 
@@ -27,11 +32,20 @@ import pytest
 
 from hokage.memory import trading_calendar as tc
 
-#: Sunday 2026-11-08, 09:05 IST = 03:35 UTC. Past 06:30, past 08:45 and past
+#: Sunday 2026-11-15, 09:05 IST = 03:35 UTC. Past 06:30, past 08:45 and past
 #: 09:00, so EVERY time gate in both loops is open and only the calendar is
 #: standing between the clock and a Telegram message.
-SUNDAY_UTC = dt.datetime(2026, 11, 8, 3, 35, 0, tzinfo=dt.timezone.utc)
-MONDAY_UTC = dt.datetime(2026, 11, 9, 3, 35, 0, tzinfo=dt.timezone.utc)
+#:
+#: NOT 2026-11-08, WHICH WAS THE FIRST CHOICE AND WAS WRONG. That Sunday is
+#: Diwali Muhurat trading - a live session from 14:20 - so every test here
+#: asserting silence on it was asserting that Hokage should go quiet through
+#: a trading day. A test is not evidence that a day is closed; the calendar
+#: is, and `test_this_sunday_really_is_a_dead_one` below says so out loud.
+SUNDAY_UTC = dt.datetime(2026, 11, 15, 3, 35, 0, tzinfo=dt.timezone.utc)
+MONDAY_UTC = dt.datetime(2026, 11, 16, 3, 35, 0, tzinfo=dt.timezone.utc)
+
+#: The Sunday that DOES trade, kept here as the control.
+MUHURAT_UTC = dt.datetime(2026, 11, 8, 3, 35, 0, tzinfo=dt.timezone.utc)
 
 
 class _FrozenClock:
@@ -64,6 +78,25 @@ def _run_one_pass(target, stop_event) -> None:
 def test_sunday_is_a_closed_day_and_monday_is_not():
     assert tc.nothing_trades(SUNDAY_UTC.date()) is True
     assert tc.nothing_trades(MONDAY_UTC.date()) is False
+
+
+def test_this_sunday_really_is_a_dead_one():
+    """A weekday number is not a closure. Picking a Sunday off the calendar
+    and calling it closed is how the first version of this file came to
+    assert silence through Muhurat trading."""
+    assert SUNDAY_UTC.weekday() == 6
+    assert tc.session_kind(SUNDAY_UTC.date(), "NSE") == tc.CLOSED
+    assert tc.special_session(SUNDAY_UTC.date()) is None
+
+
+def test_the_muhurat_sunday_is_not_silenced():
+    """THE CONTROL FOR EVERY TEST IN THIS FILE. 2026-11-08 is a Sunday that
+    trades, and a gate that cannot tell it from 2026-11-15 is a gate that
+    goes quiet through a live session."""
+    assert MUHURAT_UTC.weekday() == 6
+    assert tc.nothing_trades(MUHURAT_UTC.date()) is False
+    assert tc.segment_shut(MUHURAT_UTC.date(), "NSE") is False
+    assert tc.segment_shut(MUHURAT_UTC.date(), "MCX") is False
 
 
 def test_sunday_is_past_every_time_gate_in_both_loops():
@@ -201,7 +234,7 @@ def test_the_feed_probe_is_quiet_on_a_sunday():
         _last_feed_alert_date=None,
         _last_feed_quiet_date=None,
         _feed_outage_announced=False,
-        _now_ist=lambda: dt.datetime(2026, 11, 8, 9, 5, 0),
+        _now_ist=lambda: dt.datetime(2026, 11, 15, 9, 5, 0),
         _try_broker_reconnect=lambda: False,
     )
     bot._diagnose_feed_failure = lambda r: Bot._diagnose_feed_failure(bot, r)
@@ -209,17 +242,17 @@ def test_the_feed_probe_is_quiet_on_a_sunday():
     bot._nothing_trades_today = lambda: Bot._nothing_trades_today(bot)
     Bot._check_data_feed_session(bot)
     telegram.send_message.assert_not_called()
-    assert bot._last_feed_quiet_date == "2026-11-08"
+    assert bot._last_feed_quiet_date == "2026-11-15"
 
 
 def test_the_staleness_window_is_disarmed_on_a_sunday():
     from shared.watchdog.watchdog import Watchdog
 
-    assert Watchdog.feed_expected_now(dt.datetime(2026, 11, 8, 12, 0)) is False
+    assert Watchdog.feed_expected_now(dt.datetime(2026, 11, 15, 12, 0)) is False
 
 
 # =========================================== and the whole weekend, together
-@pytest.mark.parametrize("day", [dt.date(2026, 11, 7), dt.date(2026, 11, 8)])
+@pytest.mark.parametrize("day", [dt.date(2026, 11, 14), dt.date(2026, 11, 15)])
 def test_every_sender_is_quiet_across_the_whole_weekend(day):
     from shared.watchdog.watchdog import Watchdog
 

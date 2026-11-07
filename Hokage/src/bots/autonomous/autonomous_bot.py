@@ -3041,6 +3041,72 @@ class AutonomousTradingBot:
             # A calendar that cannot be read must not suppress a report.
             return False
 
+    def _special_session_today(self) -> dict | None:
+        """The special-session record for today, or None.
+
+        A SPECIAL SESSION IS A TRADING DAY ON A DAY EVERY ORDINARY RULE CALLS
+        SHUT. Three separate gates ask the weekday rather than the calendar -
+        the engine's session status, the MCX entry guard and the Day-of-Week
+        Isolator - and all three would have slept through Diwali Muhurat
+        trading on Sunday 2026-11-08.
+        """
+        try:
+            from hokage.memory import trading_calendar
+
+            return trading_calendar.special_session(self._now_ist().date())
+        except Exception:
+            # A calendar that cannot be read changes nothing: the ordinary
+            # weekday rules stand, exactly as they did before it existed.
+            return None
+
+    def _special_window_today(self, segment: str):
+        """Today's published hours for one league, or None for ordinary ones.
+
+        None is not "shut" - `is_tradable` and the calendar answer that.
+        """
+        try:
+            from hokage.memory import trading_calendar
+
+            return trading_calendar.session_window(self._now_ist().date(), segment)
+        except Exception:
+            return None
+
+    #: Minutes before the exchange close that each league squares off. These
+    #: are not new numbers - they are the gap already implied by the existing
+    #: 15:20 (NSE, 15:30 close) and 23:15 (MCX, 23:30 close) constants, named
+    #: here so a session with different hours can keep the same discipline.
+    _SQUARE_OFF_BUFFER_MIN = {"NSE": 10, "MCX": 15}
+
+    def _square_off_time(self, is_mcx: bool) -> tuple[int, int]:
+        """When today's positions must be flat, as (hour, minute) IST.
+
+        THE HAZARD THIS FIXES IS SPECIFIC. MCX squares off at 23:15 because
+        MCX closes at 23:30. On Sunday 2026-11-08 MCX closes at 15:30, so a
+        position opened that afternoon would have sat waiting for a 23:15
+        square-off with no quotes to exit against from 15:30 onward - and
+        then carried overnight into Monday, through a weekend gap, with no
+        stop having ever run.
+
+        NEVER LATER THAN THE ORDINARY TIME. The special session's own close
+        can only bring this forward: equity F&O runs to 15:40 that day, and
+        moving the 15:20 square-off out to 15:30 to match would be loosening
+        a risk control on the strength of a calendar entry. `min` both fixes
+        the MCX case and leaves the NSE constant exactly where it is.
+        """
+        segment = "MCX" if is_mcx else "NSE"
+        ordinary = (23, 15) if is_mcx else (15, 20)
+
+        window = self._special_window_today(segment)
+        if window is None:
+            return ordinary
+
+        close = window[1]
+        buffer_min = self._SQUARE_OFF_BUFFER_MIN[segment]
+        flat_by = (datetime.combine(self._now_ist().date(), close)
+                   - timedelta(minutes=buffer_min)).time()
+        special = (flat_by.hour, flat_by.minute)
+        return min(ordinary, special)
+
     def _describe_today(self) -> str:
         """The calendar's one-line reason, for the log that says why it stayed
         quiet. A suppression with no stated reason is indistinguishable from a
@@ -3810,7 +3876,7 @@ class AutonomousTradingBot:
         # options still square off at the 23:15 MCX close, not 15:20).
         is_crypto = venue and ("crypto" in venue.venue_id.lower() or "binance" in venue.venue_id.lower())
         if not is_crypto:
-            sq_hour, sq_min = (23, 15) if is_mcx_instrument else (15, 20)
+            sq_hour, sq_min = self._square_off_time(is_mcx_instrument)
             if now_ist.hour > sq_hour or (now_ist.hour == sq_hour and now_ist.minute >= sq_min):
                 return True, "Time-Based Square-Off (EOD)", tracking
 
@@ -4309,7 +4375,13 @@ class AutonomousTradingBot:
 
         now_ist = now_ist or self._now_ist()
         bar_minutes = 5 if is_mcx else 15
-        close_hour, close_min = (23, 15) if is_mcx else (15, 20)
+        # The runway to the SQUARE-OFF, which is what this has always meant
+        # despite the name. On a special session the ordinary pair is badly
+        # wrong: at 14:30 on 2026-11-08 an MCX position would be credited
+        # 525 minutes of runway against a market closing in 60, inflating
+        # the expected move by sqrt(105/12) and putting the target out of
+        # reach of the session it has to be reached in.
+        close_hour, close_min = self._square_off_time(is_mcx)
         minutes_left = (close_hour - now_ist.hour) * 60 + (close_min - now_ist.minute)
         bars_left = max(0.0, minutes_left / bar_minutes)
         expected_move = float(entry_und_atr) * math.sqrt(bars_left)
@@ -5781,11 +5853,21 @@ class AutonomousTradingBot:
             return
 
         now_ist = self._now_ist()
-        # Weekday guard: MCX still runs Monday-Friday only.
-        if now_ist.weekday() >= 5:
+        # Weekday guard: MCX runs Monday-Friday, EXCEPT on a special session.
+        # Diwali Muhurat trading is a Sunday, and `weekday() >= 5` would have
+        # returned before the entry window was even looked at.
+        special_window = self._special_window_today("MCX")
+        if now_ist.weekday() >= 5 and special_window is None:
             return
         hm = (now_ist.hour, now_ist.minute)
-        if hm < self._MCX_FIRST_ENTRY or hm >= self._MCX_LAST_ENTRY:
+        if special_window is not None:
+            # The published hours REPLACE the usual 09:30-22:30 window. On
+            # 2026-11-08 that is 14:20-15:30, so the normal window would both
+            # open five hours early and stay open seven hours after the close.
+            start, end = special_window
+            if not ((start.hour, start.minute) <= hm < (end.hour, end.minute)):
+                return
+        elif hm < self._MCX_FIRST_ENTRY or hm >= self._MCX_LAST_ENTRY:
             return
 
         venue = getattr(self.orchestrator, "mcx_venue", None)
@@ -6259,7 +6341,18 @@ class AutonomousTradingBot:
         ist_now = self._now_ist()
         current_date_str = ist_now.strftime("%Y-%m-%d")
 
-        is_observation_window = dt_time(9, 15) <= ist_now.time() < dt_time(9, 30)
+        # The opening bell is not always 09:15. A special session has its own
+        # open - Muhurat trading starts at 14:20 - and a window hardcoded to
+        # 09:15-09:30 simply does not apply, so Hokage would enter from the
+        # first tick of the noisiest fifteen minutes of a thin 80-minute
+        # session. The window follows the session's real open instead.
+        _obs_open, _obs_end = dt_time(9, 15), dt_time(9, 30)
+        _special_window = self._special_window_today("NSE")
+        if _special_window is not None:
+            _obs_open = _special_window[0]
+            _obs_end = (datetime.combine(ist_now.date(), _obs_open)
+                        + timedelta(minutes=15)).time()
+        is_observation_window = _obs_open <= ist_now.time() < _obs_end
 
 
 
@@ -6423,9 +6516,19 @@ class AutonomousTradingBot:
         ist_now = self._now_ist()
         weekday = ist_now.weekday() # 0 = Monday, 6 = Sunday
         
-        if 0 <= weekday <= 4:
+        # A SPECIAL SESSION IS NOT A WEEKEND. This filter is the last gate
+        # before the scan, and on a Sunday it blocks every index, equity and
+        # commodity symbol - so Diwali Muhurat trading would have been a
+        # no-op even with the session manager reporting OPEN. The per-exchange
+        # hours are already enforced upstream by `is_tradable`, which is why
+        # this can simply allow the weekday list once the day is a session.
+        special_today = self._special_session_today()
+        if 0 <= weekday <= 4 or special_today is not None:
             allowed_sectors = ["index", "it", "energy", "banking", "fintech", "defence", "us_tech", "commodity"]
-            day_desc = "Weekday (Mon-Fri) - Indices/Equities/Commodities only"
+            if special_today is not None and weekday >= 5:
+                day_desc = f"Special session ({special_today['name']}) - normal universe"
+            else:
+                day_desc = "Weekday (Mon-Fri) - Indices/Equities/Commodities only"
         else:
             allowed_sectors = ["crypto", "forex"]
             day_desc = "Weekend (Sat-Sun) - Forex/Crypto only"
@@ -6472,7 +6575,9 @@ class AutonomousTradingBot:
 
         # Add observation blocked symbols to eval results early
         for s in observation_blocked:
-            obs_reason = "Opening Bell Observation Protocol: Prohibited from executing entry orders until 09:30 AM IST."
+            obs_reason = (
+                "Opening Bell Observation Protocol: Prohibited from executing entry orders"
+                f" until {_obs_end.strftime('%H:%M')} IST.")
             eval_results[s] = {
                 "state": "NO_TRADE",
                 "blockers": [obs_reason],

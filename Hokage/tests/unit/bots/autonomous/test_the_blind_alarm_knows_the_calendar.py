@@ -39,7 +39,8 @@ DEAD_TOKEN = Exception("Incorrect `api_key` or `access_token`.")
 
 #: Real dates, each one checked against the calendar in the tests below.
 SATURDAY = datetime(2026, 11, 7, 8, 41, 47)      # the false alarm
-SUNDAY = datetime(2026, 11, 8, 9, 0, 0)
+SUNDAY = datetime(2026, 11, 15, 9, 0, 0)         # a Sunday that really is dead
+MUHURAT = datetime(2026, 11, 8, 9, 0, 0)         # a Sunday that TRADES, 14:20
 MONDAY = datetime(2026, 11, 9, 8, 41, 47)        # normal session
 DUSSEHRA = datetime(2026, 10, 20, 9, 0, 0)       # equities shut, MCX evening
 BEYOND = datetime(2027, 3, 1, 9, 0, 0)           # outside the calendar
@@ -76,6 +77,7 @@ def test_the_dates_in_this_file_are_what_the_calendar_says():
     """A test that silently depends on a wrong date proves nothing."""
     assert tc.anything_trades(SATURDAY.date()) is False
     assert tc.anything_trades(SUNDAY.date()) is False
+    assert tc.anything_trades(MUHURAT.date()) is True       # Muhurat session
     assert tc.anything_trades(MONDAY.date()) is True
     assert tc.anything_trades(DUSSEHRA.date()) is True      # MCX evening
     assert tc.anything_trades(BEYOND.date()) is None        # unknown
@@ -94,6 +96,16 @@ def test_a_dead_token_on_a_sunday_raises_no_alarm():
     bot = _stub(SUNDAY)
     _PROBE(bot)
     bot.telegram_bot.send_message.assert_not_called()
+
+
+def test_a_dead_token_on_the_muhurat_sunday_still_alarms():
+    """The day this whole guard could have gone wrong in the dangerous
+    direction. 2026-11-08 is a Sunday with a live session from 14:20, and a
+    dead token on it is exactly the nine-days-blind failure this alarm
+    exists for."""
+    bot = _stub(MUHURAT)
+    _PROBE(bot)
+    bot.telegram_bot.send_message.assert_called_once()
 
 
 def test_the_quiet_day_is_latched_so_the_log_says_it_once():
@@ -172,7 +184,10 @@ def test_the_probe_still_records_the_outage_on_a_closed_day():
 # ============================================== the watchdog window agrees
 @pytest.mark.parametrize("when,expected", [
     (datetime(2026, 11, 7, 12, 0), False),    # Saturday
-    (datetime(2026, 11, 8, 12, 0), False),    # Sunday
+    (datetime(2026, 11, 15, 12, 0), False),   # a dead Sunday
+    (datetime(2026, 11, 8, 12, 0), False),    # Muhurat Sunday, BEFORE 14:20
+    (datetime(2026, 11, 8, 14, 30), True),    # Muhurat Sunday, mid-session
+    (datetime(2026, 11, 8, 15, 45), False),   # Muhurat Sunday, after 15:40
     (datetime(2026, 11, 9, 12, 0), True),     # Monday, inside the window
     (datetime(2026, 10, 20, 12, 0), True),    # Dussehra: MCX trades in the evening
     (datetime(2027, 3, 1, 12, 0), True),      # unknown date, still alarms

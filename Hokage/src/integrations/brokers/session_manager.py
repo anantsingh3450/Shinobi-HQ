@@ -147,6 +147,54 @@ class TradingSessionManager:
         else:
             return timezone.utc
 
+    @staticmethod
+    def _indian_session_status(local_dt: datetime, segment: str) -> str | None:
+        """OPEN/CLOSED from the verified calendar, or None when it cannot say.
+
+        None is not "open" and not "closed" - it hands the question back to
+        the rules below, which is what happens for every date outside the
+        calendar's span. An unmaintained calendar must change nothing.
+
+        Only the days whose HOURS are unusual are decided here. An ordinary
+        session still goes through the published hours below, so this does not
+        become a third place that 09:15-15:30 is written down.
+        """
+        try:
+            from hokage.memory import trading_calendar as tc
+        except Exception:
+            return None
+
+        day = local_dt.date()
+        kind = tc.session_kind(day, segment)
+        if kind is None:
+            return None
+        if kind == tc.CLOSED:
+            return "CLOSED"
+
+        if kind == tc.MUHURAT:
+            window = tc.session_window(day, segment)
+            if not window:
+                return "CLOSED"
+            start, end = window
+            now = local_dt.time()
+            # Pre-open is the 15 minutes before the window, as published.
+            pre_open = (datetime.combine(day, start)
+                        - timedelta(minutes=15)).time()
+            if pre_open <= now < start:
+                return "PRE_OPEN"
+            if start <= now < end:
+                return "OPEN"
+            return "CLOSED"
+
+        if kind == tc.EVENING:
+            # MCX trading only from the evening start, on an equity holiday.
+            if segment != "MCX":
+                return "CLOSED"
+            return ("OPEN" if local_dt.time() >= tc.EVENING_SESSION_START
+                    else "CLOSED")
+
+        return None         # FULL - the ordinary hours below decide
+
     def get_exchange_status(self, exchange: Exchange, current_time: datetime | None = None) -> str:
         """Determine the session status for an exchange at the given time.
         
@@ -170,6 +218,28 @@ class TradingSessionManager:
             if utc_dt.weekday() == 6 and dt_time(3, 0) <= utc_dt.time() <= dt_time(3, 15):
                 return "MAINTENANCE"
             return "OPEN"
+
+        # THE INDIAN CALENDAR IS NOT THIS FILE'S TO KEEP. `indian_holidays`
+        # below is a second, hand-typed list that disagreed with the verified
+        # one in `hokage.memory.trading_calendar` on six of 2026's dates and
+        # was missing BOTH remaining Diwali holidays. It stays only as a
+        # fallback for a date the real calendar cannot speak to.
+        #
+        # Two ways that mattered, both on the same weekend:
+        #   2026-11-08  Muhurat trading, a LIVE Sunday session. The weekend
+        #               rule below returned CLOSED, so Hokage would have slept
+        #               through it and archived no candles - a hole in the tape
+        #               of exactly the kind that cost three months of training
+        #               data on an MCX roll.
+        #   2026-11-10  Diwali Balipratipada, a shut Tuesday absent from the
+        #               list below, so the engine would have scanned a closed
+        #               market and priced decisions off whatever last quote
+        #               it could find.
+        if exchange in (Exchange.NSE, Exchange.BSE, Exchange.MCX):
+            segment = "MCX" if exchange == Exchange.MCX else "NSE"
+            status = self._indian_session_status(local_dt, segment)
+            if status is not None:
+                return status
 
         # Weekday checks for traditional markets
         if day_of_week >= 5:  # Saturday or Sunday

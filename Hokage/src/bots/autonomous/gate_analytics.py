@@ -160,7 +160,9 @@ GATE_KINDS: Mapping[GateId, GateKind] = {
 #: reader needing to know the codebase.
 GATE_LABELS: Mapping[GateId, str] = {
     GateId.DAY_ISOLATOR: "Day-of-week sector isolator",
-    GateId.OBSERVATION_WINDOW: "Opening bell observation (pre-09:30)",
+    # Not "pre-09:30": a special session opens at its own time, and the
+    # window follows it (14:20-14:35 on 2026-11-08).
+    GateId.OBSERVATION_WINDOW: "Opening bell observation (first 15 min)",
     GateId.RISK_OFF: "Global RISK-OFF state",
     GateId.CAPITAL_PRESERVATION: "Capital preservation: NO TRADE",
     GateId.CASH: "Insufficient cash balance",
