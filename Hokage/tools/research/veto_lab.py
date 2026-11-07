@@ -32,19 +32,45 @@ NEGATIVE edge. If the removed set has positive edge, the veto is not protecting
 the account, it is spending it — and the fact that the same rule measures well
 as a standalone signal is beside the point.
 
+THREE THINGS THIS LAB DID NOT DO UNTIL 2026-11-07, each of which has produced a
+wrong answer somewhere else in this repo before:
+
+  * IT MEASURED A FIXED THREE-MONTH WINDOW. `start`/`end` were frozen at the
+    2026-08-12 study that populated VETO_DISABLED_SYMBOLS, so re-running the
+    lab re-read the same quarter however much tape had accumulated since. The
+    archive now keeps every candle forever, and on gas alone there were three
+    unmeasured months. The window now defaults to THE WHOLE ARCHIVE.
+  * IT HAD NO HOLD-OUT. One t over one window is the geometry that put
+    thirteen of fourteen cells on the retirement queue, best included. Every
+    bucket is now scored on an early half and a late half, split by session
+    day, and a verdict that does not survive in BOTH halves is reported as
+    unproven rather than as a finding.
+  * IT POOLED LONG AND SHORT. Long and short are two different bets - two of
+    three live pairs were found paying for a NEGATIVE side - so a veto that
+    helps one and hurts the other reads as neutral when the sides are averaged
+    together. BLOCKED is now also broken out per side.
+
+The bar is the ship bar: |t| >= 2.0 in the same direction in both halves.
+Nothing below that is a result, and this lab proposes no constant.
+
 FIDELITY
 The verdict comes from `bots.autonomous.bias_rules.classify_tape` — literally
 the function production calls, not a re-implementation. The inputs are derived
 by signal_lab's Ctx, which computes ema9/ema21/VWAP/ATR by the same formulas
 `_compute_underlying_bias` uses. If either changes, this measurement changes.
 
+The bars come from the archive and ONLY the archive: a measurement over all
+history must not depend on a live token, and `load_bars` reaches for Kite.
+
 USAGE
     python tools/research/veto_lab.py                        # MCX arena
     python tools/research/veto_lab.py GOLDM SILVERM
     python tools/research/veto_lab.py NIFTY BANKNIFTY SENSEX
+    python tools/research/veto_lab.py NATURALGAS --since 2026-05-01
 """
 from __future__ import annotations
 
+import datetime as dt
 import math
 import sys
 from pathlib import Path
@@ -53,7 +79,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from signal_lab import HORIZONS, Ctx, load_bars, _MCX_FUTURES, measurable# noqa: E402, measurable
+from signal_lab import HORIZONS, Ctx, _MCX_FUTURES, measurable  # noqa: E402
 from entry_module_lab import build_context  # noqa: E402
 
 from bots.autonomous import bias_rules  # noqa: E402
@@ -63,12 +89,65 @@ from bots.strategy.components.mcx_entries import MCX_ENTRY_MODULES  # noqa: E402
 #: Minimum sample before a t-statistic is worth printing.
 MIN_N = 30
 
+#: The ship bar, and deliberately the same one every other decision here uses.
+#: A veto is a permanent change to what the account is allowed to do, so the
+#: evidence to keep or drop one is held to what evidence to SHIP one would be.
+SHIP_T = 2.0
 
-def _stats(edges: list[float], hits: int) -> tuple[int, float, float, float]:
-    n = len(edges)
+#: The smallest blocked edge worth calling a cost, in ATR.
+#:
+#: t MEASURES SIGNIFICANCE, NOT SIZE, and at these sample sizes the difference
+#: decides things. A blocked set averaging +0.03 ATR with n=80 clears t=+6 —
+#: consistent, real, and far too small to pay for itself once the spread and a
+#: holding period of theta come out of it. Without a floor, that number would
+#: read as "the veto is costing money" and license removing a gate.
+#:
+#: 0.10 IS A STATED PRIOR, NOT A MEASUREMENT, in the same sense as
+#: EIAReaction.MAX_REACTION_ATR: nobody here has measured what an option
+#: buyer's round-trip costs in ATR of the underlying, and until somebody does,
+#: a floor chosen openly beats a floor of zero chosen by omission. It only ever
+#: makes this lab HARDER to satisfy, and it gates nothing in production.
+MIN_EDGE_ATR = 0.10
+
+
+def archive_span(symbol: str) -> tuple[str, str] | None:
+    """The first and last archived bar for this symbol, or None if untouched."""
+    import candle_archive
+
+    with candle_archive.connect() as conn:
+        row = conn.execute(
+            "SELECT MIN(ts), MAX(ts) FROM candles WHERE symbol = ?",
+            (symbol,)).fetchone()
+    if not row or not row[0]:
+        return None
+    return row[0], row[1]
+
+
+def load_history(symbol: str, since: str | None, until: str | None) -> list[dict]:
+    """Every archived bar for this symbol in the requested range.
+
+    ARCHIVE ONLY. `signal_lab.load_bars` falls back to Kite and writes through,
+    which is right for a lab deepening the corpus and wrong here: a run over
+    all history must give the same answer on a Saturday with a dead token as it
+    does mid-session, or the measurement is not reproducible.
+    """
+    import candle_archive
+
+    span = archive_span(symbol)
+    if span is None:
+        return []
+    start = since or span[0]
+    end = until or span[1]
+    return candle_archive.load(symbol, start, end)
+
+
+def _stats(recs: list[dict]) -> tuple[int, float, float, float]:
+    """n, accuracy %, mean edge_atr, t."""
+    n = len(recs)
     if n == 0:
         return 0, 0.0, 0.0, 0.0
-    acc = hits / n * 100.0
+    edges = [r["edge"] for r in recs]
+    acc = sum(1 for r in recs if r["win"]) / n * 100.0
     mean = sum(edges) / n
     if n < 2:
         return n, acc, mean, 0.0
@@ -77,23 +156,27 @@ def _stats(edges: list[float], hits: int) -> tuple[int, float, float, float]:
     return n, acc, mean, t
 
 
-def evaluate(symbol: str, bars: list[dict], modules: dict, horizon: int) -> dict:
-    """Split every module's signals into the set the veto passes and the set it
-    blocks, scoring both. Strictly no lookahead: the verdict is computed from
-    the same bar window the module saw."""
-    out = {
-        name: {
-            "alone": ([], 0),
-            "gated": ([], 0),
-            "blocked": ([], 0),
-            "reasons": {},
-        }
-        for name in modules
-    }
+def split_days(recs: list[dict]) -> dt.date | None:
+    """The first day of the LATE half, splitting on session days not rows.
 
-    def _push(bucket: tuple[list, int], edge: float, win: bool) -> tuple[list, int]:
-        bucket[0].append(edge)
-        return bucket[0], bucket[1] + (1 if win else 0)
+    Splitting on row count would put a busy day on both sides of the line and
+    let the same session inform train and hold-out at once.
+    """
+    days = sorted({r["day"] for r in recs})
+    if len(days) < 4:
+        return None
+    return days[len(days) // 2]
+
+
+def observations(symbol: str, bars: list[dict], modules: dict,
+                 horizon: int) -> dict[str, list[dict]]:
+    """One record per module signal: which side, which day, did the veto pass
+    it, and what did the underlying do next.
+
+    Strictly no lookahead: the verdict is computed from the same bar window the
+    module saw.
+    """
+    out: dict[str, list[dict]] = {name: [] for name in modules}
 
     for i in range(42, len(bars) - horizon):
         window = bars[: i + 1]
@@ -131,85 +214,155 @@ def evaluate(symbol: str, bars: list[dict], modules: dict, horizon: int) -> dict
             if not getattr(sig, "should_enter", False):
                 continue
             call = 1 if sig.direction == "long" else -1
-            edge = (forward * call) / ctx.atr
-            win = (forward * call) > 0
-            rec = out[name]
-            rec["alone"] = _push(rec["alone"], edge, win)
 
             # The exact gate from _check_conduct_gates: MIXED blocks, and a
             # named direction blocks anything pointing the other way.
-            passes = (verdict == "BULLISH" and call == 1) or (
+            passed = (verdict == "BULLISH" and call == 1) or (
                 verdict == "BEARISH" and call == -1
             )
-            if passes:
-                rec["gated"] = _push(rec["gated"], edge, win)
-            else:
-                rec["blocked"] = _push(rec["blocked"], edge, win)
-                key = verdict if verdict != "MIXED" else reason.split("—")[-1].strip()
-                rec["reasons"][key] = rec["reasons"].get(key, 0) + 1
+            out[name].append({
+                "day": day,
+                "side": call,
+                "passed": passed,
+                "edge": (forward * call) / ctx.atr,
+                "win": (forward * call) > 0,
+                "verdict": verdict,
+                "reason": (verdict if verdict != "MIXED"
+                           else reason.split("—")[-1].strip()),
+            })
     return out
 
 
-def report(symbol: str, results: dict, horizon: int, counter_trend: set[str]) -> None:
-    rule = bias_rules.rule_for(symbol)
-    print(f"\n  {symbol}  |  horizon {horizon} bars ({horizon * 15} min)  |  veto rule: {rule}")
-    for name, rec in sorted(results.items()):
-        n_alone = len(rec["alone"][0])
-        if n_alone < MIN_N:
-            print(f"    {name:20s} n={n_alone} — too few to judge")
-            continue
-        note = "  (COUNTER_TREND: production skips the veto here)" if name in counter_trend else ""
-        print(f"    {name}{note}")
-        print(f"      {'':9s} {'n':>5s} {'accuracy':>9s} {'edge_atr':>9s} {'t':>7s}")
-        for label in ("alone", "gated", "blocked"):
-            n, acc, mean, t = _stats(rec[label][0], rec[label][1])
-            if n == 0:
-                print(f"      {label:9s} {0:>5d}        --        --      --")
-                continue
-            print(f"      {label:9s} {n:>5d} {acc:>8.1f}% {mean:>+9.3f} {t:>+7.2f}")
+def _row(label: str, recs: list[dict]) -> str:
+    n, acc, mean, t = _stats(recs)
+    if n == 0:
+        return f"      {label:16s} {0:>5d}        --        --      --"
+    return (f"      {label:16s} {n:>5d} {acc:>8.1f}% {mean:>+9.3f} {t:>+7.2f}")
 
-        n_b, _, mean_b, t_b = _stats(rec["blocked"][0], rec["blocked"][1])
-        n_g, _, mean_g, _ = _stats(rec["gated"][0], rec["gated"][1])
-        block_rate = n_b / n_alone * 100.0
-        if n_b < MIN_N:
-            verdict = "veto barely bites — too few blocks to judge"
-        elif mean_b > 0 and t_b >= 1.0:
-            verdict = ("VETO IS COSTING MONEY — the trades it removes have "
-                       f"POSITIVE edge ({mean_b:+.3f} ATR, t={t_b:+.2f})")
-        elif mean_b < 0:
-            verdict = f"veto earns its place — blocked trades average {mean_b:+.3f} ATR"
-        else:
-            verdict = "veto is neutral — blocked trades are noise, it only reduces n"
-        print(f"      -> blocks {block_rate:.0f}% of signals. {verdict}")
-        if n_g and n_alone:
-            print(f"         edge alone {sum(rec['alone'][0]) / n_alone:+.3f} "
+
+def blocked_verdict(recs: list[dict], cut: dt.date | None) -> str:
+    """What the BLOCKED set supports, held to the ship bar in BOTH halves.
+
+    The asymmetry is deliberate. "The veto is costing money" licenses removing
+    a gate, which is a loosening, so it has to clear the ship bar twice. "The
+    veto earns its place" only licenses leaving production exactly as it is,
+    so a consistently negative blocked edge is enough to say so.
+    """
+    n, _, mean, t = _stats(recs)
+    if n < MIN_N:
+        return f"veto barely bites — only {n} blocks, too few to judge"
+    if cut is None:
+        return "not enough distinct days to hold out a half — unproven"
+
+    early = [r for r in recs if r["day"] < cut]
+    late = [r for r in recs if r["day"] >= cut]
+    n_e, _, mean_e, t_e = _stats(early)
+    n_l, _, mean_l, t_l = _stats(late)
+    halves = f"early n={n_e} {mean_e:+.3f} t={t_e:+.2f} | late n={n_l} {mean_l:+.3f} t={t_l:+.2f}"
+
+    if n_e < MIN_N or n_l < MIN_N:
+        return f"one half too thin to confirm anything — {halves}"
+
+    # Significant in both halves AND big enough to be worth something. See
+    # MIN_EDGE_ATR: the size test is what stops a consistent +0.03 ATR from
+    # licensing the removal of a gate.
+    costing = (mean_e >= MIN_EDGE_ATR and t_e >= SHIP_T) and (
+        mean_l >= MIN_EDGE_ATR and t_l >= SHIP_T)
+    if costing:
+        return (f"VETO IS COSTING MONEY in both halves — it removes trades with "
+                f"POSITIVE edge (pooled {mean:+.3f} ATR, t={t:+.2f}) — {halves}")
+    if mean_e < 0 and mean_l < 0:
+        return (f"veto earns its place — blocked trades average {mean:+.3f} ATR "
+                f"and are negative in both halves — {halves}")
+    if mean >= MIN_EDGE_ATR and t >= SHIP_T:
+        return (f"pooled says the veto costs money ({mean:+.3f} ATR, t={t:+.2f}) "
+                f"but it DOES NOT HOLD OUT — unproven — {halves}")
+    if mean > 0 and t >= SHIP_T:
+        return (f"blocked edge is real but tiny ({mean:+.3f} ATR, t={t:+.2f}, "
+                f"floor {MIN_EDGE_ATR}) — too small to pay for itself — {halves}")
+    return f"blocked set is noise — the veto only reduces n — {halves}"
+
+
+def report(symbol: str, results: dict, horizon: int, counter_trend: set[str],
+           span: tuple[str, str]) -> None:
+    rule = bias_rules.rule_for(symbol)
+    disabled = symbol.upper() in bias_rules.VETO_DISABLED_SYMBOLS
+    off = "  [VETO STOOD DOWN IN PRODUCTION]" if disabled else ""
+    print(f"\n  {symbol}  |  horizon {horizon} bars ({horizon * 15} min)  |  "
+          f"veto rule: {rule}{off}")
+    for name, recs in sorted(results.items()):
+        if len(recs) < MIN_N:
+            print(f"    {name:22s} n={len(recs)} — too few to judge")
+            continue
+        note = ("  (COUNTER_TREND: production skips the veto here)"
+                if name in counter_trend else "")
+        print(f"    {name}{note}")
+        print(f"      {'':16s} {'n':>5s} {'accuracy':>9s} {'edge_atr':>9s} {'t':>7s}")
+
+        gated = [r for r in recs if r["passed"]]
+        blocked = [r for r in recs if not r["passed"]]
+        print(_row("alone", recs))
+        print(_row("gated", gated))
+        print(_row("blocked", blocked))
+
+        # PER SIDE, because long and short are two different bets and a veto
+        # that helps one and hurts the other averages to "neutral".
+        for side, label in ((1, "blocked long"), (-1, "blocked short")):
+            part = [r for r in blocked if r["side"] == side]
+            if part:
+                print(_row(label, part))
+
+        cut = split_days(recs)
+        rate = len(blocked) / len(recs) * 100.0
+        print(f"      -> blocks {rate:.0f}% of signals. {blocked_verdict(blocked, cut)}")
+        n_g, _, mean_g, _ = _stats(gated)
+        if n_g:
+            print(f"         edge alone {sum(r['edge'] for r in recs) / len(recs):+.3f} "
                   f"vs gated {mean_g:+.3f} ATR")
-        if rec["reasons"]:
-            top = sorted(rec["reasons"].items(), key=lambda kv: -kv[1])[:2]
-            for why, count in top:
-                print(f"         blocked {count}x: {why}")
+        reasons: dict[str, int] = {}
+        for r in blocked:
+            reasons[r["reason"]] = reasons.get(r["reason"], 0) + 1
+        for why, count in sorted(reasons.items(), key=lambda kv: -kv[1])[:2]:
+            print(f"         blocked {count}x: {why}")
 
 
 def main() -> int:
-    symbols = [s.upper() for s in sys.argv[1:]] or list(_MCX_FUTURES)
-    start, end = "2026-05-01 09:15:00", "2026-08-12 23:30:00"
+    args = [a for a in sys.argv[1:]]
+    since = until = None
+    for flag, setter in (("--since", "since"), ("--until", "until")):
+        if flag in args:
+            i = args.index(flag)
+            value = args[i + 1]
+            args = args[:i] + args[i + 2:]
+            if setter == "since":
+                since = value
+            else:
+                until = value
+    symbols = [s.upper() for s in args] or list(_MCX_FUTURES)
+
     print("=" * 84)
     print("  VETO LAB — is the bias engine helping the module it gates, or replacing it?")
     print("  ALONE = module's own signals. GATED = what the veto passes.")
     print("  BLOCKED = what it removes. BLOCKED with POSITIVE edge means the veto")
     print("  is spending the account, however well the rule scores on its own.")
+    print(f"  Held to |t| >= {SHIP_T} IN BOTH HALVES. One window is not a result.")
     print("=" * 84)
     for symbol in symbols:
         modules = MCX_ENTRY_MODULES if symbol in _MCX_FUTURES else ENTRY_MODULES
         named = {getattr(m, "module_id", k): m for k, m in modules.items()}
-        counter_trend = {n for n, m in named.items() if getattr(m, "COUNTER_TREND", False)}
-        try:
-            bars = load_bars(symbol, start, end)
-        except Exception as exc:
-            print(f"  {symbol}: could not load bars ({exc})")
+        counter_trend = {n for n, m in named.items()
+                         if getattr(m, "COUNTER_TREND", False)}
+        bars = load_history(symbol, since, until)
+        if not bars:
+            print(f"\n  {symbol}: nothing archived in that range — not measured.")
             continue
+        span = (str(bars[0]["date"]), str(bars[-1]["date"]))
+        days = len({b["date"].date() for b in bars})
+        print(f"\n  {symbol}: {len(bars)} archived bars over {days} sessions, "
+              f"{span[0][:10]} to {span[1][:10]}")
         for horizon in HORIZONS:
-            report(symbol, evaluate(symbol, bars, named, horizon), horizon, counter_trend)
+            report(symbol, observations(symbol, bars, named, horizon),
+                   horizon, counter_trend, span)
     print()
     return 0
 
