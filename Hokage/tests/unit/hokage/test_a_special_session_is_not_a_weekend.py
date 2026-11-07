@@ -231,3 +231,85 @@ def test_a_special_session_sits_inside_the_calendars_span():
     for day in tc._SPECIAL_SESSIONS:
         assert tc._KNOWN_FROM <= day <= tc._KNOWN_TO
         assert tc.session_kind(day, "NSE") is not None
+
+
+# ====================================== the backstop for an unfed table
+def _archive(tmp_path, days: list[str]):
+    import sqlite3
+
+    root = tmp_path / "brain"
+    root.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(root / "candles.db")
+    con.execute("CREATE TABLE candles (symbol TEXT, ts TEXT, close REAL)")
+    con.executemany(
+        "INSERT INTO candles VALUES ('NIFTY', ?, 100.0)",
+        [(f"{d} 10:00:00",) for d in days])
+    con.commit()
+    con.close()
+    return root
+
+
+def test_a_traded_weekend_already_in_the_table_is_not_reported(tmp_path,
+                                                              monkeypatch):
+    """2026-11-08 traded and the table says so. Nothing to flag."""
+    root = _archive(tmp_path, ["2026-11-06", "2026-11-08", "2026-11-09"])
+    monkeypatch.setenv("HOKAGE_BRAIN_ROOT", str(root))
+    assert tc.unlisted_sessions_from_archive() == []
+
+
+def test_a_traded_weekend_missing_from_the_table_is_flagged(tmp_path,
+                                                            monkeypatch):
+    """THE BACKSTOP. This is the only part of the calendar that can notice
+    its own gap, and it notices in the dangerous direction: a day that traded
+    while every rule here called it shut."""
+    root = _archive(tmp_path, ["2026-11-09", "2027-11-07", "2027-11-14"])
+    monkeypatch.setenv("HOKAGE_BRAIN_ROOT", str(root))
+    found = tc.unlisted_sessions_from_archive()
+    assert found == [dt.date(2027, 11, 7), dt.date(2027, 11, 14)]
+
+
+def test_an_absent_archive_asserts_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOKAGE_BRAIN_ROOT", str(tmp_path / "nothing-here"))
+    assert tc.unlisted_sessions_from_archive() == []
+
+
+def test_the_backstop_never_writes_itself_into_the_table():
+    """It REPORTS a gap; it does not fill one. A table that learned its own
+    dates from the tape would be inferred data presented as an exchange
+    announcement, and it still could not anticipate - the tape exists only
+    after the session it was needed for."""
+    src = (_repo_root() / "src" / "hokage" / "memory"
+           / "trading_calendar.py").read_text(encoding="utf-8")
+    reader = src.split("def unlisted_sessions_from_archive")[1].split(
+        "def confirmed_holidays_from_archive")[0]
+    assert "_SPECIAL_SESSIONS[" not in reader
+    assert ".update(" not in reader
+    assert "_SPECIAL_SESSIONS" in reader          # it reads the table
+    # and nothing anywhere mutates it
+    for marker in ("_SPECIAL_SESSIONS[", "_SPECIAL_SESSIONS.update",
+                   "_SPECIAL_SESSIONS.setdefault", "_SPECIAL_SESSIONS.pop"):
+        assert marker not in src, f"the table is being mutated: {marker}"
+
+
+def test_boot_names_the_day_and_warns_about_a_missing_session():
+    """Six gates decide what to do from the weekday. One line at boot makes
+    the day's real hours readable without a log dive."""
+    import pathlib
+
+    src = (_repo_root() / "src" / "bots" / "autonomous"
+           / "autonomous_bot.py").read_text(encoding="utf-8")
+    boot = src.split("# WHAT DAY IS IT.")[1][:1200]
+    assert 'logger.info("Session calendar: %s", self._describe_today())' in boot
+    assert "unlisted_sessions_from_archive()" in boot
+    assert "logger.warning" in boot
+
+
+def test_the_morning_checklist_names_the_real_open():
+    """"Awaiting 09:00 Open" is a fabricated line on a day that opens at
+    14:20, and a message that states a falsehood is this project's most
+    expensive recurring defect."""
+    src = (_repo_root() / "src" / "bots" / "autonomous"
+           / "cron_reset.py").read_text(encoding="utf-8")
+    assert "trading_calendar.session_window(" in src
+    assert "'Awaiting 09:00 Open.'" not in src
+    assert "Awaiting {open_at} Open." in src

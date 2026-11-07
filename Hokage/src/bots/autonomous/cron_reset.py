@@ -98,6 +98,20 @@ class CronScheduler(threading.Thread):
                         api_status = f"FAIL ({e})"
                         checklist_passed = False
 
+                    # "Awaiting 09:00 Open" is a lie on a day that opens at
+                    # 14:20. The checklist still runs at 08:45 - it is a
+                    # readiness check, and being early is its job - but it
+                    # names the hour the market actually opens.
+                    open_at = "09:00"
+                    try:
+                        from hokage.memory import trading_calendar
+                        window = trading_calendar.session_window(
+                            now_ist.date(), "NSE")
+                        if window:
+                            open_at = window[0].strftime("%H:%M")
+                    except Exception:
+                        pass
+
                     engine_status = "Active" if self.bot.is_active() else "FAIL (Not Active)"
                     if engine_status != "Active":
                         checklist_passed = False
@@ -107,7 +121,7 @@ class CronScheduler(threading.Thread):
                         f"DB: {db_status}\n"
                         f"API: {api_status}\n"
                         f"Engine: {engine_status}\n\n"
-                        f"{'Awaiting 09:00 Open.' if checklist_passed else 'ACTION REQUIRED BEFORE OPEN.'}"
+                        f"{f'Awaiting {open_at} Open.' if checklist_passed else 'ACTION REQUIRED BEFORE OPEN.'}"
                     )
                     
                     if self.bot.telegram_bot and self.bot.telegram_bot.enabled:

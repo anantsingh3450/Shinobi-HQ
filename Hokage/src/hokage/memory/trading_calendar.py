@@ -279,6 +279,47 @@ def describe(day: dt.date) -> str:
     return f"{day}: {name} — everything closed"
 
 
+def unlisted_sessions_from_archive(symbol: str = "NIFTY") -> list[dt.date]:
+    """Weekend days the archive has candles for that this file calls closed.
+
+    THE OTHER HALF OF THE CROSS-CHECK, and the only part of this file that can
+    notice its own gap. `confirmed_holidays_from_archive` catches a day listed
+    as open that did not trade; this catches the dangerous inverse - a day that
+    TRADED while every rule here called it shut, which is exactly what Diwali
+    Muhurat trading is and exactly the state in which five senders go silent
+    through a live session.
+
+    It cannot be fooled and it cannot be mistyped: a weekend with candles in
+    it is a session that happened. It also cannot anticipate - it speaks only
+    after the tape exists - so it is a backstop for an unmaintained table, not
+    a substitute for entering the dates.
+
+    Returns [] when the archive is absent: missing data, never an assertion.
+    """
+    path = brain_root() / "candles.db"
+    if not path.exists():
+        return []
+    conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT substr(ts,1,10) FROM candles WHERE symbol=?",
+            (symbol,)).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+    out = []
+    for (stamp,) in rows:
+        try:
+            day = dt.date.fromisoformat(stamp)
+        except ValueError:
+            continue
+        if day.weekday() >= 5 and day not in _SPECIAL_SESSIONS:
+            out.append(day)
+    return sorted(out)
+
+
 def confirmed_holidays_from_archive(symbol: str = "NIFTY") -> list[dt.date]:
     """Weekdays inside the archive's span that produced no candles.
 

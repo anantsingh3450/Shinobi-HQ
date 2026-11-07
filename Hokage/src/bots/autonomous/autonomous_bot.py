@@ -733,6 +733,25 @@ class AutonomousTradingBot:
         self._thread.start()
         logger.info("Autonomous trading loop started.")
 
+        # WHAT DAY IS IT. Six gates in this system decide what to do from the
+        # weekday, and on 2026-11-08 every one of them was wrong. One line at
+        # boot makes the day's actual hours readable without a log dive, and
+        # names a session the archive has seen that the table has not.
+        try:
+            from hokage.memory import trading_calendar
+
+            logger.info("Session calendar: %s", self._describe_today())
+            unlisted = trading_calendar.unlisted_sessions_from_archive()
+            if unlisted:
+                logger.warning(
+                    "Session calendar: the archive has candles for %s, which "
+                    "this calendar calls closed - a special session is "
+                    "missing from the table and every calendar-gated sender "
+                    "will go silent through it",
+                    ", ".join(str(d) for d in unlisted))
+        except Exception as exc:
+            logger.debug("Could not describe today's session: %s", exc)
+
     def _cleanup_stale_paper_positions(self) -> None:
         """On startup, close any open paper positions that are older than today.
         
