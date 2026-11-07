@@ -2971,6 +2971,37 @@ class AutonomousTradingBot:
         self._feed_probe_at = datetime.now(timezone.utc)
         self._feed_probe_reason = reason
 
+    def _nothing_trades_today(self) -> bool:
+        """True ONLY when the calendar positively says every segment is shut.
+
+        2026-11-07 was a Saturday. Hokage booted, found the overnight token
+        dead as it is every morning, and sent "HOKAGE IS BLIND — ZERODHA LOGIN
+        NEEDED" about a market that would not open for two days. There was
+        nothing to be blind to.
+
+        That is not a cosmetic complaint. This alarm exists because the feed
+        once died for nine days and nobody was told; an alarm that also cries
+        on every weekend and every holiday is how the real one gets ignored.
+        `trading_calendar` was built on 2026-10-20 for exactly this - five
+        login demands on Dussehra - and this alarm never asked it.
+
+        UNKNOWN IS NOT CLOSED. `anything_trades` returns None for a date
+        outside the calendar's span, and `is False` is the whole point: None
+        and True both fall through to the alarm. A calendar that has not been
+        updated for 2027 must produce noise, never silence.
+
+        EVENING-ONLY DAYS STILL ALARM. On 2026-10-20 equities were shut but
+        MCX ran from 17:00 - SessionShift's only window - so `anything_trades`
+        is True and he still needs to log in.
+        """
+        try:
+            from hokage.memory import trading_calendar
+
+            return trading_calendar.anything_trades(self._now_ist().date()) is False
+        except Exception:
+            # A calendar that cannot be read must not silence an alarm.
+            return False
+
     def _check_data_feed_session(self) -> None:
         """Probe the Kite market-data feed and alert once per IST date if blind.
 
@@ -3052,6 +3083,23 @@ class AutonomousTradingBot:
                         "Scanning has resumed — no restart needed."
                     )
                 self._feed_outage_announced = False
+                return
+
+            # THE MARKET HAS TO BE OPEN FOR "BLIND" TO MEAN ANYTHING. The
+            # probe and its record above are untouched - the feed IS down and
+            # that stays a recorded fact - but a dead token on a Saturday is
+            # not news, and an alarm that fires on days nothing trades is how
+            # the one that matters gets ignored. Said once per day at INFO so
+            # the log still shows why it kept quiet.
+            if self._nothing_trades_today():
+                if getattr(self, "_last_feed_quiet_date", None) != today:
+                    from hokage.memory import trading_calendar
+
+                    logger.info(
+                        "Market data feed is down (%s) and staying quiet: %s",
+                        kind, trading_calendar.describe(self._now_ist().date()),
+                    )
+                    self._last_feed_quiet_date = today
                 return
 
             if getattr(self, "_last_feed_alert_date", None) == today:

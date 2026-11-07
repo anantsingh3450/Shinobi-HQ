@@ -58,6 +58,13 @@ def _stub(price_error: Exception | None = None, send_ok: bool = True) -> SimpleN
     # while this alarm fired every sixty seconds. Stubbing it out here would
     # leave the thing those readers depend on untested.
     bot._record_feed_probe = lambda ok, reason: AutonomousTradingBot._record_feed_probe(bot, ok, reason)
+    # And the real calendar check, added 2026-11-07 after this alarm demanded a
+    # Zerodha login on a Saturday. Bound rather than stubbed for the same
+    # reason as the two above: a stub here would let the alarm be silenced on a
+    # trading day without a single test noticing. Every date in this file is a
+    # normal session, so the alarm below must still fire.
+    bot._last_feed_quiet_date = None
+    bot._nothing_trades_today = lambda: AutonomousTradingBot._nothing_trades_today(bot)
     return bot
 
 

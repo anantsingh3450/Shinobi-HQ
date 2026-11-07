@@ -70,6 +70,11 @@ def _bot(source, reconnect_works=True):
 
     bot._now_ist = _now_ist
     bot._diagnose_feed_failure = lambda reason: "network"
+    # 2026-09-02 is a normal Wednesday session, so the calendar check added on
+    # 2026-11-07 must not quieten anything here. This bot is a real instance,
+    # so it carries the real check already - a regression that silences a
+    # trading day fails these tests too.
+    bot._last_feed_quiet_date = None
 
     def _try_reconnect():
         bot.reconnects += 1

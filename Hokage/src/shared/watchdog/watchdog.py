@@ -132,14 +132,31 @@ class Watchdog:
         did not. The seven-days-blind-on-a-dead-token case this check was
         built for happened during market hours and is still caught.
 
-        A market holiday falls inside the window, so the alarm still fires on
-        one. That is the safe direction to be wrong in, and it is a handful of
-        days a year rather than every night.
+        HOLIDAYS USED TO FALL INSIDE THE WINDOW. When this was written on
+        2026-10-12 nothing in the system knew what a holiday was, so the
+        comment here accepted the noise as "the safe direction to be wrong
+        in". Eight days later Dussehra produced five demands that the
+        commander log in to a shut exchange, and `trading_calendar` was built.
+        The gap was accepted for want of data that now exists, so it is closed.
+
+        UNKNOWN IS STILL AN ALARM. The calendar answers None outside its span,
+        and only a positive "nothing trades" quietens this. A 2027 date is not
+        a holiday merely because the 2026 list does not mention it, and an
+        unreadable calendar must leave the alarm exactly as it was.
         """
         now = now_local or datetime.now()
         if now.weekday() >= 5:
             return False
-        return cls.FEED_WINDOW_START_IST <= now.time() < cls.FEED_WINDOW_END_IST
+        if not (cls.FEED_WINDOW_START_IST <= now.time() < cls.FEED_WINDOW_END_IST):
+            return False
+        try:
+            from hokage.memory import trading_calendar
+
+            if trading_calendar.anything_trades(now.date()) is False:
+                return False
+        except Exception:
+            pass        # no calendar, no silence
+        return True
 
     def start_subsystem_heartbeats(self) -> None:
         """Stamp a liveness heartbeat for subsystems that have no real publisher.
