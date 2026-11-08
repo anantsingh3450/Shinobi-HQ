@@ -125,3 +125,48 @@ def test_the_inflated_runway_is_gone():
     assert minutes_left == 45
     bars_left = minutes_left / 5          # MCX reads 5-minute bars
     assert bars_left == 9.0               # was 105.0
+
+
+# ============================== the clock it is given, not the one on the wall
+def test_an_explicit_day_beats_the_wall_clock():
+    """THE BUG THIS FUNCTION SHIPPED WITH, and the reason it now takes a day.
+
+    `_adaptive_premium_target` is handed an injectable clock; the first version
+    of `_square_off_time` read `self._now_ist()` from inside it. On 2026-11-07
+    the two agreed and nothing showed. On 2026-11-08 - a special session - the
+    real date pulled the MCX square-off to 15:15 and silently rewrote the
+    runway of a position filled two days earlier, breaking five tests that had
+    passed the night before. A function given a clock must use it.
+    """
+    bot = _bot(MUHURAT)                 # "today" is the special session
+    assert Bot._square_off_time(bot, True, dt.date(2026, 11, 6)) == (23, 15)
+    assert Bot._square_off_time(bot, False, dt.date(2026, 11, 6)) == (15, 20)
+    # and with no day it still reads today, which IS the session
+    assert Bot._square_off_time(bot, True) == (15, 15)
+
+
+def test_both_call_sites_pass_the_session_date():
+    """Each one holds a `now_ist` already. Passing it is the whole fix."""
+    import pathlib
+
+    root = next(p for p in pathlib.Path(__file__).resolve().parents
+                if (p / "pyproject.toml").is_file())
+    src = (root / "src" / "bots" / "autonomous" / "autonomous_bot.py").read_text(
+        encoding="utf-8")
+    assert "self._square_off_time(\n                is_mcx_instrument, now_ist.date())" in src
+    assert "self._square_off_time(is_mcx, now_ist.date())" in src
+    # no call site may omit the date
+    assert "self._square_off_time(is_mcx_instrument)" not in src
+    assert "self._square_off_time(is_mcx)" not in src
+
+
+def test_the_target_does_not_depend_on_what_day_it_is_read_on():
+    """The symptom, stated directly: a position's runway is a property of the
+    session it was filled in, not of the day someone asks about it."""
+    filled = dt.datetime(2026, 11, 6, 10, 30, 37)
+    bot = Bot.__new__(Bot)
+    bot.tp_percent = 0.10
+    answer = bot._adaptive_premium_target(
+        14.55, 279.40, 1.307142857142862, "strat-rangefade-mcx-v1",
+        "NATURALGAS", True, filled)
+    assert round(answer, 2) == 16.73        # the ladder's own first tick

@@ -10,7 +10,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date as dt_date
 from typing import Any, TYPE_CHECKING
 from concurrent.futures import ThreadPoolExecutor
 
@@ -3096,8 +3096,18 @@ class AutonomousTradingBot:
     #: here so a session with different hours can keep the same discipline.
     _SQUARE_OFF_BUFFER_MIN = {"NSE": 10, "MCX": 15}
 
-    def _square_off_time(self, is_mcx: bool) -> tuple[int, int]:
-        """When today's positions must be flat, as (hour, minute) IST.
+    def _square_off_time(self, is_mcx: bool,
+                         day: "dt_date | None" = None) -> tuple[int, int]:
+        """When a day's positions must be flat, as (hour, minute) IST.
+
+        `day` IS NOT OPTIONAL IN SPIRIT. Every caller that holds a session
+        time must pass that time's date, because this function's first version
+        read `self._now_ist()` while sitting inside `_adaptive_premium_target`,
+        which is handed an injectable clock. On 2026-11-07 the two agreed and
+        nothing showed; on 2026-11-08, a special session, the real date pulled
+        the MCX square-off to 15:15 and silently rewrote the runway of a
+        position filled two days earlier. A function given a clock that reads
+        the wall clock instead is the defect this project keeps paying for.
 
         THE HAZARD THIS FIXES IS SPECIFIC. MCX squares off at 23:15 because
         MCX closes at 23:30. On Sunday 2026-11-08 MCX closes at 15:30, so a
@@ -3115,13 +3125,21 @@ class AutonomousTradingBot:
         segment = "MCX" if is_mcx else "NSE"
         ordinary = (23, 15) if is_mcx else (15, 20)
 
-        window = self._special_window_today(segment)
+        if day is None:
+            day = self._now_ist().date()
+
+        try:
+            from hokage.memory import trading_calendar
+
+            window = trading_calendar.session_window(day, segment)
+        except Exception:
+            window = None       # an unreadable calendar changes nothing
         if window is None:
             return ordinary
 
         close = window[1]
         buffer_min = self._SQUARE_OFF_BUFFER_MIN[segment]
-        flat_by = (datetime.combine(self._now_ist().date(), close)
+        flat_by = (datetime.combine(day, close)
                    - timedelta(minutes=buffer_min)).time()
         special = (flat_by.hour, flat_by.minute)
         return min(ordinary, special)
@@ -3895,7 +3913,8 @@ class AutonomousTradingBot:
         # options still square off at the 23:15 MCX close, not 15:20).
         is_crypto = venue and ("crypto" in venue.venue_id.lower() or "binance" in venue.venue_id.lower())
         if not is_crypto:
-            sq_hour, sq_min = self._square_off_time(is_mcx_instrument)
+            sq_hour, sq_min = self._square_off_time(
+                is_mcx_instrument, now_ist.date())
             if now_ist.hour > sq_hour or (now_ist.hour == sq_hour and now_ist.minute >= sq_min):
                 return True, "Time-Based Square-Off (EOD)", tracking
 
@@ -4400,7 +4419,7 @@ class AutonomousTradingBot:
         # 525 minutes of runway against a market closing in 60, inflating
         # the expected move by sqrt(105/12) and putting the target out of
         # reach of the session it has to be reached in.
-        close_hour, close_min = self._square_off_time(is_mcx)
+        close_hour, close_min = self._square_off_time(is_mcx, now_ist.date())
         minutes_left = (close_hour - now_ist.hour) * 60 + (close_min - now_ist.minute)
         bars_left = max(0.0, minutes_left / bar_minutes)
         expected_move = float(entry_und_atr) * math.sqrt(bars_left)

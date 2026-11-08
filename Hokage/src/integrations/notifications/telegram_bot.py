@@ -1008,6 +1008,35 @@ class TelegramBotUplink:
         except Exception:
             return ""
 
+    def build_login_brief(self, headline: str) -> str:
+        """The login link, a live TOTP, and what to do with them.
+
+        ONE BODY, TWO CALLERS: the 06:30 brief and the `/login` command send
+        the same three steps, because a second copy of them is a second thing
+        to forget to update.
+
+        NOTHING HERE IS LOGGED. The URL carries the api_key and the message
+        carries a live one-time code. The handler's formatter scrubs what
+        reaches a log, but the cheapest redaction is a value that never goes
+        near a logger at all.
+        """
+        mgr = SecretManager()
+        api_key = mgr.get_secret("api_key", broker="zerodha")
+        totp_secret = os.getenv("ZERODHA_TOTP_SECRET")
+
+        login_url = f"https://kite.trade/connect/login?v=3&api_key={api_key}"
+        totp_msg = ""
+        if totp_secret:
+            totp_pin = pyotp.TOTP(totp_secret).now()
+            totp_msg = f"\n• *Live TOTP*: `{totp_pin}` (Tap to copy)"
+
+        return (
+            f"{headline}\n"
+            f"1. Click here to login: [Kite Login]({login_url}){totp_msg}\n"
+            "2. The browser will show \"Authentication successful\" when done — that's it, you're logged in.\n"
+            "3. Only reply with `/token URL` if the browser shows an error page instead."
+        )
+
     def _validate_broker_session(self) -> bool:
         """Return True only if the stored Zerodha access token passes a REAL
         API round-trip (kite.profile()). A token string merely existing on
@@ -1073,22 +1102,8 @@ class TelegramBotUplink:
                                 )
                                 self._mark_prompted(current_date_str)
                             else:
-                                mgr = SecretManager()
-                                api_key = mgr.get_secret("api_key", broker="zerodha")
-                                totp_secret = os.getenv("ZERODHA_TOTP_SECRET")
-
-                                login_url = f"https://kite.trade/connect/login?v=3&api_key={api_key}"
-                                totp_msg = ""
-                                if totp_secret:
-                                    totp_pin = pyotp.TOTP(totp_secret).now()
-                                    totp_msg = f"\n• *Live TOTP*: `{totp_pin}` (Tap to copy)"
-
-                                sent = self.send_message(
-                                    "⚠️ *ZERODHA LIVE AUTONOMOUS LOGIN REQUIRED* ⚠️\n"
-                                    f"1. Click here to login: [Kite Login]({login_url}){totp_msg}\n"
-                                    "2. The browser will show \"Authentication successful\" when done — that's it, you're logged in.\n"
-                                    "3. Only reply with `/token URL` if the browser shows an error page instead."
-                                )
+                                sent = self.send_message(self.build_login_brief(
+                                    "⚠️ *ZERODHA LIVE AUTONOMOUS LOGIN REQUIRED* ⚠️"))
                                 # Only burn the day's prompt once it actually
                                 # LANDED. Marking it before the send meant a
                                 # transient network failure (laptop asleep, DNS
@@ -1222,11 +1237,39 @@ class TelegramBotUplink:
                 # Make sure message is from the configured chat ID
                 if str(chat.get("id")) == str(self.chat_id):
                     text = msg.get("text", "").strip()
+                    # ASK FOR THE LINK, ANY TIME. Until now the login link
+                    # existed only inside the 06:30 brief: once a day, at a
+                    # fixed hour, and behind the calendar gate - so on
+                    # 2026-11-08, a Sunday with a live session at 14:20, the
+                    # one delivery of the day was suppressed and there was no
+                    # way to ask for another.
+                    #
+                    # DELIBERATELY NOT CALENDAR-GATED, and it does not touch
+                    # the day's prompt latch. He asked; that is the whole
+                    # condition. A reactive reply cannot nag.
+                    # BARE only. `/token <url>` is the real token exchange
+                    # below and must not be swallowed here - matching on the
+                    # first word alone would have captured it and broken the
+                    # one path that actually logs him in.
+                    if text.strip().lower() in ("/login", "/relogin", "/token"):
+                        try:
+                            if self._validate_broker_session():
+                                self.send_message(
+                                    "✅ *Already connected* - the existing Zerodha "
+                                    "session is valid. No login needed.")
+                            else:
+                                self.send_message(self.build_login_brief(
+                                    "🔑 *ZERODHA LOGIN LINK*"))
+                        except Exception as e:
+                            logger.error(f"Failed to build the login brief: {_scrub(e)}")
+                            self.send_message(
+                                "❌ Could not build the login link. "
+                                "Use the dashboard: /broker/zerodha/login")
                     # A pasted Kite callback URL IS a login attempt, with or
                     # without the /token prefix. Routing a bare URL to the LLM
                     # once produced a hallucinated "connection is solid" reply
                     # while the token was silently discarded.
-                    if text.startswith("/token ") or "request_token=" in text:
+                    elif text.startswith("/token ") or "request_token=" in text:
                         # Extract token
                         if text.startswith("/token "):
                             request_token = text.split("/token ", 1)[1].strip()
