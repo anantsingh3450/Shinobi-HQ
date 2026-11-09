@@ -116,11 +116,29 @@ class CronScheduler(threading.Thread):
                     if engine_status != "Active":
                         checklist_passed = False
 
+                    # WHICH CODE IS RUNNING. Deliberately NOT part of
+                    # checklist_passed: HEAD moves on every commit, which is
+                    # routine, and a check that goes red every day is a check
+                    # nobody reads. This is here to make an invisible state
+                    # visible - on 2026-11-08 Hokage held 44-hour-old code
+                    # through a live session while three restarts reported
+                    # success, and no panel could say so, because every panel
+                    # asks the running process how it is and a stale process
+                    # is perfectly healthy.
+                    code_line = "unknown"
+                    try:
+                        from shared.ops import code_version
+                        behind, _, _ = code_version.staleness()
+                        code_line = ("⚠️ " if behind else "") + code_version.describe()
+                    except Exception:
+                        pass
+
                     msg = (
                         f"{'✅' if checklist_passed else '🚨'} Morning Systems Check: \n"
                         f"DB: {db_status}\n"
                         f"API: {api_status}\n"
-                        f"Engine: {engine_status}\n\n"
+                        f"Engine: {engine_status}\n"
+                        f"Code: {code_line}\n\n"
                         f"{f'Awaiting {open_at} Open.' if checklist_passed else 'ACTION REQUIRED BEFORE OPEN.'}"
                     )
                     

@@ -733,6 +733,19 @@ class AutonomousTradingBot:
         self._thread.start()
         logger.info("Autonomous trading loop started.")
 
+        # WHICH CODE IS THIS. Hokage ran 44 hours on 2026-11-07's build while
+        # three restarts reported success, and nothing could report the gap:
+        # every panel asks the running process how it is, and a stale process
+        # is perfectly healthy. The commit on disk at boot IS the commit this
+        # process runs, because boot is when the files were read.
+        try:
+            from shared.ops import code_version
+
+            code_version.record_boot()
+            logger.info("Code version: %s", code_version.describe())
+        except Exception as exc:
+            logger.debug("Could not read the code version: %s", exc)
+
         # WHAT DAY IS IT. Six gates in this system decide what to do from the
         # weekday, and on 2026-11-08 every one of them was wrong. One line at
         # boot makes the day's actual hours readable without a log dive, and
@@ -1027,6 +1040,25 @@ class AutonomousTradingBot:
                     self._check_data_feed_session()
                 except Exception as exc:
                     logger.error(f"Data feed health check failed: {exc}")
+
+                # 0b. Is the candle archive missing a session? The nightly sync
+                # runs at 23:40 so the MCX session is complete, and needs a live
+                # broker token to write anything. The commander logs in in the
+                # MORNING, and Kite expires a token daily — so the 23:40 run
+                # found the session UNREACHABLE on 11-01, 11-04, 11-05, 11-07
+                # and 11-08, and refused to write rather than record a short
+                # day as a real one. Correct, and it still left Sunday's
+                # Muhurat tape missing until it was pulled by hand.
+                #
+                # Nothing is lost by a single skip — `sync` re-fetches a 90-day
+                # window, so a later success repairs the nights before it. What
+                # is lost is the guarantee, because a contract that rolls
+                # between the skip and the next success takes its tape with it.
+                # So: a catch-up from inside Hokage, when the token is freshest.
+                try:
+                    self._catch_up_candle_archive()
+                except Exception as exc:
+                    logger.error(f"Candle archive catch-up failed: {exc}")
 
                 # 0c. What can this account size actually TRADE? Runs after the
                 # feed check on purpose — it needs real quotes, and it stays
@@ -3143,6 +3175,149 @@ class AutonomousTradingBot:
                    - timedelta(minutes=buffer_min)).time()
         special = (flat_by.hour, flat_by.minute)
         return min(ordinary, special)
+
+    #: Underlyings whose tape the archive is expected to hold. Deliberately
+    #: the archiver's own list rather than a second copy: a symbol added
+    #: there and not here would be silently exempt from this check.
+    def _archive_assets(self) -> tuple[str, ...]:
+        try:
+            import sys
+            from pathlib import Path as _P
+
+            root = _P(__file__).resolve().parents[3]
+            tools = str(root / "tools" / "research")
+            if tools not in sys.path:
+                sys.path.insert(0, tools)
+            from candle_archive import ASSETS
+
+            return tuple(ASSETS)
+        except Exception:
+            return ()
+
+    def _catch_up_candle_archive(self) -> None:
+        """Once a day, repair any session the nightly sync could not write.
+
+        RUNS ONLY WHEN THE ARCHIVE IS ACTUALLY BEHIND. A daily unconditional
+        re-fetch of seven symbols over ninety days would hammer the broker for
+        nothing on every day the 23:40 task worked.
+
+        ON ITS OWN THREAD, ALWAYS. The fetch takes a minute or two and the
+        trading loop must never wait for it; exits are managed from this loop
+        and a blocked iteration is a position nobody is watching.
+
+        Never raises. An archive top-up that fails is a measurement problem for
+        later, not a reason to stop trading.
+        """
+        today = self._now_ist().strftime("%Y-%m-%d")
+        if getattr(self, "_archive_catchup_date", None) == today:
+            return
+        if getattr(self, "_archive_catchup_running", False):
+            return
+        # getattr, because the flag is born on the first probe and this runs
+        # straight after it. Absent is not False here either - but the safe
+        # reading of "no probe yet" IS to wait, so the default is falsey.
+        if not getattr(self, "_feed_probe_ok", False):
+            return                  # no token, no point, and no false alarm
+
+        missing = self._archive_sessions_missing()
+        self._archive_catchup_date = today
+        if not missing:
+            return
+
+        logger.warning(
+            "Candle archive is missing %d session(s) (%s). Topping up on a "
+            "background thread - the nightly sync could not reach the broker.",
+            len(missing), ", ".join(sorted(missing)[:6]),
+        )
+        self._archive_catchup_running = True
+        threading.Thread(
+            target=self._run_candle_catchup, name="HokageCandleCatchup",
+            daemon=True,
+        ).start()
+
+    def _archive_sessions_missing(self) -> set[str]:
+        """Trading days in the recent past with no candles for some asset.
+
+        Asks the calendar which days should have tape, so a holiday is never
+        reported as a hole - that was the whole point of trading_calendar.
+
+        THROUGH `market_was_open`, NOT `session_kind`. It answers True / False
+        / None, and all three are needed here: None means the calendar cannot
+        say, and a day it cannot speak to must be SKIPPED rather than counted
+        as a missing session - otherwise the day this calendar's data runs out
+        (2026-12-31) every morning starts a full re-fetch of everything.
+        `segment_shut` collapses None and CLOSED into one answer, which is
+        right for suppressing a message and wrong for this. It also already
+        maps symbol to segment, so this no longer keeps its own copy of which
+        underlyings are MCX.
+        """
+        import datetime as dt
+        import sqlite3
+
+        from hokage.memory.option_archive import market_was_open
+        from hokage.memory.resolver import brain_root
+
+        assets = self._archive_assets()
+        if not assets:
+            return set()
+
+        path = brain_root() / "candles.db"
+        if not path.exists():
+            return set()
+
+        today = self._now_ist().date()
+        # Yesterday back two weeks. Not today: a session in progress has no
+        # close yet, and Kite's bar for it is not one either.
+        window = [today - dt.timedelta(days=n) for n in range(1, 15)]
+
+        try:
+            conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+        except Exception:
+            return set()
+        try:
+            have: dict[str, set[str]] = {}
+            for symbol in assets:
+                rows = conn.execute(
+                    "SELECT DISTINCT substr(ts,1,10) FROM candles WHERE symbol=?",
+                    (symbol,)).fetchall()
+                have[symbol] = {r[0] for r in rows}
+        except Exception:
+            return set()
+        finally:
+            conn.close()
+
+        missing: set[str] = set()
+        for day in window:
+            for symbol in assets:
+                if market_was_open(symbol, day) is not True:
+                    continue        # shut, or the calendar cannot say
+                if day.isoformat() not in have.get(symbol, set()):
+                    missing.add(day.isoformat())
+        return missing
+
+    def _run_candle_catchup(self) -> None:
+        """The fetch itself, off the trading thread."""
+        try:
+            import sys
+            from pathlib import Path as _P
+
+            root = _P(__file__).resolve().parents[3]
+            tools = str(root / "tools" / "research")
+            if tools not in sys.path:
+                sys.path.insert(0, tools)
+            import candle_archive
+
+            added = 0
+            for symbol in self._archive_assets():
+                try:
+                    added += candle_archive.sync(symbol, verbose=False)
+                except Exception as exc:
+                    logger.warning("Candle catch-up failed for %s: %s", symbol, exc)
+            logger.info("Candle archive catch-up added %d bar(s).", added)
+        except Exception as exc:
+            logger.error("Candle archive catch-up aborted: %s", exc)
+        finally:
+            self._archive_catchup_running = False
 
     def _describe_today(self) -> str:
         """The calendar's one-line reason, for the log that says why it stayed
