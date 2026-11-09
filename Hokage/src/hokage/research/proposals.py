@@ -68,7 +68,19 @@ APPLIED = "APPLIED"
 #:   target          production's target applied, because a target truncates
 #:                   exactly the winners a horizon exit counts in full
 #:   tradedbars      entries on bars that never traded are excluded
-MEASUREMENT_BASIS = "holdout-split+stop-per-cell+target+tradedbars"
+#:   funded3         three cells are pre-committed to carry capital and are
+#:                   judged at the bar for three (2.39); every other cell is
+#:                   still judged at the bar for forty (3.22). Added
+#:                   2026-11-09, commander-approved.
+#:
+#: WHY THE FUNDED FAMILY BELONGS IN THE BASIS AND NOT AFTER THE BAR. It was
+#: first appended as "...+bar3.22+funded2.39x3", which broke `parse_stamp`:
+#: that splits on the LAST "+bar", so the tail became "3.22+funded2.39x3",
+#: float() failed, the bar read as None and the whole string read as an
+#: unknown basis - making every stored proposal permanently stale. The bar
+#: must be the final element, and anything that changes HOW cells are judged
+#: is a change of basis.
+MEASUREMENT_BASIS = "holdout-split+stop-per-cell+target+tradedbars+funded3"
 
 #: HOW THE IMPROVEMENT BOT MEASURES, which is not how the labs do. Its
 #: proposals come from drift against a strategy's recorded baseline: no

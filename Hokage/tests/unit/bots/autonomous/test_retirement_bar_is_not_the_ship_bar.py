@@ -134,8 +134,11 @@ def test_an_unreadable_parked_list_blocks_rather_than_allows():
     """The conservative direction: not knowing must never ALLOW a retirement."""
     assert ev._parked_assets({"parked_assets": None}) == \
         ev._parked_assets({})          # both fall back, neither invents
-    d, = _archives(-1.51, -1.95, lineup=_sole("SILVERM"), asset="SILVERM")
-    assert not d.is_autonomous, "SILVERM is not parked, so RAIL 2 must hold"
+    # GOLDM rather than SILVERM: this rail needs an asset that is NOT parked,
+    # and SILVERM was parked on 2026-11-09 on cost. A parked asset is exactly
+    # the case the rail lets through, so the old fixture stopped testing it.
+    d, = _archives(-1.51, -1.95, lineup=_sole("GOLDM"), asset="GOLDM")
+    assert not d.is_autonomous, "GOLDM is not parked, so RAIL 2 must hold"
 
 
 # --------------------------------------------- the audit stamps what it knew

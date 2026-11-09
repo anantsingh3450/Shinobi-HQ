@@ -160,7 +160,17 @@ def test_the_audit_builds_its_geometry_from_the_shared_basis():
     #
     # The price of the mirror experiment, stated plainly: every pending
     # retirement clock restarted, and two cells that cleared 3.16 no longer do.
-    assert wa.GEOMETRY == "holdout-split+stop-per-cell+target+tradedbars+bar3.22"
+    # +funded3 on 2026-11-09. Three cells were pre-committed to carry capital
+    # and answer to the bar for three (2.39); everything else still answers to
+    # the bar for forty. That changes what "below the bar" MEANS for those
+    # three, so snapshots either side of it are not consecutive evidence and
+    # the retirement clock resets - which is exactly what this stamp is for.
+    #
+    # IT GOES IN THE BASIS, NOT AFTER THE BAR. parse_stamp splits on the last
+    # "+bar", so a suffix after it made the bar unparseable and every stored
+    # proposal permanently stale.
+    assert wa.GEOMETRY == (
+        "holdout-split+stop-per-cell+target+tradedbars+funded3+bar3.22")
     assert wa.FAMILY_SIZE == 40, (
         "the bar is derived from the lineup; if the lineup changed again, "
         "this and the GEOMETRY string above move together or not at all")

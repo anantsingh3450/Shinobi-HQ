@@ -44,10 +44,16 @@ def test_a_parked_asset_reports_itself_parked(asset):
     assert bot.is_parked(asset.lower()) is True
 
 
-@pytest.mark.parametrize("asset", ["GOLDM", "SILVERM", "NIFTY", "BANKNIFTY", "SENSEX"])
+@pytest.mark.parametrize("asset", ["GOLDM", "NIFTY", "SENSEX"])
 def test_a_live_asset_is_not_parked(asset):
-    """The whole live lineup must still be scanned. Over-matching here would
-    switch the system off."""
+    """The funded lineup must still be scanned. Over-matching here would
+    switch the system off.
+
+    SILVERM and BANKNIFTY left this list on 2026-11-09: both were parked on
+    COST, measured live against their real books - BANKNIFTY's edge is 0.65%
+    of premium against a 0.69-0.75% round trip, SILVERM's 0.24% against
+    0.69-0.70%. See hokage.research.funded_cells.
+    """
     bot = AutonomousTradingBot.__new__(AutonomousTradingBot)
     assert bot.is_parked(asset) is False
 
@@ -55,11 +61,29 @@ def test_a_live_asset_is_not_parked(asset):
 def test_the_parked_set_is_exactly_what_was_decided():
     """A silent addition here stops an asset being scanned. That must be a
     deliberate, reviewed act, not a drive-by edit."""
-    # NATURALGAS removed 2026-10-21 by commander directive, to accumulate a
-    # record on an archive that now survives the futures roll. Nothing it
-    # measured improved; see PARKED_ASSETS for the numbers kept beside the
-    # reversal. CRUDEOIL stays parked - 7 sweeps, all failing out of sample.
-    assert set(AutonomousTradingBot.PARKED_ASSETS) == {"CRUDEOIL"}
+    # CRUDEOIL has been parked throughout - 7 sweeps, all failing out of
+    # sample.
+    #
+    # NATURALGAS was removed from this set on 2026-10-21 by commander
+    # directive, to accumulate a record on an archive that now survives the
+    # futures roll, and RE-PARKED on 2026-11-09 on cost. That is not a
+    # reversal of the 10-21 reasoning but its satisfaction: parked assets stay
+    # in candle_archive.ASSETS, so the tape keeps accumulating and only the
+    # money stops.
+    #
+    # BANKNIFTY and SILVERM joined on 2026-11-09, on the same measurement:
+    # these are the four underlyings whose round trip costs more than their
+    # measured edge pays. The three that survive - NIFTY, SENSEX, GOLDM - are
+    # the funded family. See hokage.research.funded_cells for the arithmetic.
+    assert set(AutonomousTradingBot.PARKED_ASSETS) == {
+        "CRUDEOIL", "NATURALGAS", "BANKNIFTY", "SILVERM"}
+
+    # And the two lists cannot drift: what is not parked IS what is funded.
+    from hokage.research import funded_cells
+
+    universe = {"NIFTY", "BANKNIFTY", "SENSEX", "CRUDEOIL", "NATURALGAS",
+                "GOLDM", "SILVERM"}
+    assert universe - set(AutonomousTradingBot.PARKED_ASSETS) ==         funded_cells.funded_assets()
 
 
 def test_every_parked_asset_carries_its_reason():

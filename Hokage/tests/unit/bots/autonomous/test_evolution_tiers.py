@@ -466,7 +466,14 @@ def test_the_orphan_reason_names_the_MODULE_not_the_decided_asset():
         "the reason must name the module whose retirement is being weighed, "
         f"otherwise it reads as a non-sequitur: {reason}"
     )
-    assert "BANKNIFTY" in reason, "the orphaned assets are still worth naming"
+    # NIFTY and SENSEX, not BANKNIFTY. BANKNIFTY was parked on 2026-11-09 on
+    # cost, and a parked asset left with no live strategy is a DECISION rather
+    # than an orphan - naming it here would turn a standing choice back into
+    # an alarm, which is the whole reason PARKED_ASSETS exists.
+    assert "NIFTY" in reason and "SENSEX" in reason, (
+        "the orphaned assets are still worth naming")
+    assert "BANKNIFTY" not in reason, (
+        "a parked asset is not orphaned - it is decided")
     # The old wording. "archiving this" attached a module-wide consequence to a
     # single-asset decision.
     assert "archiving this would leave" not in reason

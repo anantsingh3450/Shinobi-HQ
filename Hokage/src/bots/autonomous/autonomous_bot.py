@@ -2401,7 +2401,32 @@ class AutonomousTradingBot:
         # existed (see candle_archive); the archive now keeps every bar, so
         # from here a gas verdict compounds instead of evaporating. This is
         # paper money buying a measurable record.
+        #
+        # RE-PARKED 2026-11-09, commander-approved, on COST rather than edge.
+        # Measured live against the real book: the round trip costs 0.73-0.75%
+        # of premium and the best measured edge on gas is 0.22% - the dearest
+        # book in the universe against the thinnest edge. No sample size fixes
+        # a trade that loses on arrival.
+        #
+        # THE 2026-10-21 REASONING IS NOT REVERSED, IT IS SATISFIED. Gas was
+        # un-parked to buy a measurable record, and parking does not cost us
+        # that record: parked assets stay in candle_archive.ASSETS and
+        # weekly_audit.UNIVERSE, so the tape keeps accumulating and the
+        # verdict keeps compounding. Only the money stops.
+        "NATURALGAS": ("round trip 0.73-0.75% of premium against a measured "
+                       "edge of 0.22% - dearest book, thinnest edge; the tape "
+                       "keeps accumulating via the candle archive"),
+        # PARKED 2026-11-09 on the same measurement.
+        "BANKNIFTY": ("round trip 0.69-0.75% against a measured edge of "
+                      "0.65% - the margin is negative before theta"),
+        "SILVERM": ("round trip 0.69-0.70% against a measured edge of 0.24%"),
     }
+
+    #: The three cells the commander funded on 2026-11-09, and the ONLY assets
+    #: left unparked. Kept here as the readable counterpart to PARKED_ASSETS:
+    #: the enforcement is the parked list, and this is what it leaves standing.
+    #: See hokage.research.funded_cells for the reasoning and the arithmetic.
+    FUNDED_ASSETS: tuple[str, ...] = ("NIFTY", "SENSEX", "GOLDM")
 
     def is_parked(self, symbol: str) -> bool:
         """Whether this asset is a standing DECISION not to trade.

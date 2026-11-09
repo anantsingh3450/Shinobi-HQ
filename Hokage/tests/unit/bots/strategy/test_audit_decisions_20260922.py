@@ -100,7 +100,7 @@ def test_meanreversion_no_longer_trades_banknifty():
 
 
 # -------------------------------------- 3. natural gas: parked, then un-parked
-def test_gas_is_no_longer_parked_and_the_reversal_is_recorded():
+def test_gas_is_parked_again_and_both_decisions_are_recorded():
     """REVERSED 2026-10-21 by commander directive, and the measurement that
     justified the original parking is still in the source beside it.
 
@@ -117,11 +117,29 @@ def test_gas_is_no_longer_parked_and_the_reversal_is_recorded():
     """
     import inspect
 
-    assert "NATURALGAS" not in Bot.PARKED_ASSETS
     src = inspect.getsource(Bot)
+
+    # RE-PARKED 2026-11-09 on COST, which the 10-21 decision never weighed:
+    # gas has the dearest book in the universe (0.73-0.75% of premium a round
+    # trip) against the thinnest measured edge (0.22%). No sample size fixes a
+    # trade that loses on arrival.
+    assert "NATURALGAS" in Bot.PARKED_ASSETS
+
+    # BOTH DECISIONS STAY IN THE SOURCE. The 10-21 reasoning was "data, not
+    # edge" - and it is satisfied rather than overruled, because a parked
+    # asset stays in candle_archive.ASSETS and the tape keeps accumulating.
+    # Deleting either record would leave the next reader unable to see what
+    # was weighed.
     assert "NATURALGAS UN-PARKED 2026-10-21" in src
+    assert "RE-PARKED 2026-11-09" in src
+    assert "NOT REVERSED" in src
     assert "-0.239 t-1.91" in src or "-1.91" in src, (
         "the measurement against gas must stay visible beside the reversal")
+
+    import candle_archive  # noqa: E402
+
+    assert "NATURALGAS" in candle_archive.ASSETS, (
+        "the 10-21 reasoning only holds if the tape still accumulates")
 
 
 def test_rangefade_is_live_again_and_still_NOT_left_with_an_empty_scope():

@@ -63,6 +63,7 @@ from sweep_lab import realised  # noqa: E402
 from entry_module_lab import build_context  # noqa: E402
 
 from signal_lab import corrected_t  # noqa: E402
+from hokage.research import funded_cells  # noqa: E402
 from bots.autonomous.autonomous_bot import AutonomousTradingBot as Bot  # noqa: E402
 from bots.strategy.components.entries import ENTRY_MODULES  # noqa: E402
 from bots.strategy.components.mcx_entries import MCX_ENTRY_MODULES  # noqa: E402
@@ -123,6 +124,31 @@ def _family_size() -> int:
 
 FAMILY_SIZE = _family_size()
 SHIP_BAR = round(corrected_t(FAMILY_SIZE), 2)
+
+#: THE BAR IS NOT ONE NUMBER ANY MORE. Approved 2026-11-09.
+#:
+#: Three cells are pre-committed to carry capital, chosen on COST - the only
+#: three whose measured edge exceeds a full round trip - which is reasoning
+#: independent of the statistics being corrected. A family of three earns the
+#: bar for three.
+#:
+#: Everything else is still measured and still cannot ship against the easier
+#: bar: a number found among forty needs the correction for forty. Lowering
+#: the bar for a cell that was not pre-committed would be lowering it around
+#: the selection the correction exists to punish, which is how 2,808 noise
+#: hypotheses once cleared t>=2.0 on both halves.
+FUNDED_BAR = round(corrected_t(funded_cells.family_size()), 2)
+
+
+def bar_for(module_id: str | None, symbol: str | None) -> float:
+    """The bar THIS cell must clear.
+
+    Funded cells answer to the three-cell bar. Everything else answers to the
+    full family's, because that is the family it was found in.
+    """
+    if module_id and symbol and funded_cells.is_funded(module_id, symbol):
+        return FUNDED_BAR
+    return SHIP_BAR
 
 #: How this audit measures. Written into every snapshot, and compared by
 #: evolution.plan() before two snapshots may be treated as consecutive evidence.
@@ -193,6 +219,13 @@ SHIP_BAR = round(corrected_t(FAMILY_SIZE), 2)
 #: measurement.
 from hokage.research.proposals import MEASUREMENT_BASIS  # noqa: E402
 
+#: A BASIS CHANGE, DELIBERATELY. Adding a per-cell funded bar changes what
+#: "below the bar" means for three cells, so two snapshots either side of it
+#: are not consecutive evidence and the retirement clock resets. That is the
+#: intended consequence, not a side effect - see evolution.plan().
+#: BASIS FIRST, BAR LAST. parse_stamp splits on the final "+bar", so nothing
+#: may follow it - see proposals.MEASUREMENT_BASIS for what appending the
+#: funded marker after the bar did.
 GEOMETRY = f"{MEASUREMENT_BASIS}+bar{SHIP_BAR:.2f}"
 
 SNAPSHOT_DIR = BRAIN / "research" / "snapshots"
@@ -309,7 +342,15 @@ def measure_split(symbol: str, modules: dict) -> tuple[dict, dict, tuple]:
             "edge_train": (train or {}).get("edge_atr"),
             "t_train": (train or {}).get("t"),
             "train_below_min_n": train is None,
-            "confirmed": bool(train and train["t"] >= SHIP_BAR and hold["t"] >= SHIP_BAR),
+            # PER-CELL BAR. `name` here is the module_id the audit scores
+            # under, so a funded cell is judged at 2.39 and an exploratory one
+            # at 3.22 - in the same table, which is the point: the reader can
+            # see both and cannot mistake one for the other.
+            "bar": bar_for(name, symbol),
+            "funded": funded_cells.is_funded(name, symbol),
+            "confirmed": bool(
+                train and train["t"] >= bar_for(name, symbol)
+                and hold["t"] >= bar_for(name, symbol)),
         }
     return out, raw, (train_win, hold_win)
 
@@ -511,15 +552,19 @@ def build_report(current: dict, history: list[dict]) -> dict:
                         "delta": delta, "n": stat["n"],
                     })
 
-            if is_live and stat["t"] < SHIP_BAR:
-                two_weeks = before is not None and before["t"] < SHIP_BAR
+            # PER-CELL BAR here too. A funded cell judged at 3.22 would be
+            # flagged for demotion on the very bar it was exempted from, which
+            # would undo the decision in the other direction.
+            cell_bar = bar_for(module, symbol)
+            if is_live and stat["t"] < cell_bar:
+                two_weeks = before is not None and before["t"] < cell_bar
                 if two_weeks:
                     demotions.append({
                         "module": module, "symbol": symbol,
                         "name": info.get("name", module),
                         "t_now": stat["t"], "t_prev": before["t"], "n": stat["n"],
                     })
-            if status == "ARCHIVED" and stat["t"] >= SHIP_BAR:
+            if status == "ARCHIVED" and stat["t"] >= cell_bar:
                 revivals.append({
                     "module": module, "symbol": symbol,
                     "name": info.get("name", module),
@@ -584,7 +629,10 @@ def coverage_line(weeks: int = 8) -> str:
 
 def render(current: dict, report: dict) -> str:
     lines = [f"HOKAGE WEEKLY AUDIT — {current['date']}",
-             f"horizon {HORIZON * 15}min · ship bar t>={SHIP_BAR} · min n={MIN_N}"]
+             f"horizon {HORIZON * 15}min · exploratory bar t>={SHIP_BAR} "
+             f"({FAMILY_SIZE} cells) · FUNDED bar t>={FUNDED_BAR} "
+             f"({funded_cells.family_size()} cells) · min n={MIN_N}"]
+    lines.append(funded_cells.describe())
     lines.append(
         f"geometry: {GEOMETRY} (hold-out half; per-cell production stop, "
         f"default {PROD_STOP_ATR} ATR; target at "
@@ -637,7 +685,10 @@ def render(current: dict, report: dict) -> str:
     if live:
         lines.append("LIVE LINEUP AS MEASURED:")
         for symbol, module, stat in sorted(live, key=lambda x: -x[2]["t"]):
-            flag = "" if stat["t"] >= SHIP_BAR else "   << below bar"
+            cell_bar = stat.get("bar", SHIP_BAR)
+            flag = "" if stat["t"] >= cell_bar else f"   << below bar {cell_bar}"
+            if stat.get("funded"):
+                flag += "  [FUNDED]"
             lines.append(f"  {current['lineup'][module]['name']:14s} {symbol:11s} "
                          f"n={stat['n']:>4d} t={stat['t']:+.2f}{flag}")
     return "\n".join(lines)
@@ -838,6 +889,8 @@ def main() -> int:
         "generated_at": end.isoformat(),
         "horizon_bars": HORIZON,
         "ship_bar": SHIP_BAR,
+        "funded_bar": FUNDED_BAR,
+        "funded_cells": sorted(f"{m}/{a}" for m, a in funded_cells.FUNDED),
         "lookback_days": LOOKBACK_DAYS,
         # How this snapshot was measured. evolution.plan() refuses to treat two
         # snapshots as consecutive evidence unless these match, so changing the
