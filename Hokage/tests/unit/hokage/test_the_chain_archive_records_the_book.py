@@ -161,14 +161,17 @@ def test_the_spread_lab_refuses_a_one_sided_book():
 
 
 def test_the_spread_lab_says_what_it_leaves_out():
-    """Brokerage and statutory charges are NOT in it, because the only
-    charges model in this repo is a mock emitting USD at rates an order of
-    magnitude below Indian option rates. A measurement quoted next to a wrong
-    number gets discredited along with it."""
+    """Brokerage and statutory charges ARE now included, from
+    `bots.execution.charges` with rates quoted off the broker's own page. What
+    is still missing is theta over the holding period, and the lab has to keep
+    saying so - a cost figure that silently omits a term gets quoted as if it
+    were complete.
+    """
     src = (ROOT / "tools" / "research" / "spread_lab.py").read_text(encoding="utf-8")
     flat = " ".join(src.split())
-    assert "are NOT" in flat and "included" in flat
-    assert "FLOOR on cost" in flat
+    assert "zerodha.com/charges" in flat
+    assert "Theta over the hold is NOT included" in flat
+    assert "not yet measurable" in flat
 
 
 def test_the_transfer_rate_is_labelled_an_assumption():

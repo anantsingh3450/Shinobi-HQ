@@ -28,15 +28,20 @@ sample per contract. It is not a time series - the chain archive now records
 depth so that a series can exist from today - and a spread measured at 09:15
 is not the spread at 14:00.
 
-WHAT IT IS NOT
-Not the whole cost. Brokerage and statutory charges are real and are NOT
-included here, deliberately: the only charges model in this repo is a mock
-emitting USD at rates an order of magnitude below Indian option rates, and
-quoting a wrong number next to a measured one is how a measurement gets
-discredited. Those rates have to come from the broker's published schedule,
-verified, not recalled.
+AND THE REST OF THE COST
+Brokerage and statutory charges are now included, from
+`bots.execution.charges` - rates read off zerodha.com/charges rather than
+recalled, because third-party calculators disagreed by a factor of 2.4 on the
+largest line (options STT: 0.0625% on some pages, 0.15% on the broker's own).
 
-So read this as a FLOOR on cost, and compare it against edge honestly.
+Brokerage is FLAT at 20 rupees an order, so as a percentage it depends
+entirely on position size. At this account's size it is the biggest single
+line - bigger than the spread on every index. Trading smaller makes it dearer,
+not cheaper.
+
+STILL NOT THE WHOLE COST: theta over the holding period is not here, because
+it cannot be measured from anything the brain holds yet. The chain archive
+began recording bid/ask on 2026-11-09 so that it can be, forward only.
 
 USAGE
     python tools/research/spread_lab.py
@@ -86,36 +91,39 @@ def main() -> int:
     print("=" * 94)
     print("  SPREAD LAB - the round-trip cost of one option, measured live")
     print("=" * 94)
-    print("  (ask - bid) / mid is what crossing the book twice costs, as a")
-    print("  percent of premium. Brokerage and statutory charges are NOT")
-    print("  included - see the header. This is a FLOOR on cost.")
+    from bots.execution import charges as ch
+
+    print("  spread% = (ask - bid)/mid, what crossing the book twice costs.")
+    print(f"  fees%   = brokerage + STT + transaction + GST + stamp + SEBI,")
+    print(f"            from {ch.RATES_SOURCE}, read {ch.RATES_READ_ON}.")
+    print("  Theta over the hold is NOT included and is not yet measurable.")
     print()
     print(f"  Edge column: best measured hold-out edge for that underlying,")
     print(f"  converted at {PCT_PREMIUM_PER_ATR}% of premium per 1.0 ATR.")
     print()
 
-    try:
-        kite = oa._kite() if hasattr(oa, "_kite") else None
-    except Exception:
-        kite = None
-    if kite is None:
-        from integrations.brokers.secrets import SecretManager
-        from kiteconnect import KiteConnect
+    from integrations.brokers.kite_connection import KiteConnectionManager
+    from integrations.brokers.kite_market_data_provider import KiteMarketDataProvider
+    from integrations.brokers.secrets import SecretManager
 
-        secrets = SecretManager()
-        kite = KiteConnect(api_key=secrets.get_secret("api_key", broker="zerodha"))
-        kite.set_access_token(secrets.get_secret("access_token", broker="zerodha"))
+    manager = KiteConnectionManager(SecretManager())
+    status = manager.connect()
+    if not getattr(status, "connected", bool(status)):
+        print("  Broker session is not live - log in first, then re-run.")
+        return 1
+    provider = KiteMarketDataProvider(manager)
+    kite = manager.get_kite_client()
 
-    print(f"  {'asset':<12} {'contract':<26} {'bid':>9} {'ask':>9} "
-          f"{'mid':>9} {'cost%':>7} {'edge%':>7}  verdict")
-    print("  " + "-" * 90)
+    print(f"  {'asset':<11} {'contract':<24} {'mid':>9} {'spread%':>8} "
+          f"{'fees%':>7} {'cost%':>7} {'edge%':>7}  verdict")
+    print("  " + "-" * 92)
 
     rows = []
     for symbol in UNIVERSE:
         if only and symbol not in only:
             continue
         try:
-            quoted = _quote_atm(kite, oa, symbol)
+            quoted = _quote_atm(provider, kite, symbol)
         except Exception as exc:
             print(f"  {symbol:<12} could not quote: {type(exc).__name__}: "
                   f"{str(exc)[:50]}")
@@ -124,19 +132,33 @@ def main() -> int:
             print(f"  {symbol:<12} no ATM contract with a two-sided book")
             continue
 
-        for name, bid, ask in quoted:
+        for name, bid, ask, lot in quoted:
+            if lot <= 1:
+                # REFUSE, do not guess. A lot size of 1 on an option is the
+                # known MCX dump defect, and dividing flat brokerage by a
+                # turnover of one lot-unit invents a cost of several hundred
+                # percent. A missing number must read as missing.
+                print(f"  {symbol:<11} {name:<24} {'':>9} {'':>8} {'':>7} "
+                      f"{'':>7} {'':>7}  LOT SIZE UNUSABLE ({lot:g})")
+                continue
             if bid <= 0 or ask <= 0:
-                print(f"  {symbol:<12} {name:<26} {bid:>9.2f} {ask:>9.2f} "
-                      f"{'':>9} {'':>7} {'':>7}  NO TWO-SIDED BOOK")
+                print(f"  {symbol:<11} {name:<24} {'':>9} {'':>8} {'':>7} "
+                      f"{'':>7} {'':>7}  NO TWO-SIDED BOOK")
                 continue
             mid = (bid + ask) / 2.0
-            cost_pct = (ask - bid) / mid * 100.0
+            spread_pct = (ask - bid) / mid * 100.0
+            # Charges are a function of TURNOVER, not of the quoted premium:
+            # brokerage is flat per order, so the same option costs a very
+            # different percentage at a different lot size.
+            fees_pct = ch.option_round_trip(mid * lot, symbol).pct_of_premium
+            cost_pct = spread_pct + fees_pct
             module, edge_atr = BEST_EDGE_ATR.get(symbol, ("?", 0.0))
             edge_pct = edge_atr * PCT_PREMIUM_PER_ATR
             verdict = "EDGE > COST" if edge_pct > cost_pct else "COST EATS EDGE"
-            print(f"  {symbol:<12} {name:<26} {bid:>9.2f} {ask:>9.2f} "
-                  f"{mid:>9.2f} {cost_pct:>6.2f}% {edge_pct:>6.2f}%  {verdict}")
+            print(f"  {symbol:<11} {name:<24} {mid:>9.2f} {spread_pct:>7.2f}% "
+                  f"{fees_pct:>6.2f}% {cost_pct:>6.2f}% {edge_pct:>6.2f}%  {verdict}")
             rows.append({"symbol": symbol, "cost": cost_pct, "edge": edge_pct,
+                         "spread": spread_pct, "fees": fees_pct,
                          "module": module})
 
     print()
@@ -147,13 +169,27 @@ def main() -> int:
         return 0
 
     ok = [r for r in rows if r["edge"] > r["cost"]]
-    print(f"  {len(ok)} of {len(rows)} quoted contracts have an edge bigger than")
-    print(f"  the spread alone, before brokerage and statutory charges.")
+    print(f"  {len(ok)} of {len(rows)} quoted contracts carry an edge bigger than")
+    print(f"  the FULL round trip - spread plus every published charge.")
+    survivors = sorted({r["symbol"] for r in ok})
+    if survivors:
+        print(f"  Survive cost: {', '.join(survivors)}")
+    dead = sorted({r["symbol"] for r in rows} - set(survivors))
+    if dead:
+        print(f"  Do not:       {', '.join(dead)}")
     print()
     worst = max(rows, key=lambda r: r["cost"])
     best = min(rows, key=lambda r: r["cost"])
-    print(f"  cheapest book: {best['symbol']} at {best['cost']:.2f}%")
-    print(f"  dearest  book: {worst['symbol']} at {worst['cost']:.2f}%")
+    print(f"  cheapest round trip: {best['symbol']} at {best['cost']:.2f}% "
+          f"(spread {best['spread']:.2f} + fees {best['fees']:.2f})")
+    print(f"  dearest  round trip: {worst['symbol']} at {worst['cost']:.2f}% "
+          f"(spread {worst['spread']:.2f} + fees {worst['fees']:.2f})")
+    fees_bigger = [r for r in rows if r["fees"] > r["spread"]]
+    print()
+    print(f"  FEES EXCEED THE SPREAD on {len(fees_bigger)} of {len(rows)} "
+          f"contracts. Brokerage is flat at 40 rupees")
+    print(f"  a round trip, so the smaller the position the dearer it is in "
+          f"percentage terms.")
     print()
     print("  WHAT TO DO WITH THIS")
     print("  A cell whose edge is below its spread cannot be fixed by more")
@@ -163,73 +199,36 @@ def main() -> int:
     return 0
 
 
-def _quote_atm(kite, oa, symbol: str):
-    """[(tradingsymbol, bid, ask)] for the ATM call and put."""
-    spot_key = oa.SPOT_KEYS[symbol] if hasattr(oa, "SPOT_KEYS") else None
-    contracts = oa.atm_contracts(kite, symbol, MIN_DTE) \
-        if hasattr(oa, "atm_contracts") else None
-    if contracts is None:
-        return _quote_atm_fallback(kite, symbol)
-    keys = [c["key"] for c in contracts]
-    quotes = kite.quote(keys)
-    out = []
-    for c in contracts:
-        q = quotes.get(c["key"]) or {}
-        depth = q.get("depth") or {}
-        bid = ((depth.get("buy") or [{}])[0]).get("price") or 0.0
-        ask = ((depth.get("sell") or [{}])[0]).get("price") or 0.0
-        out.append((c["key"].split(":")[-1], float(bid), float(ask)))
-    return out
+def _quote_atm(provider, kite, symbol: str):
+    """[(tradingsymbol, bid, ask, lot_size)] for the ATM call and put.
 
+    THROUGH THE PRODUCTION RESOLVER, not the raw instrument dump. Kite's dump
+    reports `lot_size=1` for MCX contracts - the defect that parked the
+    commodity league - and the first version of this lab read it straight,
+    which priced a NATURALGAS round trip at 320% of premium and a CRUDEOIL one
+    at 15%. Both were fabricated: flat brokerage divided by a turnover of
+    fifteen rupees instead of eighteen thousand.
 
-def _quote_atm_fallback(kite, symbol: str):
-    """Resolve the ATM pair straight from the instrument dump.
-
-    Deliberately separate from option_archive's own resolver: this tool must
-    work even if that module's helpers change shape, and a cost measurement
-    that silently stops running is worse than one that is obviously absent.
+    `resolve_option_contract` is what the entry path itself uses, so a lot
+    size that is wrong here is wrong in production too, and that is a bug
+    worth having in one place rather than two.
     """
-    import datetime as dt
-
-    from hokage.memory import option_archive as oa
-
-    exchange = "MCX" if symbol in ("CRUDEOIL", "NATURALGAS", "GOLDM", "SILVERM") \
-        else ("BFO" if symbol == "SENSEX" else "NFO")
-    spot_key = {"NIFTY": "NSE:NIFTY 50", "BANKNIFTY": "NSE:NIFTY BANK",
-                "SENSEX": "BSE:SENSEX"}.get(symbol)
-    if spot_key:
-        spot = kite.ltp(spot_key)[spot_key]["last_price"]
-    else:
-        fut = [i for i in kite.instruments("MCX")
-               if i["name"] == symbol and i["instrument_type"] == "FUT"]
-        if not fut:
-            return []
-        fut.sort(key=lambda i: i["expiry"])
-        key = f"MCX:{fut[0]['tradingsymbol']}"
-        spot = kite.ltp(key)[key]["last_price"]
-
-    today = dt.date.today()
-    dump = [i for i in kite.instruments(exchange)
-            if i["name"] == symbol and i["instrument_type"] in ("CE", "PE")
-            and i["expiry"] and (i["expiry"] - today).days >= MIN_DTE]
-    if not dump:
-        return []
-    nearest_expiry = min(i["expiry"] for i in dump)
-    chain = [i for i in dump if i["expiry"] == nearest_expiry]
-    strike = min({i["strike"] for i in chain}, key=lambda s: abs(s - spot))
-
+    spot = provider.get_price(symbol)
     out = []
     for kind in ("CE", "PE"):
-        match = [i for i in chain
-                 if i["strike"] == strike and i["instrument_type"] == kind]
-        if not match:
+        contract = provider.resolve_option_contract(symbol, kind, spot)
+        if not contract:
             continue
-        key = f"{exchange}:{match[0]['tradingsymbol']}"
-        q = kite.quote([key]).get(key) or {}
+        lot = float(contract.get("lot_size") or 0)
+        key = f"{contract['exchange']}:{contract['tradingsymbol']}"
+        try:
+            q = kite.quote([key]).get(key) or {}
+        except Exception:
+            continue
         depth = q.get("depth") or {}
         bid = ((depth.get("buy") or [{}])[0]).get("price") or 0.0
         ask = ((depth.get("sell") or [{}])[0]).get("price") or 0.0
-        out.append((match[0]["tradingsymbol"], float(bid), float(ask)))
+        out.append((contract["tradingsymbol"], float(bid), float(ask), lot))
     return out
 
 
