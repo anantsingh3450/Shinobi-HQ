@@ -8047,8 +8047,18 @@ class AutonomousTradingBot:
                 changed, transition_reason = self.strategy_evolution.evaluate_pipeline_transition(strat, active_prod)
                 if changed:
                     logger.info(f"Strategy {strat_id} transitioned: {transition_reason}")
-                    if strat["status"] == "PRODUCTION":
-                        strat["status"] = "ACTIVE"
+                    # THIS USED TO COERCE PRODUCTION INTO ACTIVE, inside the
+                    # trading loop, and save it. That is the whole distance
+                    # between "a candidate advanced a rung" and "a strategy
+                    # nobody approved is now taking real entries and competing
+                    # for a chest". Promotion proposes now; a PRODUCTION status
+                    # arriving here is a bug and must not be activated.
+                    if strat.get("status") == "PRODUCTION":
+                        logger.error(
+                            "Strategy %s came back PRODUCTION from the "
+                            "pipeline. Promotion needs the commander's "
+                            "approval, so it was NOT activated.", strat_id)
+                        strat["status"] = "PROBATION"
                     self.strategy_portfolio.save()
         bus.publish("LEARNING_COMPLETED", {
             "timestamp": datetime.now(timezone.utc).isoformat()

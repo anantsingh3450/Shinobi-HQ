@@ -92,10 +92,25 @@ def test_evolution_engine_lifecycle_and_promotions(tmp_path):
     candidate["sharpe_ratio"]["DEFAULT"] = 2.0
     candidate["drawdown"]["DEFAULT"] = 2.0
     candidate["expectancy"]["DEFAULT"] = 2000.0  # much higher expectancy, standard error is small, t-stat is huge
+    # AMENDED 2026-11-09. This used to assert the promotion was APPLIED:
+    # candidate PRODUCTION, incumbent demoted to PROBATION, written to disk,
+    # all from inside the trading loop with no commander involved. The
+    # statistics were never the problem - acting on them alone was. An ACTIVE
+    # strategy takes real entries and claims a chest, which raises risk, and
+    # raising risk always asks.
+    #
+    # The verdict must still be reached and still be recorded. What changes is
+    # that nothing moves.
     changed, msg = engine.evaluate_pipeline_transition(candidate, active_prod)
-    assert changed
-    assert candidate["status"] == "PRODUCTION"
-    assert active_prod["status"] == "PROBATION"  # demoted
+    assert not changed
+    assert "PROMOTION PROPOSED" in msg
+    assert candidate["status"] == "PROBATION", "promotion must not self-apply"
+    assert active_prod["status"] == "PRODUCTION", (
+        "the incumbent must NOT be demoted while its replacement waits for "
+        "approval - that leaves the asset uncovered")
+    assert any("PROMOTION PROPOSED" in e["event"]
+               for e in candidate["history"])
+    assert engine.load_notifications()[-1]["change_type"] == "PROMOTION_PROPOSED"
 
 
 def test_evolution_engine_hac_classification(tmp_path):
@@ -171,12 +186,18 @@ def test_evolution_engine_hac_classification(tmp_path):
     active_prod["pnl_history"] = {"DEFAULT": y_independent}
     active_prod["trade_count"]["DEFAULT"] = len(y_independent)
     
+    # AMENDED 2026-11-09: the consensus verdict is still reached and still
+    # recorded; it is now a proposal rather than a promotion. The point of the
+    # HAC test is that the statistics are honest, and that is unaffected - what
+    # the honest statistics are allowed to DO is a separate question, and the
+    # answer to it is "ask".
     changed, msg = engine.evaluate_pipeline_transition(probation_strat, active_prod)
-    assert changed
+    assert not changed
     assert "STATISTICAL_CONSENSUS" in msg
-    assert probation_strat["status"] == "PRODUCTION"
-    assert active_prod["status"] == "PROBATION"  # demoted
-    
+    assert "PROMOTION PROPOSED" in msg
+    assert probation_strat["status"] == "PROBATION"
+    assert active_prod["status"] == "PRODUCTION"
+
     # Verify history contains STATISTICAL_CONSENSUS
     history_events_2 = [e["event"] for e in probation_strat["history"]]
     assert any("STATISTICAL_CONSENSUS" in e for e in history_events_2)

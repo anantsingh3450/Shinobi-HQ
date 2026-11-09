@@ -4,6 +4,34 @@ Enforces:
 - Expanded Lifecycle: RESEARCH -> BACKTEST -> PAPER_VALIDATION -> SHADOW_MODE -> PROBATION -> PRODUCTION.
 - Statistical, evidence-based promotions.
 - Immutable notification logs for the commander.
+
+WHERE THE LADDER STOPS BEING AUTONOMOUS (2026-11-09)
+The rungs below PROBATION do not trade. A strategy in RESEARCH, BACKTEST,
+PAPER_VALIDATION or SHADOW_MODE takes no entries and competes for no chest, so
+advancing one costs nothing and may happen on its own.
+
+The last rung is different in kind. PROBATION -> PRODUCTION is rewritten by
+the caller into ACTIVE, and an ACTIVE strategy takes real entries and claims a
+war chest. That raises risk, and the evolution policy has exactly one rule
+about raising risk: reducing it may act alone, raising it always asks. It is
+the same line the commander's standing instruction draws around his capital,
+and the reason retirement stayed autonomous - an archived strategy cannot open
+anything.
+
+`evaluate_promotions` in the improvement bot was moved across that line on
+2026-10-12. This file was the other door, still open, and it ran inside the
+trading loop. Two ways through it:
+
+  * the HAC comparison, which is sound statistics and still does not get to
+    act by itself; and
+  * "no existing production strategy in this domain, promote directly!" -
+    a promotion on NO evidence whatsoever, whose only condition was that the
+    asset was uncovered. After the funding decision of 2026-11-09 archived two
+    modules and parked four assets, most assets are uncovered BY DESIGN, so
+    that path had gone from rare to ordinary. Emptiness is not an opening.
+
+Both now record the verdict, notify, and return changed=False. Nothing on disk
+moves until the commander approves the proposal.
 """
 from __future__ import annotations
 
@@ -254,19 +282,27 @@ class StrategyEvolutionEngine:
         # Evidence-Based Promotion: Compare against production strategy
         if status == "PROBATION":
             if not active_production_strategy:
-                # No existing production strategy in this domain, promote directly!
-                strategy["status"] = "PRODUCTION"
-                strategy["history"].append({"timestamp": now_str, "event": "PROMOTION: Promoted to PRODUCTION (first strategy in domain)."})
-                self.notify_commander(
-                    strategy_id=strategy_id,
-                    change_type="PROMOTION",
-                    reason=f"Strategy '{strategy['name']}' promoted to PRODUCTION.",
-                    evidence=strategy["domain_confidence"],
-                    validation_status="PRODUCTION",
-                    confidence=strategy["domain_confidence"].get("DEFAULT", 50.0),
-                    is_experimental=False
-                )
-                return True, "Promoted from PROBATION to PRODUCTION."
+                # THE FREE PASS. This used to read "no existing production
+                # strategy in this domain, promote directly!" and did exactly
+                # that: status set to PRODUCTION, which the caller rewrites to
+                # ACTIVE, written to disk, on NO EVIDENCE AT ALL. Not a win
+                # rate, not a trade count - the sole condition was that nothing
+                # else was already active on the asset.
+                #
+                # That condition is now COMMON rather than rare. The funding
+                # decision of 2026-11-09 archived two modules and parked four
+                # assets, so most assets have no active strategy by design.
+                # Emptiness was being read as an opening.
+                strategy.setdefault("history", []).append({
+                    "timestamp": now_str,
+                    "event": ("PROMOTION WITHHELD: first strategy in domain, "
+                              "which is not evidence. Needs a proposal."),
+                })
+                return False, (
+                    "PROBATION held: being the only strategy on this asset is "
+                    "not evidence of an edge. Promotion is proposed by the "
+                    "improvement bot and applied only with the commander's "
+                    "approval.")
 
             # Perform statistical comparison
             t_count = strategy.get("trade_count", {}).get(asset, strategy.get("trade_count", {}).get("DEFAULT", 0))
@@ -410,29 +446,41 @@ class StrategyEvolutionEngine:
             })
 
             if hac_promotes:
-                strategy["status"] = "PRODUCTION"
-                strategy["history"].append({
+                # MEASURED, REPORTED, AND NOT APPLIED. The HAC comparison is
+                # the best piece of statistics in this file and it still does
+                # not get to raise risk on its own: an ACTIVE strategy takes
+                # real entries and competes for a chest, a PROBATION one does
+                # not. The evolution policy has one rule about that - reducing
+                # risk may act alone, raising risk always asks - and this was
+                # the last path still on the wrong side of it, after
+                # `evaluate_promotions` was moved across on 2026-10-12.
+                #
+                # THE DEMOTION TRAVELS WITH THE PROMOTION. Swapping the
+                # incumbent to PROBATION here would retire the only strategy
+                # covering the asset while its replacement waits for approval,
+                # leaving the asset uncovered - and an uncovered asset is how
+                # the arena ends up with a winner that cannot fill.
+                strategy.setdefault("history", []).append({
                     "timestamp": now_str,
-                    "event": f"PROMOTION: Promoted to PRODUCTION. {explanation}"
+                    "event": (f"PROMOTION PROPOSED (not applied): "
+                              f"{explanation}"),
                 })
-                
-                # Update parent production strategy to archived/probation
-                active_production_strategy["status"] = "PROBATION"
-                active_production_strategy.setdefault("history", []).append({
-                    "timestamp": now_str,
-                    "event": f"DEMOTION: Replaced by superior strategy '{strategy['name']}'."
-                })
-
                 self.notify_commander(
                     strategy_id=strategy_id,
-                    change_type="PROMOTION",
-                    reason=f"Strategy '{strategy['name']}' promoted to PRODUCTION, replacing '{active_production_strategy['name']}'. {explanation}",
+                    change_type="PROMOTION_PROPOSED",
+                    reason=(f"Strategy '{strategy['name']}' CLEARS the bar to "
+                            f"replace '{active_production_strategy['name']}'. "
+                            f"Not applied - promotion raises risk and needs "
+                            f"your approval. {explanation}"),
                     evidence=evaluation_evidence,
-                    validation_status="PRODUCTION",
+                    validation_status="PROBATION",
                     confidence=t_win_rate,
                     is_experimental=False
                 )
-                return True, f"Promoted from PROBATION to PRODUCTION. Verdict: {event_classification}."
+                return False, (
+                    f"PROMOTION PROPOSED, not applied. Verdict: "
+                    f"{event_classification}. Approve it through the "
+                    f"improvement proposal; nothing changed on disk.")
             
             # If rejected, we still notify the commander of the false positive prevention or general rejection
             # to make sure the side-by-side comparison is logged and auditable.

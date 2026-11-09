@@ -549,9 +549,18 @@ class StrategyPortfolioManager:
         changed, reason = self.strategy_evolution.evaluate_pipeline_transition(strat, active_production, asset)
         if changed:
             logger.info(f"Strategy evolution change: {reason}")
-            # If promoted to PRODUCTION/ACTIVE or transitioned, ensure backward compatibility for tests expecting ACTIVE
-            if strat["status"] == "PRODUCTION":
-                strat["status"] = "ACTIVE"
+            # THIS USED TO COERCE PRODUCTION INTO ACTIVE, which is how an
+            # autonomous promotion became a chest-competing, entry-taking
+            # strategy. Promotion now proposes instead, so the pipeline cannot
+            # hand back PRODUCTION - and if it ever does again, that is a bug
+            # that must be loud rather than quietly turned into live status.
+            if strat.get("status") == "PRODUCTION":
+                logger.error(
+                    "Strategy %s came back PRODUCTION from the pipeline. "
+                    "Promotion requires the commander's approval, so this "
+                    "status was NOT activated. Reverting to PROBATION.",
+                    strategy_id)
+                strat["status"] = "PROBATION"
         self.save()
 
     def get_capital_report(

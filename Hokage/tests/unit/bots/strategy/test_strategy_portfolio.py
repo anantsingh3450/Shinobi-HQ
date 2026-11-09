@@ -78,9 +78,19 @@ def test_strategy_confidence_evolution_and_promotion(tmp_path):
     for _ in range(5):
         manager.record_trade_outcome(strat_id, "TCS", is_win=True, pnl=100000.0)
 
-    # Check that it got promoted to ACTIVE
+    # AMENDED 2026-11-09. This asserted that FIVE WINNING TRADES made a
+    # strategy ACTIVE - entry-taking, chest-competing, live - and it passed,
+    # because the pipeline's last rung read "no existing production strategy
+    # in this domain, promote directly!" and TCS had none. The condition was
+    # not evidence of an edge; it was evidence that the asset was empty.
+    #
+    # Five trades is also far below anything the weekly audit will look at,
+    # and 100% wins says nothing: TrendRider held a 60% win rate in this very
+    # portfolio while losing 17,502. The confidence still evolves, the trades
+    # are still counted, and the strategy stays where it cannot spend money.
     strat = manager.portfolio["strategies"][strat_id]
-    assert strat["status"] == "ACTIVE"
+    assert strat["status"] == "PROBATION", (
+        "five wins on an uncontested asset must not reach live status")
     assert strat["trade_count"]["TCS"] == 5
     assert strat["win_rate"]["TCS"] == 100.0
     assert strat["domain_confidence"]["TCS"] > 50.0  # evolved gradually
