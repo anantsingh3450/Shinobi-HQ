@@ -5556,10 +5556,17 @@ class AutonomousTradingBot:
                     is_win = (live_pnl > 0.0)
                     outcome_str = "WIN" if is_win else ("LOSS" if live_pnl < 0 else "BREAKEVEN")
 
+                    # WHY THIS EXIT HAPPENED, WRITTEN TO THE LEDGER.
+                    # Until 2026-11-09 no closed position in 417 ever carried
+                    # one: the only writer ran for LOSSES alone, and it missed
+                    # (see _record_exit_reason). A winner that cannot say
+                    # whether it hit its target or was closed by the clock is
+                    # as unanalysable as a loser that cannot name its stop.
+                    self._record_exit_reason(symbol, exit_reason)
+
                     if not is_win:
                         self._log_post_mortem_failure(
                             symbol=symbol,
-                            trade_id=tracking.get("decision_id", "UNKNOWN"),
                             exit_price=exit_price_actual,
                             exit_reason=exit_reason,
                             entry_price=stored_entry_price,
@@ -5873,14 +5880,20 @@ class AutonomousTradingBot:
     def _log_post_mortem_failure(
         self,
         symbol: str,
-        trade_id: str,
         exit_price: float,
         exit_reason: str,
         entry_price: float,
         stop_price: float,
         pnl: float
     ) -> None:
-        """Kakashi (Risk Bot) post-mortem failure analysis for loss-making trades."""
+        """Kakashi (Risk Bot) post-mortem failure analysis for loss-making trades.
+
+        `trade_id` IS GONE FROM THIS SIGNATURE on purpose. The caller filled it
+        from `tracking.get("decision_id", "UNKNOWN")` and the body used it to
+        key an UPDATE against `positions.position_id`, which it never matches.
+        Leaving the parameter in place would invite the next reader to key off
+        it again; the position is now found by symbol through the ledger.
+        """
         reasons = []
         if exit_reason and "Stop-Loss" in exit_reason:
             reasons.append("Hard Stop-Loss Triggered")
@@ -5905,22 +5918,81 @@ class AutonomousTradingBot:
         reason_str = f"Kakashi Risk Analysis: Loss triggered on {symbol}. Causes: " + "; ".join(reasons)
         logger.warning(reason_str)
 
+        # THIS USED TO WRITE RAW SQL AGAINST THE WRONG KEY:
+        #
+        #     UPDATE positions SET failure_reason = ? WHERE position_id = ?
+        #     ...with trade_id, which the caller fills from
+        #     tracking.get("decision_id", "UNKNOWN")
+        #
+        # A decision id is not a position id - positions are keyed by UUIDs
+        # like a4d06f96-781e-422d-b26c-cd02cb97bdaf - so the statement matched
+        # ZERO ROWS on every exit Hokage has ever taken. The companion write
+        # to `trades` keyed correctly but on a table that has never held a
+        # single real row.
+        #
+        # AND A ZERO-ROW UPDATE IS NOT AN ERROR IN SQLITE. The try/except
+        # around it could only ever see an exception, so a write that did
+        # nothing looked exactly like a write that worked, for 417 positions.
+        # That is why the reason was computed, logged one line above, and
+        # never once reached the ledger.
+        self._record_exit_reason(symbol, reason_str)
+
+    def _record_exit_reason(self, symbol: str, reason: str | None) -> bool:
+        """Write why a position closed onto the position itself. True if it landed.
+
+        GOES THROUGH THE LEDGER, NOT THROUGH SQL. `save_account` deletes every
+        row for an account and re-inserts them from the Account object, so the
+        durable place for this is the `Position`, and the load/modify/save
+        round trip is what the rest of the exit path already uses.
+
+        SAYS SO WHEN IT MISSES. The whole reason this was invisible is that
+        the previous version could fail silently, so a symbol that matches
+        nothing is an ERROR naming the symbol - the reason still exists in the
+        log, and the gap between the log and the ledger is the thing worth
+        shouting about.
+
+        NEVER OVERWRITES A PHANTOM ANNOTATION. Those 292 rows are the audit
+        record of the 2026-07-15 reduce-only runaway; they are deliberately
+        kept and must not be replaced by a fresh exit note.
+        """
+        if not reason:
+            return False
         try:
-            from shared.persistence.sqlite_engine import SqliteStorageEngine
-            db = SqliteStorageEngine(self._resolver)
-            conn = db.get_connection()
-            with conn:
-                conn.execute(
-                    "UPDATE trades SET failure_reason = ? WHERE trade_id = ?;",
-                    (reason_str, trade_id)
-                )
-                conn.execute(
-                    "UPDATE positions SET failure_reason = ? WHERE position_id = ?;",
-                    (reason_str, trade_id)
-                )
-            db.close()
-        except Exception as e:
-            logger.error(f"Failed to write post-mortem failure reason to database: {e}")
+            venues = [getattr(self.orchestrator, "paper_venue", None)]
+            venues.extend(getattr(self.orchestrator, "paper_venues", {}).values())
+            account_ids: list[str] = []
+            for venue in venues:
+                account_id = getattr(venue, "_account_id", None)
+                if account_id and account_id not in account_ids:
+                    account_ids.append(account_id)
+
+            wanted = str(symbol).upper()
+            for account_id in account_ids:
+                account = self.orchestrator.portfolio_store.load_account(account_id)
+                matches = [
+                    pos for pos in account.positions.values()
+                    if str(pos.market).upper() == wanted
+                    and not str(getattr(pos, "failure_reason", "") or "")
+                    .startswith("PHANTOM")
+                ]
+                if not matches:
+                    continue
+                # The one just closed is the most recently opened of them.
+                newest = max(matches, key=lambda p: p.opened_at)
+                newest.failure_reason = reason
+                self.orchestrator.portfolio_store.save_account(account)
+                logger.info("Exit reason recorded for %s: %s", symbol, reason)
+                return True
+
+            logger.error(
+                "Exit reason for %s could not be recorded: no ledger position "
+                "matched that symbol in accounts %s. The reason exists only in "
+                "this log: %s", symbol, account_ids or "<none>", reason)
+            return False
+        except Exception as exc:
+            logger.error("Failed to record the exit reason for %s: %s",
+                         symbol, exc)
+            return False
 
     def _run_direct_broker_sync_and_flatten_ghost_positions(self) -> None:
         """Trigger direct broker reconciliation and forcefully flatten unindexed ghost positions.
