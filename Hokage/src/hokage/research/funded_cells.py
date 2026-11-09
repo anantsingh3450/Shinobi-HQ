@@ -76,7 +76,27 @@ PARKED_FOR_COST: dict[str, str] = {
     "BANKNIFTY": "edge 0.65% against a 0.69-0.75% round trip",
     "CRUDEOIL": "edge 0.29% against 0.56-0.58%",
     "SILVERM": "edge 0.24% against 0.69-0.70%",
-    "NATURALGAS": "edge 0.22% against 0.73-0.75% - dearest book, thinnest edge",
+}
+
+#: TRADED DESPITE THE COST, by commander directive 2026-11-09.
+#:
+#: Not a funded cell and not a parked one. It trades to accumulate a record on
+#: an archive that now survives the futures roll - the 2026-10-21 reasoning,
+#: restated - while the measurement against it stands.
+#:
+#: WHY THE DISTINCTION IS LOAD-BEARING. Unparked means the scan loop reaches
+#: it. Funded means its cells answer to the three-cell bar. Gas is the first
+#: and not the second, so a gas change still needs t >= 3.22 to ship. Treating
+#: "he told me to trade it" as "the evidence bar is lower" is how a directive
+#: turns into a measurement, and this file exists to stop that.
+#:
+#: Expect the gas column to lose money. That is the price of the record, and
+#: it is stated here so it reads as a known cost rather than a discovery.
+TRADED_FOR_THE_RECORD: dict[str, str] = {
+    "NATURALGAS": (
+        "edge 0.22% against a 0.73-0.75% round trip - dearest book, thinnest "
+        "edge, so each round trip loses on arrival. Traded anyway for the "
+        "tape: commander directive 2026-11-09, restating 2026-10-21"),
 }
 
 #: Modules whose hold-out edge is negative on EVERY asset they trade. This is
@@ -120,5 +140,10 @@ def describe() -> str:
     if PARKED_FOR_COST:
         lines.append("parked on cost, still measured:")
         for asset, why in sorted(PARKED_FOR_COST.items()):
+            lines.append(f"  {asset}: {why}")
+    if TRADED_FOR_THE_RECORD:
+        lines.append("traded despite the cost, for the tape - NOT funded, so "
+                     "still judged at the full family's bar:")
+        for asset, why in sorted(TRADED_FOR_THE_RECORD.items()):
             lines.append(f"  {asset}: {why}")
     return "\n".join(lines)

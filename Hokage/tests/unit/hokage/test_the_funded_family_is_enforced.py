@@ -65,17 +65,33 @@ def test_funded_assets_are_the_three_that_survive_cost():
     assert fc.funded_assets() == {"GOLDM", "SENSEX", "NIFTY"}
 
 
-def test_the_parked_four_are_recorded_with_their_numbers():
+def test_the_parked_three_are_recorded_with_their_numbers():
     """Kept rather than deleted: an asset that becomes cheap to trade should
     be reconsidered from the record, not from memory."""
-    assert set(fc.PARKED_FOR_COST) == {"BANKNIFTY", "CRUDEOIL", "SILVERM",
-                                       "NATURALGAS"}
+    assert set(fc.PARKED_FOR_COST) == {"BANKNIFTY", "CRUDEOIL", "SILVERM"}
     for asset, why in fc.PARKED_FOR_COST.items():
         assert "%" in why, asset
 
 
-def test_funded_and_parked_never_overlap():
-    assert not (fc.funded_assets() & set(fc.PARKED_FOR_COST))
+def test_gas_is_traded_for_the_record_and_says_so():
+    """UNPARKED IS NOT FUNDED, and that is the whole reason this category
+    exists. Gas failed on cost and trades anyway by directive, to accumulate
+    a record; treating "he told me to trade it" as "the evidence bar is
+    lower" is how a directive turns into a measurement."""
+    assert set(fc.TRADED_FOR_THE_RECORD) == {"NATURALGAS"}
+    why = fc.TRADED_FOR_THE_RECORD["NATURALGAS"]
+    assert "0.22%" in why and "0.73-0.75%" in why, "the cost must stay stated"
+    assert "loses on arrival" in why, "the consequence must stay stated"
+    assert "NATURALGAS" not in fc.funded_assets()
+
+
+def test_the_three_categories_never_overlap():
+    funded, parked = fc.funded_assets(), set(fc.PARKED_FOR_COST)
+    traded = set(fc.TRADED_FOR_THE_RECORD)
+    assert not (funded & parked)
+    assert not (funded & traded), (
+        "an asset cannot be both funded on edge and traded despite it")
+    assert not (parked & traded)
 
 
 @pytest.mark.parametrize("asset", ["goldm", "GOLDM", "GoldM"])
@@ -141,10 +157,12 @@ def test_the_basis_string_records_the_change():
 def test_the_cost_failing_assets_are_parked_where_the_scan_loop_looks():
     from bots.autonomous.autonomous_bot import AutonomousTradingBot as Bot
 
-    for asset in ("BANKNIFTY", "CRUDEOIL", "SILVERM", "NATURALGAS"):
+    for asset in ("BANKNIFTY", "CRUDEOIL", "SILVERM"):
         assert asset in Bot.PARKED_ASSETS, asset
     for asset in ("NIFTY", "SENSEX", "GOLDM"):
         assert asset not in Bot.PARKED_ASSETS, asset
+    # Reachable by directive, not by edge.
+    assert "NATURALGAS" not in Bot.PARKED_ASSETS
 
 
 def test_every_parked_asset_carries_its_reason():
@@ -161,16 +179,22 @@ def test_the_funded_list_matches_the_research_record():
     assert set(Bot.FUNDED_ASSETS) == fc.funded_assets()
 
 
-def test_regassing_is_not_a_silent_reversal():
-    """NATURALGAS was deliberately UN-parked on 2026-10-21 to buy a
-    measurable record. Re-parking it has to say why that reasoning is
-    satisfied rather than overruled - the tape keeps accumulating because
-    parked assets stay in the archive's universe."""
+def test_the_gas_reversals_are_all_on_the_record():
+    """Gas has been decided three times in seven weeks: parked on edge
+    (09-22), un-parked for the record (10-21), re-parked on cost and
+    un-parked again by directive (both 2026-11-09).
+
+    A reader who sees only the current state cannot tell a considered
+    trade-off from an oversight. So every reversal stays in the source WITH
+    the numbers that argued the other way - which is the difference between
+    a decision and a preference.
+    """
     src = (ROOT / "src" / "bots" / "autonomous" / "autonomous_bot.py").read_text(
         encoding="utf-8")
-    block = src.split('"NATURALGAS": (')[0][-1600:]
-    assert "RE-PARKED 2026-11-09" in block
-    assert "NOT REVERSED" in block
+    block = src.split("PARKED 2026-11-09 on cost")[0][-2600:]
+    assert "UN-PARKED 2026-10-21" in block
+    assert "0.73-0.75%" in block and "0.22%" in block
+    assert "UNPARKED IS NOT FUNDED" in block
 
     import candle_archive
 

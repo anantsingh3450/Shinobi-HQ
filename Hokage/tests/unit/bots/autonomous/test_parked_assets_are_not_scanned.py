@@ -71,19 +71,28 @@ def test_the_parked_set_is_exactly_what_was_decided():
     # in candle_archive.ASSETS, so the tape keeps accumulating and only the
     # money stops.
     #
-    # BANKNIFTY and SILVERM joined on 2026-11-09, on the same measurement:
-    # these are the four underlyings whose round trip costs more than their
-    # measured edge pays. The three that survive - NIFTY, SENSEX, GOLDM - are
-    # the funded family. See hokage.research.funded_cells for the arithmetic.
+    # BANKNIFTY and SILVERM joined on 2026-11-09, on cost: their round trip
+    # costs more than their measured edge pays.
+    #
+    # GAS WAS RE-PARKED AND UN-PARKED AGAIN THE SAME DAY, by commander
+    # directive, to keep accumulating a record. The measurement against it is
+    # unchanged and is kept beside it in PARKED_ASSETS.
     assert set(AutonomousTradingBot.PARKED_ASSETS) == {
-        "CRUDEOIL", "NATURALGAS", "BANKNIFTY", "SILVERM"}
+        "CRUDEOIL", "BANKNIFTY", "SILVERM"}
 
-    # And the two lists cannot drift: what is not parked IS what is funded.
+    # UNPARKED IS NOT FUNDED, and this is where the two could silently drift
+    # into one. What the scan loop reaches is the funded family PLUS whatever
+    # is traded for the record; it is not the funded family alone.
     from hokage.research import funded_cells
 
     universe = {"NIFTY", "BANKNIFTY", "SENSEX", "CRUDEOIL", "NATURALGAS",
                 "GOLDM", "SILVERM"}
-    assert universe - set(AutonomousTradingBot.PARKED_ASSETS) ==         funded_cells.funded_assets()
+    scannable = universe - set(AutonomousTradingBot.PARKED_ASSETS)
+    assert scannable == (funded_cells.funded_assets()
+                         | set(funded_cells.TRADED_FOR_THE_RECORD))
+    assert not (funded_cells.funded_assets()
+                & set(funded_cells.TRADED_FOR_THE_RECORD)), (
+        "an asset cannot be both funded on edge and traded despite it")
 
 
 def test_every_parked_asset_carries_its_reason():
@@ -185,9 +194,12 @@ class TestAParkedAssetIsNeverHiddenByCoverage:
         bot = AutonomousTradingBot.__new__(AutonomousTradingBot)
         strategies = {}
         if scoped_to_gas:
+            # SILVERM, not NATURALGAS: gas was un-parked again by directive on
+            # 2026-11-09, so it no longer demonstrates the defect. The defect
+            # is about a PARKED asset that has owners.
             strategies["s-gas"] = {
-                "strategy_id": "s-gas", "name": "RangeFade",
-                "status": "ACTIVE", "supported_assets": ["NATURALGAS"]}
+                "strategy_id": "s-gas", "name": "SessionShift",
+                "status": "ACTIVE", "supported_assets": ["SILVERM"]}
         strategies["s-gold"] = {
             "strategy_id": "s-gold", "name": "SessionShift",
             "status": "ACTIVE", "supported_assets": ["GOLDM"]}
@@ -202,20 +214,20 @@ class TestAParkedAssetIsNeverHiddenByCoverage:
     def test_a_parked_asset_raises_no_finding_even_when_uncovered(self):
         """It never was an alarm, and it still must not be."""
         findings = self._bot(scoped_to_gas=False).audit_asset_coverage()
-        assert not [f for f in findings if "NATURALGAS" in f]
+        assert not [f for f in findings if "SILVERM" in f]
 
     def test_a_parked_asset_raises_no_finding_when_covered_either(self):
         findings = self._bot(scoped_to_gas=True).audit_asset_coverage()
-        assert not [f for f in findings if "NATURALGAS" in f]
+        assert not [f for f in findings if "SILVERM" in f]
 
     def test_the_parked_line_is_logged_even_when_strategies_cover_it(self, caplog):
-        """THE DEFECT. Five live strategies scoped to gas hid the fact that gas
-        is parked."""
+        """THE DEFECT. Live strategies scoped to a parked asset hid the fact
+        that it is parked - found on gas, which had five of them."""
         import logging
 
         with caplog.at_level(logging.INFO):
             self._bot(scoped_to_gas=True).audit_asset_coverage()
-        assert "NATURALGAS is PARKED" in caplog.text
+        assert "SILVERM is PARKED" in caplog.text
 
     def test_parked_is_decided_before_coverage_in_the_source(self):
         """A rail on the ORDER, because that is the whole bug: the same two

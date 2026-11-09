@@ -100,7 +100,7 @@ def test_meanreversion_no_longer_trades_banknifty():
 
 
 # -------------------------------------- 3. natural gas: parked, then un-parked
-def test_gas_is_parked_again_and_both_decisions_are_recorded():
+def test_gas_trades_and_all_three_decisions_are_recorded():
     """REVERSED 2026-10-21 by commander directive, and the measurement that
     justified the original parking is still in the source beside it.
 
@@ -123,7 +123,7 @@ def test_gas_is_parked_again_and_both_decisions_are_recorded():
     # gas has the dearest book in the universe (0.73-0.75% of premium a round
     # trip) against the thinnest measured edge (0.22%). No sample size fixes a
     # trade that loses on arrival.
-    assert "NATURALGAS" in Bot.PARKED_ASSETS
+    assert "NATURALGAS" not in Bot.PARKED_ASSETS
 
     # BOTH DECISIONS STAY IN THE SOURCE. The 10-21 reasoning was "data, not
     # edge" - and it is satisfied rather than overruled, because a parked
@@ -131,15 +131,21 @@ def test_gas_is_parked_again_and_both_decisions_are_recorded():
     # Deleting either record would leave the next reader unable to see what
     # was weighed.
     assert "NATURALGAS UN-PARKED 2026-10-21" in src
-    assert "RE-PARKED 2026-11-09" in src
-    assert "NOT REVERSED" in src
+    assert "un-parked 10-21" in src or "UN-PARKED AGAIN" in src
+    assert "0.73-0.75%" in src and "0.22%" in src, (
+        "the cost that argued against gas must stay visible")
+
+    from hokage.research import funded_cells
+
+    assert "NATURALGAS" not in funded_cells.funded_assets()
+    assert "NATURALGAS" in funded_cells.TRADED_FOR_THE_RECORD
     assert "-0.239 t-1.91" in src or "-1.91" in src, (
         "the measurement against gas must stay visible beside the reversal")
 
     import candle_archive  # noqa: E402
 
     assert "NATURALGAS" in candle_archive.ASSETS, (
-        "the 10-21 reasoning only holds if the tape still accumulates")
+        "the record reasoning only holds if the tape still accumulates")
 
 
 def test_rangefade_is_live_again_and_still_NOT_left_with_an_empty_scope():

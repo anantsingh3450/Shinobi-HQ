@@ -2402,21 +2402,29 @@ class AutonomousTradingBot:
         # from here a gas verdict compounds instead of evaporating. This is
         # paper money buying a measurable record.
         #
-        # RE-PARKED 2026-11-09, commander-approved, on COST rather than edge.
-        # Measured live against the real book: the round trip costs 0.73-0.75%
-        # of premium and the best measured edge on gas is 0.22% - the dearest
-        # book in the universe against the thinnest edge. No sample size fixes
-        # a trade that loses on arrival.
+        # NATURALGAS: PARKED on 09-22, un-parked 10-21, re-parked briefly on
+        # 2026-11-09 on cost, and UN-PARKED AGAIN the same day by commander
+        # directive. It trades.
         #
-        # THE 2026-10-21 REASONING IS NOT REVERSED, IT IS SATISFIED. Gas was
-        # un-parked to buy a measurable record, and parking does not cost us
-        # that record: parked assets stay in candle_archive.ASSETS and
-        # weekly_audit.UNIVERSE, so the tape keeps accumulating and the
-        # verdict keeps compounding. Only the money stops.
-        "NATURALGAS": ("round trip 0.73-0.75% of premium against a measured "
-                       "edge of 0.22% - dearest book, thinnest edge; the tape "
-                       "keeps accumulating via the candle archive"),
-        # PARKED 2026-11-09 on the same measurement.
+        # THE MEASUREMENT AGAINST IT STANDS AND IS KEPT HERE RATHER THAN
+        # DELETED. Priced live on 2026-11-09: a round trip costs 0.73-0.75% of
+        # premium - the dearest book in the universe - against a best measured
+        # edge of 0.22%. On those numbers every gas round trip loses on
+        # arrival, and no sample size repairs that.
+        #
+        # THE REASON TO TRADE IT ANYWAY IS THE 10-21 REASON, RESTATED: a
+        # record, not an edge. Paper money buying a measurable history on an
+        # archive that now survives the futures roll. Noted plainly so that a
+        # losing gas column is read as the price of that record rather than as
+        # a surprise - and so that whoever reads this next can see the trade-
+        # off was made with the numbers in hand, not in ignorance of them.
+        #
+        # UNPARKED IS NOT FUNDED. Gas is not in hokage.research.funded_cells,
+        # so its cells answer to the full family's bar (3.22), not the
+        # three-cell bar. Nothing here lowers the evidence required to ship a
+        # gas change.
+        #
+        # PARKED 2026-11-09 on cost.
         "BANKNIFTY": ("round trip 0.69-0.75% against a measured edge of "
                       "0.65% - the margin is negative before theta"),
         "SILVERM": ("round trip 0.69-0.70% against a measured edge of 0.24%"),
