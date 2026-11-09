@@ -166,12 +166,22 @@ def test_the_spread_lab_says_what_it_leaves_out():
     is still missing is theta over the holding period, and the lab has to keep
     saying so - a cost figure that silently omits a term gets quoted as if it
     were complete.
+
+    AMENDED 2026-11-09, LATER THE SAME DAY. This used to require the words
+    "not yet measurable", and then `theta_lab` measured it. A test that pins a
+    true sentence will eventually pin a false one: the claim that has to
+    survive is "not included here", not "cannot be known". So the rail now
+    requires the omission to be NAMED and POINTED AT, which is the part that
+    stops a partial total being quoted as a whole one.
     """
     src = (ROOT / "tools" / "research" / "spread_lab.py").read_text(encoding="utf-8")
     flat = " ".join(src.split())
     assert "zerodha.com/charges" in flat
     assert "Theta over the hold is NOT included" in flat
-    assert "not yet measurable" in flat
+    assert "theta_lab.py" in flat
+    assert "these totals are" in flat.lower()
+    assert "not yet measurable" not in flat, (
+        "the lab still claims decay cannot be measured; theta_lab measures it")
 
 
 def test_the_transfer_rate_is_labelled_an_assumption():

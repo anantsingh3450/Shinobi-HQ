@@ -56,6 +56,35 @@ from __future__ import annotations
 COMMITTED_ON = "2026-11-09"
 COMMITTED_BY = "commander"
 
+#: THE NUMBERS THAT CHOSE THE FAMILY, in one machine-readable place.
+#:
+#: These lived only in the prose above, which meant the decision could not be
+#: re-checked without a human re-reading a paragraph - and a second reader
+#: needing them (theta_lab) would have had to re-type them, which is how two
+#: copies of one fact start disagreeing.
+#:
+#: `edge` is the hold-out edge as a percentage of premium. `cost_lo`/`cost_hi`
+#: bracket one round trip: the live bid/ask measured on 2026-11-09 plus
+#: brokerage and statutory charges from the broker's published schedule.
+#:
+#: THETA IS NOT IN THESE COSTS. It is measured separately by
+#: `tools/research/theta_lab.py`, is worth between 0.05% and 1.2% of premium
+#: over a realised hold, and is therefore large enough to change some of these
+#: verdicts once it is measured well enough to state. Treating cost_hi as the
+#: whole cost is the one mistake this comment exists to prevent.
+MEASURED: dict[str, dict[str, float]] = {
+    "GOLDM":      {"edge": 1.64, "cost_lo": 0.58, "cost_hi": 0.81},
+    "SENSEX":     {"edge": 1.20, "cost_lo": 0.82, "cost_hi": 0.89},
+    "NIFTY":      {"edge": 1.06, "cost_lo": 0.81, "cost_hi": 0.85},
+    "BANKNIFTY":  {"edge": 0.65, "cost_lo": 0.69, "cost_hi": 0.75},
+    "CRUDEOIL":   {"edge": 0.29, "cost_lo": 0.56, "cost_hi": 0.58},
+    "SILVERM":    {"edge": 0.24, "cost_lo": 0.69, "cost_hi": 0.70},
+    "NATURALGAS": {"edge": 0.22, "cost_lo": 0.73, "cost_hi": 0.75},
+}
+
+#: When these were measured, so a reader can see how old the basis is.
+MEASURED_ON = "2026-11-09"
+
 #: Why each cell is in. Keyed (module_id, asset).
 FUNDED: dict[tuple[str, str], str] = {
     ("strat-sessionshift-mcx-v1", "GOLDM"):
@@ -115,6 +144,30 @@ def is_funded(module_id: str, asset: str) -> bool:
 
 def funded_assets() -> set[str]:
     return {asset for _, asset in FUNDED}
+
+
+def is_funded_asset(asset: str) -> bool:
+    """Whether ANY funded cell trades this underlying.
+
+    Distinct from `is_funded`, which asks about one (module, asset) pair. An
+    asset can be reached by several modules and funded through only one of
+    them.
+    """
+    return str(asset).upper() in funded_assets()
+
+
+def beats_its_cost(asset: str) -> bool | None:
+    """Does the measured edge exceed a whole round trip? None if unmeasured.
+
+    THETA IS NOT IN THIS. See `MEASURED`. This answers the question that chose
+    the family on 2026-11-09, not the question of whether the cell is
+    profitable - those became different questions the moment decay was found
+    to be worth up to 1.2% of premium.
+    """
+    row = MEASURED.get(str(asset).upper())
+    if row is None:
+        return None
+    return row["edge"] > row["cost_hi"]
 
 
 def funded_modules() -> set[str]:

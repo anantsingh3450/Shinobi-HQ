@@ -39,9 +39,23 @@ entirely on position size. At this account's size it is the biggest single
 line - bigger than the spread on every index. Trading smaller makes it dearer,
 not cheaper.
 
-STILL NOT THE WHOLE COST: theta over the holding period is not here, because
-it cannot be measured from anything the brain holds yet. The chain archive
-began recording bid/ask on 2026-11-09 so that it can be, forward only.
+STILL NOT THE WHOLE COST: theta over the holding period is not in these
+figures. It is no longer unmeasurable, which is what this file used to say -
+`tools/research/theta_lab.py` now measures it from day-over-day straddle
+decay in the chain archive and puts it at 0.03-0.98% of premium over a
+realised hold on the index. That is the same order as everything below, and it
+is enough to move NIFTY and SENSEX from clearing their cost to UNDECIDED.
+
+It is kept out of this lab's totals rather than folded in because the two
+numbers have different standing: the spread and the charges below are read off
+a live book and a published schedule, while the decay figure rests on six to
+ten independent day-pairs and does not separate decay from implied volatility.
+Adding an estimate to two measurements and printing one total would hide which
+part is which. Read both labs.
+
+MCX decay is NOT measured at all - the chain archive holds two
+non-consecutive days for the commodities, so GOLDM, the widest funded margin
+below, is the cell whose cost is least complete.
 
 USAGE
     python tools/research/spread_lab.py
@@ -96,7 +110,9 @@ def main() -> int:
     print("  spread% = (ask - bid)/mid, what crossing the book twice costs.")
     print(f"  fees%   = brokerage + STT + transaction + GST + stamp + SEBI,")
     print(f"            from {ch.RATES_SOURCE}, read {ch.RATES_READ_ON}.")
-    print("  Theta over the hold is NOT included and is not yet measurable.")
+    print("  Theta over the hold is NOT included here: these totals are")
+    print("  incomplete. It is measured by tools/research/theta_lab.py at")
+    print("  0.03-0.98% of premium on the index, and not at all on MCX yet.")
     print()
     print(f"  Edge column: best measured hold-out edge for that underlying,")
     print(f"  converted at {PCT_PREMIUM_PER_ATR}% of premium per 1.0 ATR.")
