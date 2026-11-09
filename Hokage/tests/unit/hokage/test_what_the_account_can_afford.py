@@ -151,3 +151,94 @@ def test_the_lab_changes_no_risk_constant():
         "the lab must import the cap, never define its own")
     flat = " ".join(src.split())
     assert "This tool reports; it changes nothing" in flat
+
+
+# ============================ ONE LAKH IS THE ACCOUNT, NOT A CHEST (corrected)
+# The first version of the lab carved the seed into per-strategy chests and
+# applied the 33% cap INSIDE each one. On one pooled account that compounds to
+# cap = 33%/N: 8.25% at four assets, which no lot in the universe fits under.
+# It made a 27,440 GOLDM lot look like it needed 83,152 of capital, and put
+# the four-asset arena at 3,33,515 when the honest figure is a fraction of it.
+#
+# Read correctly, every lot fits inside a single 33% cap of the pool, so the
+# cap does not bind at all. What binds is how much can be LOST at once.
+
+def test_every_lot_fits_inside_the_cap_on_a_pooled_account():
+    """The correction, stated as arithmetic. GOLDM is the dearest lot in the
+    universe at 27,440 and the cap on a 1,00,000 pool is 33,000."""
+    cap = 100_000.0 * MAX_PREMIUM_CHEST_FRACTION
+    for lot in (12_039.0, 17_024.0, 19_375.0, 27_440.0):
+        assert lot <= cap
+
+
+def test_the_chest_model_is_three_times_dearer_than_the_pool():
+    """Same arena, same cap, same lots - and a 3x difference in the capital it
+    appears to need, purely from where the fraction is applied."""
+    lots = [12_039.0, 17_024.0, 19_375.0, 27_440.0]
+    split = len(lots) * capital_lab.chest_needed_for(max(lots))
+    pooled = sum(lots)
+    assert split > pooled * 3
+
+
+def test_the_budget_comes_from_the_loss_not_the_cap():
+    """8% of 1,00,000 is 8,000. If a stop costs 28.36% of premium, 8,000 of
+    loss is 28,204 of premium - and that, not 33,000, is the real limit."""
+    budget = capital_lab.premium_budget(100_000.0, 8.0, 28.36)
+    assert budget == pytest.approx(28_204.0, abs=5.0)
+    assert budget < 100_000.0 * MAX_PREMIUM_CHEST_FRACTION
+
+
+def test_a_gentler_loss_assumption_buys_more_concurrency():
+    """Not a different calculation - a different question about risk."""
+    harsh = capital_lab.premium_budget(100_000.0, 8.0, 28.36)
+    p90 = capital_lab.premium_budget(100_000.0, 8.0, 16.80)
+    median = capital_lab.premium_budget(100_000.0, 8.0, 7.76)
+    assert harsh < p90 < median
+    lots = {"SENSEX": 12_039.0, "NIFTY": 17_024.0,
+            "NATURALGAS": 19_375.0, "GOLDM": 27_440.0}
+    assert capital_lab.fit_within(harsh, lots) == ["SENSEX"]
+    assert capital_lab.fit_within(p90, lots) == ["SENSEX", "NIFTY"]
+    assert len(capital_lab.fit_within(median, lots)) == 4
+
+
+def test_a_zero_loss_assumption_buys_nothing_rather_than_everything():
+    """Dividing by a zero loss would report an infinite budget. A loss nobody
+    has measured is not a loss of zero."""
+    assert capital_lab.premium_budget(100_000.0, 8.0, 0.0) == 0.0
+
+
+def test_the_losses_are_measured_and_phantoms_are_excluded():
+    """292 phantom rows closed at entry. Counting them would pull every
+    percentile toward zero and make the account look safer than it is."""
+    src = (ROOT / "tools" / "research" / "capital_lab.py").read_text(
+        encoding="utf-8")
+    body = src.split("def measured_losses")[1].split("def loss_at")[0]
+    assert "PHANTOM" in body
+    assert "upper(status) = 'CLOSED'" in body
+    assert "FROM positions" in body and "FROM trades" not in body
+
+
+def test_the_worst_quantile_is_the_worst_loss():
+    losses = [-1.0, -5.0, -9.0, -28.36]
+    assert capital_lab.loss_at(losses, 1.0) == pytest.approx(28.36)
+    assert capital_lab.loss_at(losses, 0.0) == pytest.approx(1.0)
+    assert capital_lab.loss_at([], 1.0) is None
+
+
+def test_the_drawdown_mandate_is_the_gate_s_own_constant():
+    """8% must not be retyped here. A second copy would let the lab and the
+    go-live gate disagree about the same limit."""
+    from live_readiness import MAX_DRAWDOWN_PCT as gate
+
+    assert capital_lab.MAX_DRAWDOWN_PCT == gate
+    src = (ROOT / "tools" / "research" / "capital_lab.py").read_text(
+        encoding="utf-8")
+    assert "MAX_DRAWDOWN_PCT = " not in src
+
+
+def test_the_pooled_reading_is_stated_in_the_docstring():
+    src = (ROOT / "tools" / "research" / "capital_lab.py").read_text(
+        encoding="utf-8")
+    flat = " ".join(src.split())
+    assert "ONE LAKH IS THE WHOLE ACCOUNT, NOT A CHEST" in flat
+    assert "the cap does not bind" in flat or "not what binds" in flat
