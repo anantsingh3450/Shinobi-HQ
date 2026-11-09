@@ -537,6 +537,51 @@ def build_report(current: dict, history: list[dict]) -> dict:
     }
 
 
+def coverage_line(weeks: int = 8) -> str:
+    """How many of the last weeks' sessions Hokage was actually awake for.
+
+    WHY THIS BELONGS IN THE AUDIT. Every number below it is an average over
+    sessions Hokage SAW, and he has seen about half of them - 23 of 48 when
+    that was first measured. A per-cell n is as much a count of sessions
+    attended as of setups found, and `session_coverage.py` could answer it all
+    along but was a standalone tool nobody ran. An uptime figure nobody reads
+    is the same as not measuring uptime.
+
+    Sessions come from the candle archive, so no holiday list can go stale.
+    Returns a plain line on any failure rather than taking the audit down with
+    it: this is context, not a verdict.
+    """
+    try:
+        import datetime as _dt
+        import sys as _sys
+        from pathlib import Path as _P
+
+        ops = str(_P(__file__).resolve().parents[1] / "ops")
+        if ops not in _sys.path:
+            _sys.path.insert(0, ops)
+        import session_coverage
+
+        end = _dt.date.today()
+        start = end - _dt.timedelta(weeks=weeks)
+        c = session_coverage.coverage(start, end)
+        total = c.get("sessions", 0)
+        if not total:
+            return "coverage: no sessions in the archive for this window"
+        covered = c.get("covered", 0)
+        pct = covered / total * 100.0
+        line = (f"coverage: awake for {covered} of {total} sessions "
+                f"({pct:.0f}%) over {weeks} weeks")
+        if c.get("partial"):
+            line += f", {c['partial']} partial"
+        if c.get("longest_blackout", 0) > 1:
+            line += f", longest blackout {c['longest_blackout']} sessions"
+        if pct < 80.0:
+            line += "  <-- every n below is a count of sessions ATTENDED"
+        return line
+    except Exception as exc:
+        return f"coverage: could not be measured ({type(exc).__name__})"
+
+
 def render(current: dict, report: dict) -> str:
     lines = [f"HOKAGE WEEKLY AUDIT — {current['date']}",
              f"horizon {HORIZON * 15}min · ship bar t>={SHIP_BAR} · min n={MIN_N}"]
@@ -546,6 +591,7 @@ def render(current: dict, report: dict) -> str:
         f"max({Bot._OPTION_TARGET_MOVE_FRACTION}xATRxsqrt(bars_left), "
         f"{Bot._OPTION_MIN_REWARD_RISK}xstop))"
     )
+    lines.append(coverage_line())
     if report["compared_to"]:
         lines.append(f"compared to {report['compared_to']}")
     else:
