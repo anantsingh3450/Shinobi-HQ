@@ -5978,6 +5978,14 @@ class AutonomousTradingBot:
         and that is a bug, not a precedent.
         """
         try:
+            # Imported here, as every other method in this module does -
+            # `TradeStatus` is not a module-level name, and reading it as one
+            # raised a NameError that the except below turned into infinity.
+            # The rail then blocked every entry, correctly but for the wrong
+            # reason: fail-closed hides a bug exactly as well as it stops a
+            # trade, which is why the test below now CALLS this method.
+            from bots.execution.models import TradeStatus
+
             venues = [getattr(self.orchestrator, "paper_venue", None)]
             venues.extend(
                 getattr(self.orchestrator, "paper_venues", {}).values())

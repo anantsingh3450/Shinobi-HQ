@@ -215,3 +215,137 @@ def test_an_account_skip_is_not_reported_as_a_chest_problem():
                   / "options_router.py").read_text(encoding="utf-8")
     assert "account_room" in router_src
     assert "exposure.check(" in router_src
+
+
+# ====================================== the rail is EXERCISED, not just read
+# 2026-11-09, found in the boot log four minutes after the restart that was
+# supposed to make this rail live:
+#
+#   [ERROR] Account exposure could not be measured (name 'TradeStatus' is not
+#   defined); treating the budget as exhausted rather than unlimited.
+#
+# Every test above passes against that code, because every test above reads
+# the SOURCE. `_account_open_premium` used `TradeStatus` as if it were a
+# module-level name in `autonomous_bot`; it is imported locally inside each
+# method that needs it. The helper raised NameError on its first line of real
+# work, the except returned infinity, and the fail-closed design did its job
+# perfectly - it blocked every entry for the rest of the MCX session.
+#
+# FAIL-CLOSED HIDES A BUG EXACTLY AS WELL AS IT STOPS A TRADE. A rail whose
+# only safe failure is silence must be called by a test, not grepped.
+class _FakeStore:
+    def __init__(self, accounts):
+        self._accounts = accounts
+
+    def load_account(self, account_id):
+        return self._accounts[account_id]
+
+
+class _FakeVenue:
+    def __init__(self, account_id):
+        self._account_id = account_id
+
+
+class _FakeOrchestrator:
+    def __init__(self, accounts, index_id="paper_main", mcx_ids=("paper_mcx",)):
+        self.paper_venue = _FakeVenue(index_id)
+        self.paper_venues = {k: _FakeVenue(k) for k in mcx_ids}
+        self.portfolio_store = _FakeStore(accounts)
+
+
+def _account_with(account_id, rows):
+    """rows: (quantity, entry_price, status, failure_reason)"""
+    from bots.execution.models import TradeDirection, TradeStatus
+    from bots.portfolio.models import Account, Position
+
+    acct = Account(account_id=account_id, initial_balance=100_000.0,
+                   cash=100_000.0)
+    for i, (qty, price, status, failure) in enumerate(rows):
+        acct.positions[f"{account_id}-{i}"] = Position(
+            position_id=f"{account_id}-{i}",
+            market="NATURALGAS26NOV285PE",
+            direction=TradeDirection.LONG,
+            quantity=qty,
+            entry_price=price,
+            current_price=price * 0.5,     # halved, to catch a mark-to-market
+            status=status,
+            failure_reason=failure,
+        )
+    return acct
+
+
+def _bot_with(orchestrator):
+    from bots.autonomous.autonomous_bot import AutonomousTradingBot
+
+    bot = object.__new__(AutonomousTradingBot)
+    bot.orchestrator = orchestrator
+    return bot
+
+
+def _open():
+    from bots.execution.models import TradeStatus
+    return TradeStatus.OPEN
+
+
+def _closed():
+    from bots.execution.models import TradeStatus
+    return TradeStatus.CLOSED
+
+
+def test_it_runs_at_all_and_returns_a_number():
+    """THE REGRESSION. This is the test that was missing on 2026-11-09."""
+    orch = _FakeOrchestrator({
+        "paper_main": _account_with("paper_main", [(65, 261.90, _open(), None)]),
+        "paper_mcx": _account_with("paper_mcx", []),
+    })
+    total = _bot_with(orch)._account_open_premium()
+    assert total != float("inf"), "the rail could not measure, so it blocks everything"
+    assert total == pytest.approx(NIFTY, abs=1.0)
+
+
+def test_it_adds_up_both_leagues():
+    orch = _FakeOrchestrator({
+        "paper_main": _account_with("paper_main", [(20, 601.95, _open(), None)]),
+        "paper_mcx": _account_with("paper_mcx", [(1250, 15.50, _open(), None)]),
+    })
+    assert _bot_with(orch)._account_open_premium() == pytest.approx(
+        SENSEX + GAS, abs=1.0)
+
+
+def test_closed_and_phantom_rows_carry_nothing():
+    orch = _FakeOrchestrator({
+        "paper_main": _account_with("paper_main", [
+            (20, 601.95, _closed(), None),
+            (65, 261.90, _open(), "PHANTOM: 2026-07-15 reduce-only runaway"),
+        ]),
+        "paper_mcx": _account_with("paper_mcx", []),
+    })
+    assert _bot_with(orch)._account_open_premium() == 0.0
+
+
+def test_it_prices_the_entry_not_the_halved_mark():
+    """current_price is half of entry in the fixture above. A mark-to-market
+    reading would report half the exposure and relax the rail on a loser."""
+    orch = _FakeOrchestrator({
+        "paper_main": _account_with("paper_main", [(65, 261.90, _open(), None)]),
+        "paper_mcx": _account_with("paper_mcx", []),
+    })
+    assert _bot_with(orch)._account_open_premium() == pytest.approx(
+        NIFTY, abs=1.0)
+
+
+def test_a_broken_store_blocks_rather_than_allows():
+    class _Exploding:
+        def load_account(self, account_id):
+            raise RuntimeError("database is locked")
+
+    orch = _FakeOrchestrator({})
+    orch.portfolio_store = _Exploding()
+    assert _bot_with(orch)._account_open_premium() == float("inf")
+    assert exposure.remaining_budget(float("inf")) == 0.0
+
+
+def test_no_identifiable_account_blocks():
+    orch = _FakeOrchestrator({}, index_id=None, mcx_ids=())
+    orch.paper_venue = None
+    assert _bot_with(orch)._account_open_premium() == float("inf")

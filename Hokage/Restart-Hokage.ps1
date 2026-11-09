@@ -97,25 +97,72 @@ Say "  UP: PID $newPid, booted $($p.CreationDate)" 'Green'
 
 # A line only the new code can write. A new PID alone proves a process
 # started; it does not prove WHICH code it is running.
+#
+# 2026-11-09: this step printed a GREEN "Session calendar: normal session"
+# stamped 18:59:30 for a process that booted at 22:40:46 - the previous
+# boot's line, still sitting in the tail. It matched the last occurrence and
+# never looked at the clock, so the one check written to prove WHICH code is
+# running was satisfied by code that had already been replaced. Stale
+# evidence reads exactly like fresh evidence. Every line below must now be
+# timestamped AT OR AFTER the new process started.
 Say ''
 Say '5. is it the new code?' 'Cyan'
+
+function Get-FreshLines([string]$Needle, [datetime]$NotBefore) {
+    if (-not (Test-Path $LogFile)) { return @() }
+    Get-Content $LogFile -Tail 800 |
+        Select-String -SimpleMatch $Needle |
+        Where-Object {
+            $stamp = $null
+            if ($_.Line -match '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})') {
+                $stamp = [datetime]::ParseExact($Matches[1],
+                    'yyyy-MM-dd HH:mm:ss', $null)
+            }
+            $stamp -ne $null -and $stamp -ge $NotBefore
+        }
+}
+
+# One second of slack: the log stamp and the process creation time come from
+# different clocks and the version line is written within a second of boot.
+$bootedAt = ([datetime]$p.CreationDate).AddSeconds(-1)
 $calendar = $null
 $deadline = (Get-Date).AddSeconds(90)
 while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 3
-    if (Test-Path $LogFile) {
-        $calendar = Get-Content $LogFile -Tail 400 |
-            Select-String -SimpleMatch 'Session calendar:' |
-            Select-Object -Last 1
-    }
+    $calendar = @(Get-FreshLines 'Session calendar:' $bootedAt) |
+        Select-Object -Last 1
     if ($calendar) { break }
 }
 if ($calendar) {
     Say "  $($calendar.Line.Trim())" 'Green'
+    $version = @(Get-FreshLines 'Code version:' $bootedAt) | Select-Object -Last 1
+    if ($version) { Say "  $($version.Line.Trim())" 'Green' }
 } else {
-    Say '  No "Session calendar:" line yet. Either the code is older than' 'Yellow'
-    Say '  2026-11-08 or the loop has not reached it. Check:' 'Yellow'
+    Say "  No `"Session calendar:`" line stamped at or after $($p.CreationDate)." 'Red'
+    Say '  An OLD line may be in the log; that is not evidence. Either the' 'Red'
+    Say '  loop has not reached it yet or the new process failed early.' 'Red'
     Say "    git -C `"$Root`" log --oneline -1" 'Yellow'
+}
+
+# -------------------------------------------- 5b. did the risk rails load?
+# A rail that cannot measure fails CLOSED, which is the right direction and
+# completely silent from outside: on 2026-11-09 the account exposure rail
+# raised NameError on its first run and blocked every entry for the rest of
+# the session, while the restart reported success. Fail-closed hides a bug
+# exactly as well as it stops a trade, so the restart now reads the rail.
+Say ''
+Say '5b. risk rails' 'Cyan'
+$rail = @(Get-FreshLines 'account exposure rail:' $bootedAt) | Select-Object -Last 1
+if ($rail) {
+    Say "  $($rail.Line.Trim())" 'Green'
+} else {
+    Say '  No account-exposure rail line from this boot.' 'Yellow'
+}
+$railBroken = @(Get-FreshLines 'could not be measured' $bootedAt)
+if ($railBroken.Count -gt 0) {
+    Say '  A RISK RAIL CANNOT MEASURE, SO IT IS BLOCKING EVERY TRADE:' 'Red'
+    foreach ($line in $railBroken) { Say "    $($line.Line.Trim())" 'Red' }
+    Say '  He is up but he will not enter anything. Report this.' 'Red'
 }
 
 # ------------------------------------------------------------- 6. broker
