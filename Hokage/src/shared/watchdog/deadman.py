@@ -67,17 +67,62 @@ DEFAULT_INTERVAL_SECONDS = 600
 PING_TIMEOUT_SECONDS = 10
 
 
+#: Characters that cannot occur in any valid ping URL, and what each one
+#: means. ANGLE BRACKETS ARE THE COMMON ONE: every piece of documentation
+#: writes the URL as https://hc-ping.com/<your-uuid>, and on 2026-11-09 the
+#: placeholder went into .env still wearing its brackets. The scheme was
+#: right, the host was right, the switch armed and announced itself - and the
+#: service answered 400 "invalid url format" to every heartbeat.
+_IMPOSSIBLE_CHARS = (
+    ("<", "an unreplaced <placeholder> from the setup instructions"),
+    (">", "an unreplaced <placeholder> from the setup instructions"),
+    ('"', "quotes around the value (.env needs none)"),
+    ("'", "quotes around the value (.env needs none)"),
+    (" ", "whitespace inside the URL"),
+)
+
+
+def url_problem(url: str) -> str | None:
+    """Why this URL can never work, or None if it might.
+
+    DELIBERATELY NARROW. It rejects only what is impossible, never what is
+    merely unfamiliar: healthchecks.io serves both UUID ping URLs and
+    ping-key-plus-slug URLs, so "does not look like a UUID" is not a fault
+    and a shape check that insisted on one would break a correct setup.
+
+    Never quotes the value back. The reason is named; the secret is not.
+    """
+    for char, reason in _IMPOSSIBLE_CHARS:
+        if char in url:
+            return reason
+    if url.rstrip("/").count("/") <= 2:      # scheme's two, then nothing
+        return "no path at all - this is a host, not a ping URL"
+    return None
+
+
 def configured_url() -> str | None:
     """The ping URL, or None when the switch is not set up."""
     if os.environ.get(DISABLE_ENV) == "true":
         return None
-    url = (os.environ.get(URL_ENV) or "").strip()
+    url = (os.environ.get(URL_ENV) or "").strip().strip('"').strip("'")
     if not url:
         return None
     if not url.lower().startswith(("http://", "https://")):
         logger.warning(
             "Dead man's switch: %s is set but is not an http(s) URL. Ignored.",
             URL_ENV,
+        )
+        return None
+    problem = url_problem(url)
+    if problem is not None:
+        # REFUSED, not armed. Arming on a URL that cannot work is worse than
+        # not arming: the boot line says "armed", and the only sign of trouble
+        # is a generic failure warning every ten minutes that reads exactly
+        # like the DNS outages this laptop really does have.
+        logger.error(
+            "Dead man's switch: %s cannot work - %s. NOT armed. "
+            "Re-copy the ping URL from the check's page.",
+            URL_ENV, problem,
         )
         return None
     return url

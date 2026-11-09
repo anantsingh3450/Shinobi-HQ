@@ -32,7 +32,8 @@ def main() -> int:
 
     load_dotenv(str(ROOT / ".env"))
     from shared.watchdog.deadman import (
-        DEFAULT_INTERVAL_SECONDS, DISABLE_ENV, URL_ENV, configured_url, safe_host,
+        DEFAULT_INTERVAL_SECONDS, DISABLE_ENV, URL_ENV, configured_url,
+        safe_host, url_problem,
     )
 
     raw = (os.environ.get(URL_ENV) or "").strip()
@@ -42,11 +43,20 @@ def main() -> int:
     print("  dead man's switch")
     print(f"    {URL_ENV:<24} {'set' if raw else 'NOT SET'}")
     if raw and not url and not disabled:
-        # Set but rejected: almost always a pasted value with the scheme
-        # missing, or quotes around it. Say which without quoting it back.
-        print("    value                    REJECTED - not an http(s) URL")
-        print("                             (check for missing https:// or "
-              "stray quotes)")
+        # Set but rejected. Name the reason, never the value. On 2026-11-09
+        # this check said "would arm at boot: yes" for a URL containing the
+        # <your-uuid> placeholder, because it validated only the scheme - a
+        # setup check reporting OK while the thing is broken is the defect
+        # family this project keeps paying for.
+        cleaned = raw.strip().strip('"').strip("'")
+        if not cleaned.lower().startswith(("http://", "https://")):
+            print("    value                    REJECTED - not an http(s) URL")
+            print("                             (the https:// is missing)")
+        else:
+            print(f"    value                    REJECTED - "
+                  f"{url_problem(cleaned) or 'unusable'}")
+        print("                             Re-copy the ping URL from the "
+              "check's page.")
     print(f"    host                     {safe_host(url)}")
     if disabled:
         print(f"    {DISABLE_ENV:<24} true - the switch is deliberately OFF")

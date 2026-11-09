@@ -135,8 +135,18 @@ def test_it_only_ever_formats_the_safe_host():
     would be a direct route to printing it."""
     src = (ROOT / "tools" / "ops" / "check_deadman.py").read_text(encoding="utf-8")
     body = src.split("def main")[1]
-    # the only places `url` is interpolated must be through safe_host
+    # The url itself must never be interpolated. `{url_problem(...)}` is a
+    # DIFFERENT name that returns a reason string, so the rail matches the
+    # variable precisely rather than any identifier starting with "url" -
+    # an over-broad rail fails on correct code and gets deleted.
+    # NO REGEX HERE ON PURPOSE: a word-boundary escape kept collapsing
+    # into a literal backspace byte on its way through the shell, and a
+    # rail with an invisible control character in it is worse than none.
+    marks = ("{url}", "{url!", "{url:", "+ url", "% url")
     for line in body.splitlines():
-        if "{url" in line or "+ url" in line or "% url" in line:
+        # url_problem is a DIFFERENT name returning a reason string, so it
+        # is removed before the check rather than matched by accident.
+        stripped = line.replace("url_problem", "")
+        if any(mark in stripped for mark in marks):
             pytest.fail(f"the url is formatted directly: {line.strip()}")
     assert "safe_host(url)" in body

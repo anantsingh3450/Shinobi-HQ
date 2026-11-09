@@ -279,3 +279,92 @@ def test_the_status_line_carries_nothing_sensitive():
     for banned in ("token", "secret", "api_key", "access_token", "account_id",
                    "password"):
         assert banned not in dumped, f"the status line carries {banned}"
+
+
+# ============================= a URL that cannot work must not arm the switch
+class TestAnImpossibleUrlIsRefused:
+    """2026-11-09. The commander set up the check correctly and pasted the
+    documentation's own placeholder into .env, brackets and all:
+
+        HOKAGE_DEADMAN_URL=https://hc-ping.com/<your-uuid>...
+
+    The scheme was right and the host was right, so the switch ARMED and
+    announced itself at boot. Every heartbeat then got 400 "invalid url
+    format", which surfaced only as a generic failure warning that reads
+    exactly like the DNS outages this laptop genuinely has.
+
+    Arming on a URL that can never work is worse than not arming: the boot
+    line says "armed", and nobody looks again.
+    """
+
+    def test_an_unreplaced_placeholder_is_refused(self, monkeypatch):
+        from shared.watchdog import deadman
+
+        monkeypatch.delenv(deadman.DISABLE_ENV, raising=False)
+        monkeypatch.setenv(deadman.URL_ENV, "https://hc-ping.com/<your-uuid>")
+        assert deadman.configured_url() is None
+
+    def test_the_reason_is_named_and_the_value_is_not(self, monkeypatch, caplog):
+        import logging
+
+        from shared.watchdog import deadman
+
+        secret = "e7a1b2c3-dead-4bee-9999-0123456789ab"
+        monkeypatch.delenv(deadman.DISABLE_ENV, raising=False)
+        monkeypatch.setenv(deadman.URL_ENV, f"https://hc-ping.com/<{secret}>")
+        with caplog.at_level(logging.ERROR):
+            assert deadman.configured_url() is None
+        text = caplog.text
+        assert "placeholder" in text
+        assert "NOT armed" in text
+        assert secret not in text
+
+    def test_quotes_around_the_value_are_stripped_not_refused(self, monkeypatch):
+        """A quoted value is a real paste mistake, but it is recoverable -
+        the URL inside it is fine. Refusing it would be unhelpful."""
+        from shared.watchdog import deadman
+
+        monkeypatch.delenv(deadman.DISABLE_ENV, raising=False)
+        monkeypatch.setenv(deadman.URL_ENV, '"https://hc-ping.com/abc-123-def"')
+        assert deadman.configured_url() == "https://hc-ping.com/abc-123-def"
+
+    def test_a_bare_host_is_refused(self, monkeypatch):
+        from shared.watchdog import deadman
+
+        monkeypatch.delenv(deadman.DISABLE_ENV, raising=False)
+        monkeypatch.setenv(deadman.URL_ENV, "https://hc-ping.com")
+        assert deadman.configured_url() is None
+
+    def test_a_slug_url_is_accepted(self, monkeypatch):
+        """THE REASON THIS CHECK IS NARROW. healthchecks.io serves both UUID
+        ping URLs and ping-key-plus-slug URLs, so "does not look like a UUID"
+        is not a fault, and a shape check insisting on one would break a
+        perfectly correct setup."""
+        from shared.watchdog import deadman
+
+        monkeypatch.delenv(deadman.DISABLE_ENV, raising=False)
+        monkeypatch.setenv(deadman.URL_ENV, "https://hc-ping.com/my-ping-key/hokage")
+        assert deadman.configured_url() == "https://hc-ping.com/my-ping-key/hokage"
+
+    def test_a_real_uuid_url_is_accepted(self, monkeypatch):
+        from shared.watchdog import deadman
+
+        monkeypatch.delenv(deadman.DISABLE_ENV, raising=False)
+        good = "https://hc-ping.com/e7a1b2c3-dead-4bee-9999-0123456789ab"
+        monkeypatch.setenv(deadman.URL_ENV, good)
+        assert deadman.configured_url() == good
+
+    def test_url_problem_never_returns_the_url(self):
+        from shared.watchdog import deadman
+
+        bad = "https://hc-ping.com/<secret-placeholder-value>"
+        problem = deadman.url_problem(bad)
+        assert problem
+        assert "secret-placeholder-value" not in problem
+
+    def test_whitespace_inside_is_refused(self, monkeypatch):
+        from shared.watchdog import deadman
+
+        monkeypatch.delenv(deadman.DISABLE_ENV, raising=False)
+        monkeypatch.setenv(deadman.URL_ENV, "https://hc-ping.com/abc 123-def")
+        assert deadman.configured_url() is None

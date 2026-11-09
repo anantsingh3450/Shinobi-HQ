@@ -49,25 +49,55 @@ see is the same as no alarm.
 
 ## Step 2 — put the URL in `.env`
 
-The check gives you a ping URL. Add one line to `.env`:
+The check's page shows a **ping URL** with a copy button. Use the button -
+do not retype it, and do not copy the address bar, which is the dashboard
+page rather than the ping URL.
+
+Add one line at the **end** of `.env`, with your own id in place of the
+example's:
 
 ```
-HOKAGE_DEADMAN_URL=https://hc-ping.com/<your-uuid>
+HOKAGE_DEADMAN_URL=https://hc-ping.com/a1b2c3d4-5e6f-7a8b-9c0d-1e2f3a4b5c6d
 ```
+
+No quotes, no spaces around the `=`, nothing after the id.
+
+**Written without angle brackets on purpose.** On 2026-11-09 this file
+said `your-uuid` inside brackets, and the placeholder went into `.env`
+still wearing them. Scheme right, host right - so the switch armed,
+announced itself at boot, and every heartbeat got `400 invalid url
+format`, which surfaces only as a generic failure warning that reads
+exactly like the DNS outages this laptop genuinely has. `configured_url`
+now refuses a bracketed URL and says why instead of arming on it.
+
+Appending at the end also sidesteps a text editor that writes a
+byte-order mark, which corrupts only the first line of a file.
 
 **Treat it as a credential.** Anyone holding it can forge a heartbeat, which
 would switch this watch off without anything appearing wrong. Hokage never
 logs it — only the hostname ever reaches a log line — and it must not go into
 a commit, a screenshot or a chat message, including to me.
 
-## Step 3 — restart Hokage
+## Step 3 - check it, then restart
+
+First confirm the value is usable. This prints whether it is set and the
+**hostname only**, so it is safe to run on a shared screen:
 
 ```bash
-powershell -File "C:\Users\anant\OneDrive\Documents\AI PROJECT\AI COMMAND CENTRE\Hokage\Stop-Hokage.ps1"
+powershell -NoProfile -Command "cd 'C:\Users\anant\OneDrive\Documents\AI PROJECT\AI COMMAND CENTRE\Hokage'; & 'C:\Users\anant\AppData\Local\Python\pythoncore-3.14-64\python.exe' tools\ops\check_deadman.py"
 ```
 
+You want `would arm at boot  yes`. If it says REJECTED it names the
+reason without echoing the value.
+
+Then restart. `Restart-Hokage.ps1` stops him, clears the
+deliberate-stop marker and starts the task - in that order, which
+matters: the morning task will NOT replace a process that is already
+running, so starting without stopping first is a no-op that looks like
+success. That cost three attempts on 2026-11-08.
+
 ```bash
-powershell -File "C:\Users\anant\OneDrive\Documents\AI PROJECT\AI COMMAND CENTRE\Hokage\Start-Hokage.ps1"
+powershell -NoProfile -Command "cd 'C:\Users\anant\OneDrive\Documents\AI PROJECT\AI COMMAND CENTRE\Hokage'; .\Restart-Hokage.ps1"
 ```
 
 You should see, once, at boot:
@@ -76,9 +106,10 @@ You should see, once, at boot:
 Dead man's switch armed: heartbeat to hc-ping.com every 600s.
 ```
 
-and the check should go green within a minute. **If it is not configured you
-will see a warning instead**, once per boot, naming the eleven lost sessions
-— that line is deliberate and it should not be ignored.
+and the check should go green within seconds - the first ping is sent
+immediately, so a boot that crashes in its first minutes does not look
+like a healthy start.
+
 
 ---
 
