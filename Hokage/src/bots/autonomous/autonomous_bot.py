@@ -741,7 +741,10 @@ class AutonomousTradingBot:
         try:
             from shared.ops import code_version
 
-            code_version.record_boot()
+            # publish=True: this process IS the bot, so it may claim the
+            # shared record that other processes - the 06:30 brief above all -
+            # read to say whether a restart is pending.
+            code_version.record_boot(publish=True)
             logger.info("Code version: %s", code_version.describe())
         except Exception as exc:
             logger.debug("Could not read the code version: %s", exc)

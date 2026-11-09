@@ -30,9 +30,20 @@ SHA_B = "b" * 40
 
 
 @pytest.fixture(autouse=True)
-def _clean_boot(monkeypatch):
-    """Each test gets its own notion of what the process booted on."""
+def _clean_boot(monkeypatch, tmp_path):
+    """Each test gets its own notion of what the process booted on.
+
+    AND ITS OWN BRAIN. Resetting the process global was enough while the boot
+    commit lived only in memory. Now that boot publishes a record to disk, a
+    test asserting "nothing is running" will read whatever record any other
+    test in the session left behind - and these two passed alone and failed in
+    the full suite for exactly that reason. The isolation has to cover every
+    place the answer can come from, not just the one it used to come from.
+    """
     monkeypatch.setattr(cv, "_BOOT_COMMIT", None)
+    private = tmp_path / "version-brain"
+    private.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOKAGE_BRAIN_ROOT", str(private))
 
 
 def _code_only(text: str) -> str:
@@ -197,8 +208,28 @@ def test_an_unknown_version_says_unknown(tmp_path):
 def test_boot_logs_the_version():
     src = (ROOT / "src" / "bots" / "autonomous" / "autonomous_bot.py").read_text(
         encoding="utf-8")
-    assert "code_version.record_boot()" in src
+    assert "code_version.record_boot(publish=True)" in src
     assert 'logger.info("Code version: %s", code_version.describe())' in src
+
+
+def test_only_the_bot_publishes_the_shared_record():
+    """`publish` is a claim to BE the running bot, so it defaults to off.
+
+    Published unconditionally, it wrote a fake sha and a pytest pid into a
+    brain mid-suite and a later test read it back. In production the same hole
+    lets any tool that records a boot overwrite the real bot's record with its
+    own pid - after which the morning brief reports a tool's commit as the
+    bot's, and reports nothing at all once the tool exits.
+    """
+    import inspect
+
+    sig = inspect.signature(cv.record_boot)
+    assert sig.parameters["publish"].default is False
+
+    for tool in sorted((ROOT / "tools").rglob("*.py")):
+        body = tool.read_text(encoding="utf-8", errors="replace")
+        assert "record_boot(publish=True)" not in body, (
+            f"{tool.name} claims to be the running bot")
 
 
 def test_the_morning_checklist_reports_it_without_failing_on_it():
@@ -221,3 +252,129 @@ def test_an_unreadable_version_does_not_break_the_checklist():
     block = _code_only(src.split("WHICH CODE IS RUNNING")[1].split("msg = (")[0])
     assert "except Exception:" in block
     assert 'code_line = "unknown"' in src
+
+
+# ============================== across a process boundary (added 2026-11-09)
+# `_BOOT_COMMIT` is a process global, so only the bot could ever read it. The
+# 06:30 morning brief runs as its own scheduled task, got None, and printed
+# "code version unknown (no readable .git)" while the repository read
+# perfectly - the one panel placed to say RESTART PENDING could not know, and
+# blamed the repo for it.
+
+@pytest.fixture
+def brain(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOKAGE_BRAIN_ROOT", str(tmp_path / "brain"))
+    (tmp_path / "brain").mkdir(parents=True, exist_ok=True)
+    return tmp_path / "brain"
+
+
+def test_publishing_lets_another_process_read_the_version(tmp_path, brain,
+                                                          monkeypatch):
+    root = _fake_repo(tmp_path, SHA_A)
+    cv.record_boot(root, publish=True)
+    # A fresh process: the global is gone, the file is not.
+    monkeypatch.setattr(cv, "_BOOT_COMMIT", None)
+    live = cv.running_version()
+    assert live is not None
+    assert live["commit"] == SHA_A
+
+
+def test_the_brief_can_now_say_a_restart_is_pending(tmp_path, brain,
+                                                    monkeypatch):
+    """The whole point. Before the record existed, `behind` was False in the
+    brief's process no matter what the repo had done."""
+    root = _fake_repo(tmp_path, SHA_A)
+    cv.record_boot(root, publish=True)
+    (root / ".git" / "refs" / "heads" / "main").write_text(SHA_B,
+                                                           encoding="utf-8")
+    monkeypatch.setattr(cv, "_BOOT_COMMIT", None)
+    behind, booted, now = cv.staleness(root)
+    assert behind is True
+    assert booted == SHA_A and now == SHA_B
+    assert "RESTART PENDING" in cv.describe(root)
+
+
+def test_a_dead_pid_reports_nothing_not_a_stale_version(tmp_path, brain,
+                                                        monkeypatch):
+    """A record outlives the process that wrote it. Read naively it reports a
+    dead bot's commit as current - the cached CONNECTED flag again."""
+    root = _fake_repo(tmp_path, SHA_A)
+    cv.record_boot(root, publish=True)
+    monkeypatch.setattr(cv, "_BOOT_COMMIT", None)
+    monkeypatch.setattr(cv, "_pid_is_alive", lambda pid, started: False)
+    assert cv.running_version() is None
+    behind, booted, _ = cv.staleness(root)
+    assert booted is None
+    assert behind is False
+
+
+def test_a_pid_that_cannot_be_checked_is_not_declared_dead(tmp_path, brain,
+                                                           monkeypatch):
+    """None is not False. A probe that cannot see the process table must not
+    report the bot as gone."""
+    root = _fake_repo(tmp_path, SHA_A)
+    cv.record_boot(root, publish=True)
+    monkeypatch.setattr(cv, "_BOOT_COMMIT", None)
+    monkeypatch.setattr(cv, "_pid_is_alive", lambda pid, started: None)
+    live = cv.running_version()
+    assert live is not None
+    assert live["commit"] == SHA_A
+    assert live["pid_confirmed"] is False
+
+
+def test_a_recycled_pid_does_not_pass_for_the_bot(brain, monkeypatch):
+    """Windows reuses pids. A live process that started long after the record
+    was written is not the process the record describes."""
+    import os
+
+    real_start = None
+    try:
+        import psutil
+
+        real_start = psutil.Process(os.getpid()).create_time()
+    except Exception:
+        pytest.skip("psutil unavailable")
+    assert cv._pid_is_alive(os.getpid(), real_start) is True
+    assert cv._pid_is_alive(os.getpid(), real_start - 86400.0) is False
+
+
+def test_an_unreadable_record_is_unknown_not_a_crash(brain):
+    (brain / cv.BOOT_RECORD_NAME).write_text("{not json", encoding="utf-8")
+    assert cv.running_version() is None
+
+
+def test_a_record_without_a_pid_is_refused(brain):
+    import json
+
+    (brain / cv.BOOT_RECORD_NAME).write_text(
+        json.dumps({"commit": SHA_A}), encoding="utf-8")
+    assert cv.running_version() is None
+
+
+def test_no_record_at_all_names_the_right_cause(tmp_path, brain, monkeypatch):
+    """The message used to blame .git for a missing boot record, sending the
+    reader to check a repository that was fine."""
+    root = _fake_repo(tmp_path, SHA_A)
+    monkeypatch.setattr(cv, "_BOOT_COMMIT", None)
+    line = cv.describe(root)
+    assert "no readable .git" not in line
+    assert "recorded its version" in line
+    assert cv.short(SHA_A) in line
+
+
+def test_a_truly_unreadable_repo_still_says_no_git(tmp_path, brain,
+                                                   monkeypatch):
+    plain = tmp_path / "no-git-here"
+    plain.mkdir()
+    monkeypatch.setattr(cv, "_BOOT_COMMIT", None)
+    monkeypatch.setattr(cv, "head_commit", lambda *a, **k: None)
+    assert "no readable .git" in cv.describe(plain)
+
+
+def test_the_record_never_leaves_a_brain_it_cannot_find(monkeypatch, tmp_path):
+    """A version probe must never be the thing that stops the bot booting."""
+    monkeypatch.setattr(cv, "_record_path", lambda: None)
+    cv._write_boot_record(SHA_A)          # must not raise
+    monkeypatch.setattr(cv, "_BOOT_COMMIT", None)
+    root = _fake_repo(tmp_path, SHA_A)
+    assert cv.record_boot(root, publish=True) == SHA_A
