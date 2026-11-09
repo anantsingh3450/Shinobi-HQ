@@ -18,6 +18,7 @@ back to an instrument class the commander has not approved.
 import logging
 from typing import Any
 
+from bots.execution import exposure
 from integrations.brokers.models import OrderRequest, OrderSide
 from integrations.data.models import Instrument, Exchange, AssetClass
 
@@ -93,6 +94,7 @@ class OptionsRouter:
         current_price: float,
         available_cash: float | None = None,
         risk_budget: float | None = None,
+        portfolio_open_premium: float | None = None,
     ) -> OrderRequest:
         """Convert a directional underlying OrderRequest into an option BUY.
 
@@ -105,6 +107,12 @@ class OptionsRouter:
                 strategy's remaining war chest at the entry path). The lot
                 count is sized from this — an exhausted budget SKIPS the trade
                 instead of buying a lot the risk framework never approved.
+            portfolio_open_premium: Premium already open across the WHOLE
+                account, all strategies and both leagues. None skips the
+                account-wide check, which is correct for a caller that has no
+                view of the portfolio and wrong for the entry path — every
+                other ceiling here is per-strategy, so without this one the
+                account can carry more premium than it owns.
 
         Raises:
             OptionsRoutingError: when no live contract resolves, the premium
@@ -165,6 +173,14 @@ class OptionsRouter:
             # The chest ceiling used to be the chest ITSELF, which permitted a
             # single position worth 100% of a strategy's capital.
             ceilings.append(risk_budget * MAX_PREMIUM_CHEST_FRACTION)
+        if portfolio_open_premium is not None:
+            # THE ACCOUNT-WIDE CEILING. Every other rail here is per-strategy,
+            # so four strategies each sized correctly against their own chest
+            # could still carry 1,32,000 of premium on a 1,00,000 account.
+            # This is the only ceiling that knows what the OTHER strategies
+            # are already holding. See bots.execution.exposure for how the
+            # number was chosen and why it does not recompute itself.
+            ceilings.append(exposure.remaining_budget(portfolio_open_premium))
         if ceilings:
             budget = min(ceilings)
             lots = int(budget // premium_per_lot)
@@ -176,6 +192,19 @@ class OptionsRouter:
                         f"₹{risk_budget:,.0f} chest; the cap is "
                         f"{MAX_PREMIUM_CHEST_FRACTION * 100:.0f}%."
                     )
+                # NAME THE CEILING THAT ACTUALLY BOUND. Reporting an
+                # account-exposure skip as a chest problem is a wrong
+                # diagnosis, and a wrong diagnosis sends the next reader to
+                # fix the wrong number - the same way a missing boot record
+                # once read as an unreadable repository.
+                account_room = (
+                    exposure.remaining_budget(portfolio_open_premium)
+                    if portfolio_open_premium is not None else None)
+                if account_room is not None and account_room <= budget:
+                    verdict = exposure.check(portfolio_open_premium,
+                                             premium_per_lot)
+                    raise OptionsRoutingError(
+                        f"Skipping {option_symbol}: {verdict.reason}")
                 raise OptionsRoutingError(
                     f"Risk budget ₹{budget:,.0f} affords 0 lots of {option_symbol} "
                     f"(premium ₹{premium:.2f} x lot {lot_size:g} = ₹{premium_per_lot:,.0f}/lot); "

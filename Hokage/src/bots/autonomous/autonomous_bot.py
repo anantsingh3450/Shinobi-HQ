@@ -2948,6 +2948,23 @@ class AutonomousTradingBot:
         if getattr(self, "_chest_audit_done", False):
             return
         self._chest_audit_done = True
+        # The account-wide ceiling, said out loud once per boot. The rail it
+        # replaces (`max_portfolio_exposure_pct`) was computed, cached and
+        # displayed while blocking nothing, so this one states its number, its
+        # basis and the open exposure it is measured against - a rail nobody
+        # can see is the one that gets quietly bypassed.
+        try:
+            from bots.execution import exposure
+
+            for line in exposure.describe().splitlines():
+                logger.info(line)
+            open_now = self._account_open_premium()
+            logger.info(
+                "    open now: Rs %s of premium, Rs %s of room",
+                f"{open_now:,.0f}",
+                f"{exposure.remaining_budget(open_now):,.0f}")
+        except Exception as exc:
+            logger.error("Could not report the account exposure rail: %s", exc)
         try:
             findings = self.audit_strategy_chests()
         except Exception as exc:
@@ -3816,7 +3833,10 @@ class AutonomousTradingBot:
             cash = None
         try:
             opt_router = OptionsRouter(price_source=self.orchestrator.price_source)
-            req = opt_router.route_to_options(req, current_price=entry_price, available_cash=cash, risk_budget=cash)
+            req = opt_router.route_to_options(
+                req, current_price=entry_price, available_cash=cash, risk_budget=cash,
+                portfolio_open_premium=self._account_open_premium(),
+            )
         except OptionsRoutingError as e:
             return {"success": False, "message": f"Couldn't set up the {underlying} option trade: {e}"}
 
@@ -5937,6 +5957,60 @@ class AutonomousTradingBot:
         # never once reached the ledger.
         self._record_exit_reason(symbol, reason_str)
 
+    def _account_open_premium(self) -> float:
+        """Premium open across EVERY paper account, in rupees.
+
+        The denominator the account-wide exposure rail needs. Every other risk
+        ceiling in the entry path is per-strategy, so this is the only figure
+        that knows what the OTHER strategies are already holding - four
+        strategies each correctly sized against their own chest could still
+        carry 1,32,000 of premium on a 1,00,000 account.
+
+        ENTRY PREMIUM, NOT THE CURRENT MARK. The budget was derived from
+        losses measured as a percentage of ENTRY premium, so the exposure it
+        is compared against has to use the same base. Marking to market would
+        quietly relax the rail exactly when positions were losing, which is
+        the worst moment to relax it.
+
+        UNKNOWN BLOCKS. A failure here returns infinity, which leaves no room
+        and skips the trade. A risk rail that cannot measure must not wave the
+        trade through: `_strategy_covers` already fails OPEN on an empty scope
+        and that is a bug, not a precedent.
+        """
+        try:
+            venues = [getattr(self.orchestrator, "paper_venue", None)]
+            venues.extend(
+                getattr(self.orchestrator, "paper_venues", {}).values())
+            account_ids: list[str] = []
+            for venue in venues:
+                account_id = getattr(venue, "_account_id", None)
+                if account_id and account_id not in account_ids:
+                    account_ids.append(account_id)
+            if not account_ids:
+                logger.error("Account exposure: no paper account could be "
+                             "identified, so exposure cannot be measured.")
+                return float("inf")
+
+            total = 0.0
+            for account_id in account_ids:
+                account = self.orchestrator.portfolio_store.load_account(
+                    account_id)
+                for pos in account.positions.values():
+                    if pos.status != TradeStatus.OPEN:
+                        continue
+                    # Phantoms from the 2026-07-15 runaway hold no real risk.
+                    if str(getattr(pos, "failure_reason", "") or ""
+                           ).startswith("PHANTOM"):
+                        continue
+                    total += abs(float(pos.entry_price or 0.0)
+                                 * float(pos.quantity or 0.0))
+            return total
+        except Exception as exc:
+            logger.error("Account exposure could not be measured (%s); "
+                         "treating the budget as exhausted rather than "
+                         "unlimited.", exc)
+            return float("inf")
+
     def _record_exit_reason(self, symbol: str, reason: str | None) -> bool:
         """Write why a position closed onto the position itself. True if it landed.
 
@@ -6497,6 +6571,7 @@ class AutonomousTradingBot:
                 opt_router = OptionsRouter(price_source=self.orchestrator.price_source)
                 req = opt_router.route_to_options(
                     req, current_price=entry_price, available_cash=cash_for_premium, risk_budget=chest_budget,
+                    portfolio_open_premium=self._account_open_premium(),
                 )
             except OptionsRoutingError as e:
                 logger.warning(f"MCX Arena: options routing blocked entry for {symbol}: {e}")
@@ -7834,6 +7909,7 @@ class AutonomousTradingBot:
                             current_price=entry_price,
                             available_cash=cash_for_premium,
                             risk_budget=_chest_budget,
+                            portfolio_open_premium=self._account_open_premium(),
                         )
                         logger.info(
                             f"Options Router transformed request: {req.side.value} "
