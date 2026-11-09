@@ -185,14 +185,18 @@ class SqlitePortfolioStore:
                         INSERT INTO positions (
                             position_id, account_id, market, direction, quantity, entry_price, current_price,
                             unrealized_pnl, realized_pnl, status, opened_at, closed_at,
-                            playbook_id, failure_reason, volatility_regime, strategy_id
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                            playbook_id, failure_reason, volatility_regime, strategy_id,
+                            charges
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """, (
                         pid, account.account_id, pos.market, pos.direction.value, pos.quantity,
                         pos.entry_price, pos.current_price, pos.unrealized_pnl, pos.realized_pnl,
                         pos.status.value, pos.opened_at.isoformat(),
                         pos.closed_at.isoformat() if pos.closed_at else None,
-                        playbook_id, failure_reason, volatility_regime, strategy_id
+                        playbook_id, failure_reason, volatility_regime, strategy_id,
+                        # NULL, not 0.0, for anything that predates charge
+                        # accounting: "not modelled" is not "cost nothing".
+                        getattr(pos, "charges", None)
                     ))
             logger.info(f"Persisted account {account.account_id} and {len(account.positions)} positions to SQLite.")
         except Exception as exc:
@@ -241,6 +245,10 @@ class SqlitePortfolioStore:
                     # Absent on rows written before schema v8; None is correct
                     # there rather than a guess.
                     strategy_id=prow["strategy_id"] if "strategy_id" in prow.keys() else None,
+                    # Absent on rows written before schema v10, and NULL on
+                    # every position closed before 2026-11-09. None there is
+                    # the fact: those trades were accounted gross.
+                    charges=prow["charges"] if "charges" in prow.keys() else None,
                 )
 
             return Account(

@@ -60,6 +60,11 @@ class Trade:
     gross: float
     cost: float
     closed_at: str
+    #: True when `cost` is what the ledger says was actually taken, False
+    #: when it is this tool's estimate for a position from the gross era.
+    #: Averaging the two without saying so would present a reconstruction as
+    #: a record.
+    measured: bool = False
 
     @property
     def net(self) -> float:
@@ -79,9 +84,13 @@ def closed_trades(db: Path) -> list[Trade]:
     """
     con = sqlite3.connect(str(db))
     con.row_factory = sqlite3.Row
+    columns = {r[1] for r in con.execute("PRAGMA table_info(positions)")}
+    # `charges` arrived with schema 10 on 2026-11-09. Before that there is
+    # nothing to read and every figure here is this tool's estimate.
+    charge_col = ", charges" if "charges" in columns else ""
     rows = con.execute(
         "SELECT market, quantity, entry_price, current_price, realized_pnl, "
-        "       strategy_id, closed_at, failure_reason "
+        f"       strategy_id, closed_at, failure_reason{charge_col} "
         "FROM positions WHERE status = 'CLOSED' ORDER BY closed_at"
     ).fetchall()
     con.close()
@@ -97,7 +106,16 @@ def closed_trades(db: Path) -> list[Trade]:
             continue
         symbol = str(row["market"])
         root = underlying_of(symbol)
-        trip = charges.option_round_trip(entry, root, exit_value=exit_)
+        # WHAT WAS ACTUALLY TAKEN BEATS WHAT THIS TOOL WOULD CHARGE. Since
+        # 2026-11-09 the ledger records the real figure per position; before
+        # that the column is NULL and the estimate is all there is.
+        recorded = row["charges"] if charge_col else None
+        if recorded is not None:
+            cost, measured = float(recorded), True
+        else:
+            cost = charges.option_round_trip(
+                entry, root, exit_value=exit_).total
+            measured = False
         out.append(Trade(
             symbol=symbol,
             underlying=root,
@@ -106,8 +124,9 @@ def closed_trades(db: Path) -> list[Trade]:
             entry_value=entry,
             exit_value=exit_,
             gross=float(row["realized_pnl"] or 0.0),
-            cost=trip.total,
+            cost=cost,
             closed_at=str(row["closed_at"] or ""),
+            measured=measured,
         ))
     return out
 
@@ -177,7 +196,14 @@ def report(db: Path) -> int:
     print(f"rates      {charges.RATES_SOURCE}, read {charges.RATES_READ_ON}")
     print(f"trades     {len(trades)} real closed positions "
           f"({trades[0].closed_at[:10]} to {trades[-1].closed_at[:10]})")
-    print("basis      entry and exit turnover both real; one order per leg.")
+    real = sum(1 for t in trades if t.measured)
+    print(f"basis      {real} priced from the ledger's own charges column, "
+          f"{len(trades) - real} estimated")
+    print("           (charges have been deducted at the fill since "
+          f"{charges.DEDUCTED_FROM}; before that there is")
+    print("           nothing recorded to read, so those rows are this "
+          "tool's reconstruction.)")
+    print("           Estimates assume one order per leg.")
     print("           A split fill costs another 20 rupees, so this is a")
     print("           FLOOR on charges, never a ceiling.")
 
@@ -234,6 +260,9 @@ def report(db: Path) -> int:
     print("-" * 74)
     print("  WHERE THE MONEY WENT")
     print("-" * 74)
+    print("  Composition is modelled from the schedule in every case: the")
+    print("  ledger records one total per position, not its lines. The")
+    print("  shares are therefore exact only where the total was estimated.")
     totals: dict[str, float] = {}
     for t in trades:
         trip = charges.option_round_trip(t.entry_value, t.underlying,

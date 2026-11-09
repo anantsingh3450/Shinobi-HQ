@@ -9,7 +9,9 @@ from datetime import datetime
 from uuid import uuid4
 from shared.utils import utc_now
 
+from bots.execution import charges as charge_schedule
 from bots.execution.models import TradeDirection, TradeRecord, TradeStatus
+from shared.instrument import parse as parse_symbol
 
 
 @dataclass(slots=True)
@@ -61,6 +63,31 @@ class Position:
     #: for measuring badly must be able to prove which trades were its.
     strategy_id: str | None = None
 
+    #: WHAT THE BROKER TOOK ON THIS POSITION, both legs, in rupees.
+    #:
+    #: None means the position was accounted GROSS - everything closed before
+    #: 2026-11-09, when `apply_trade` moved cash by the price difference and
+    #: nothing else. A 0.0 would claim the trade was free, which is a
+    #: different and false statement, so the two are kept apart.
+    charges: float | None = None
+
+    @property
+    def net_pnl(self) -> float | None:
+        """Realized P&L with this position's charges taken out.
+
+        None when the position predates charge accounting: there is no net
+        figure for it, and inventing one by subtracting zero would make the
+        gross era look like a charged era that happened to be free.
+        """
+        if self.charges is None:
+            return None
+        return round(self.realized_pnl - self.charges, 6)
+
+    def add_charges(self, amount: float) -> None:
+        """Accrue one leg's charges. Starts the count rather than adding to
+        None, so a position opened under charge accounting is never NULL."""
+        self.charges = round((self.charges or 0.0) + float(amount), 6)
+
     def update_price(self, price: float) -> None:
         """Update current price and recalculate unrealized PnL."""
         self.current_price = price
@@ -97,6 +124,7 @@ class Position:
             "volatility_regime": self.volatility_regime,
             "failure_reason": self.failure_reason,
             "strategy_id": self.strategy_id,
+            "charges": self.charges,
         }
 
     @classmethod
@@ -119,6 +147,7 @@ class Position:
             volatility_regime=data.get("volatility_regime"),
             failure_reason=data.get("failure_reason"),
             strategy_id=data.get("strategy_id"),
+            charges=data.get("charges"),
         )
 
 
@@ -168,7 +197,25 @@ class Account:
     currency: str = "INR"
     positions: dict[str, Position] = field(default_factory=dict)  # Keyed by position_id
     equity_history: list[EquitySnapshot] = field(default_factory=list)
+    #: GROSS. The sum of price differences, unchanged since before charges
+    #: were deducted, so the two eras remain comparable on this one figure.
     realized_pnl: float = 0.0
+
+    @property
+    def charges_paid(self) -> float:
+        """What the broker has taken from this account, in rupees.
+
+        DERIVED from the positions rather than stored. Cash is already net of
+        it, so this is a reporting figure, and a reporting figure kept in its
+        own column is a figure that can disagree with the rows it came from -
+        which is how `max_portfolio_exposure_pct` came to be displayed
+        everywhere and obeyed nowhere.
+
+        Positions from before 2026-11-09 carry None and contribute nothing,
+        which is correct: no charges were taken from this account for them.
+        """
+        return round(sum(p.charges for p in self.positions.values()
+                         if p.charges is not None), 6)
 
     @property
     def equity(self) -> float:
@@ -176,9 +223,52 @@ class Account:
         unrealized = sum(p.unrealized_pnl for p in self.positions.values() if p.status == TradeStatus.OPEN)
         return round(self.cash + unrealized, 6)
 
+    def _leg_charges(self, trade: TradeRecord) -> float:
+        """What the broker takes on this one executed order, in rupees.
+
+        APPROVED BY THE COMMANDER 2026-11-09, after the measurement: across
+        125 real closed positions charges came to 3.2x the entire gross
+        profit and turned a profit factor of 1.03 into 0.94. Until that day
+        this method did not exist and cash moved by the price difference
+        alone, so every figure the system produced was gross.
+
+        ONE ORDER, ONE BROKERAGE. The 20 rupees is per executed order, not
+        per position, so an order that closes three positions pays it once -
+        which is why this is computed here and then shared out, rather than
+        charged inside the loop below.
+
+        ONLY OPTIONS ARE CHARGED. A symbol that does not parse as an option
+        contract is not on the schedule this models, and guessing a rate for
+        it would be inventing a cost. Those fills stay gross and say so by
+        leaving `charges` None.
+        """
+        instrument = parse_symbol(str(trade.market))
+        if not instrument.parsed:
+            return 0.0
+        turnover = abs(float(trade.entry_price or 0.0)) * abs(
+            float(trade.quantity or 0.0))
+        if turnover <= 0:
+            return 0.0
+        # STT falls on the SELL side whether that sell opens or closes, so
+        # the mapping is from the order's direction and nothing else. In
+        # Hokage's bought-options universe SHORT is always the exit; if a
+        # defined-risk spread ever sells to open, this is still right.
+        side = "SELL" if trade.direction == TradeDirection.SHORT else "BUY"
+        return charge_schedule.option_leg(
+            turnover, instrument.root, side).total
+
     def apply_trade(self, trade: TradeRecord) -> None:
-        """Apply a TradeRecord, matching opposite positions under FIFO order."""
+        """Apply a TradeRecord, matching opposite positions under FIFO order.
+
+        Since 2026-11-09 the broker is paid here too: one order's charges come
+        out of cash and are attributed to the positions that order touched,
+        pro rata by quantity. Cash is therefore net; `realized_pnl` on a
+        position stays the price difference, and `net_pnl` is the honest
+        trade-level figure.
+        """
         market = trade.market
+        leg_cost = self._leg_charges(trade)
+        touched: list[tuple[Position, float]] = []
 
         # Find all open positions in this market that have an opposite direction
         opposite_positions = [
@@ -197,10 +287,12 @@ class Account:
 
             if remaining_qty >= pos.quantity:
                 # Fully close this position
+                closed_qty = pos.quantity
                 pos.close(trade.entry_price, trade.executed_at)
                 self.realized_pnl += pos.realized_pnl
                 self.cash = round(self.cash + pos.realized_pnl, 6)
-                remaining_qty = round(remaining_qty - pos.quantity, 6)
+                touched.append((pos, closed_qty))
+                remaining_qty = round(remaining_qty - closed_qty, 6)
             else:
                 # Partially close this position
                 factor = 1.0 if pos.direction == TradeDirection.LONG else -1.0
@@ -221,9 +313,11 @@ class Account:
                     volatility_regime=pos.volatility_regime,
                     failure_reason=pos.failure_reason,
                     strategy_id=pos.strategy_id,
+                    charges=pos.charges,
                 )
                 updated_pos.update_price(trade.entry_price)
                 self.positions[pos.position_id] = updated_pos
+                touched.append((updated_pos, remaining_qty))
                 remaining_qty = 0.0
 
         # If there is remaining quantity, open a new position
@@ -246,6 +340,25 @@ class Account:
             )
             new_pos.update_price(trade.entry_price)
             self.positions[trade.trade_id] = new_pos
+            touched.append((new_pos, remaining_qty))
+
+        # ------------------------------------------------- pay the broker
+        # Cash moves by the WHOLE order's charges exactly once. The split
+        # across positions is attribution only - it must not change the
+        # total, so the last share takes the rounding remainder rather than
+        # each share being rounded and the pennies going missing.
+        if leg_cost > 0:
+            self.cash = round(self.cash - leg_cost, 6)
+            total_qty = sum(qty for _pos, qty in touched)
+            if total_qty > 0:
+                allocated = 0.0
+                for index, (pos, qty) in enumerate(touched):
+                    if index == len(touched) - 1:
+                        share = round(leg_cost - allocated, 6)
+                    else:
+                        share = round(leg_cost * qty / total_qty, 6)
+                        allocated = round(allocated + share, 6)
+                    pos.add_charges(share)
 
     def to_dict(self) -> dict:
         """Serialize account to a JSON-compatible dictionary."""
@@ -255,6 +368,7 @@ class Account:
             "cash": self.cash,
             "currency": self.currency,
             "realized_pnl": self.realized_pnl,
+            "charges_paid": self.charges_paid,   # derived; read-only
             "positions": {pid: pos.to_dict() for pid, pos in self.positions.items()},
             "equity_history": [snap.to_dict() for snap in self.equity_history],
         }

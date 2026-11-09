@@ -21,7 +21,7 @@ logger = logging.getLogger("Hokage.SqliteEngine")
 #: right level. test_schema_version_constant_matches_the_migrations keeps it in
 #: step with the `if current_version < N` branches below — a stale constant
 #: would silence the one log line that reports a real migration.
-LATEST_SCHEMA_VERSION = 9
+LATEST_SCHEMA_VERSION = 10
 
 
 class SqliteStorageEngine:
@@ -155,6 +155,9 @@ class SqliteStorageEngine:
                 failure_reason TEXT,
                 volatility_regime TEXT,
                 strategy_id TEXT,
+                -- What the broker took on this position's two legs. NULL for
+                -- anything closed before 2026-11-09, when P&L was gross.
+                charges REAL,
                 FOREIGN KEY (account_id) REFERENCES portfolio(account_id) ON DELETE CASCADE
             );
         """)
@@ -732,6 +735,31 @@ class SqliteStorageEngine:
                 conn.execute(
                     "INSERT OR REPLACE INTO schema_version (version, migrated_at) VALUES (?, ?);",
                     (9, datetime.now(timezone.utc).isoformat())
+                )
+            if current_version < 10:
+                # WHAT THE BROKER TOOK.
+                #
+                # Until 2026-11-09 `apply_trade` moved cash by the price
+                # difference alone, so every P&L this system had ever produced
+                # was gross. Measured across 125 real closed positions, the
+                # charges came to 3.2x the entire gross profit and turned a
+                # profit factor of 1.03 into 0.94 - the lifetime record is
+                # negative once the broker is paid. The commander approved
+                # deducting them at the fill the same day.
+                #
+                # ROWS WRITTEN BEFORE THIS MIGRATION STAY NULL, NOT ZERO.
+                # Those trades really were accounted gross; a 0.0 would claim
+                # they were free, and anything comparing eras has to see the
+                # break instead of averaging across it. Same choice as
+                # strategy_id above, for the same reason: absent is not false.
+                logger.info("Applying Schema Version 10: charges paid per position.")
+                try:
+                    conn.execute("ALTER TABLE positions ADD COLUMN charges REAL;")
+                except sqlite3.OperationalError:
+                    pass  # column already exists
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_version (version, migrated_at) VALUES (?, ?);",
+                    (10, datetime.now(timezone.utc).isoformat())
                 )
             conn.commit()
             return False

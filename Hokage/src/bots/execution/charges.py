@@ -144,3 +144,66 @@ def option_round_trip(premium_value: float, underlying: str,
 def breakeven_move_pct(premium_value: float, underlying: str) -> float:
     """How far the premium must rise, in percent, just to cover costs."""
     return option_round_trip(premium_value, underlying).pct_of_premium
+
+
+# ===================================================== deducted at the fill
+#: The day charges stopped being an estimate and started coming out of cash.
+#: Approved by the commander 2026-11-09 after the measurement: over 125 real
+#: closed positions, charges were 3.2x the entire gross profit and turned a
+#: profit factor of 1.03 into 0.94.
+#:
+#: POSITIONS BEFORE THIS DATE ARE GROSS AND STAY GROSS. Their `charges` field
+#: is None, not 0.0 - "not modelled" and "cost nothing" are different facts,
+#: and a zero would quietly claim the trade was free. Anything comparing eras
+#: has to see the break rather than average across it.
+DEDUCTED_FROM = "2026-11-09"
+
+
+@dataclass(frozen=True)
+class LegCharges:
+    """What ONE executed order costs. A round trip is two of these.
+
+    Brokerage is per ORDER, so it appears in full on each leg: that is the
+    whole reason the round trip is 40 rupees and not 20, and the reason a
+    position split across two fills costs more than one filled in a single
+    order.
+    """
+
+    brokerage: float
+    stt: float
+    transaction: float
+    sebi: float
+    stamp: float
+    gst: float
+    turnover: float
+    side: str
+
+    @property
+    def total(self) -> float:
+        return round(self.brokerage + self.stt + self.transaction
+                     + self.sebi + self.stamp + self.gst, 2)
+
+
+def option_leg(turnover: float, underlying: str, side: str) -> LegCharges:
+    """Charges on one executed option order.
+
+    `side` is BUY or SELL as the order was executed, which for Hokage's
+    bought-options universe means entry or exit. STT falls on the SELL side
+    only and stamp duty on the BUY side only, so the leg has to know which
+    it is - splitting a round trip down the middle would charge both on both.
+    """
+    rates = RATES[segment_for(underlying)]
+    value = max(0.0, float(turnover))
+    selling = str(side).upper().endswith("SELL")
+
+    brokerage = BROKERAGE_PER_ORDER
+    stt = rates.stt * value if selling else 0.0
+    transaction = rates.transaction * value
+    sebi = SEBI_RATE * value
+    stamp = 0.0 if selling else STAMP_RATE * value
+    # GST does NOT apply to STT or stamp duty.
+    gst = GST_RATE * (brokerage + transaction + sebi)
+
+    return LegCharges(brokerage=brokerage, stt=stt, transaction=transaction,
+                      sebi=sebi, stamp=stamp, gst=gst, turnover=value,
+                      side="SELL" if selling else "BUY")
