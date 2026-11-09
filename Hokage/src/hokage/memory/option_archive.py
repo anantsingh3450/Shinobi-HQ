@@ -119,6 +119,22 @@ CREATE TABLE IF NOT EXISTS option_chain (
     oi          REAL,
     volume      REAL,
     spot        REAL,
+    -- THE BID-ASK SPREAD IS THE COST OF THE WHOLE STRATEGY, and until
+    -- 2026-11-09 this table did not record it. `last_price` is where the
+    -- option last traded, which says nothing about what it would cost to
+    -- get in and out right now.
+    --
+    -- The ledger cannot answer it either: paper fills are priced through
+    -- the friction MODEL, so measuring cost from them measures the model.
+    -- And an option's depth is gone the moment it is not quoted - the
+    -- contract delists and the number never existed anywhere. Same lesson
+    -- as the candles and the VIX, for a fourth time: the only corpus that
+    -- can exist is the one that starts being written down.
+    --
+    -- NULL means not captured. 0 means genuinely no bid, which is real
+    -- information and must never be read as a price of zero.
+    bid         REAL,
+    ask         REAL,
     PRIMARY KEY (symbol, day, expiry, strike, option_type)
 );
 CREATE INDEX IF NOT EXISTS idx_option_chain_lookup
@@ -131,11 +147,22 @@ def db_path() -> Path:
     return brain_root() / "candles.db"
 
 
+#: Columns added after the table already existed. CREATE TABLE IF NOT EXISTS
+#: does nothing to a table that is already there, so a new column has to be
+#: added explicitly or it silently never appears - and the rows that should
+#: have carried it are gone for good.
+_LATER_COLUMNS = (("bid", "REAL"), ("ask", "REAL"))
+
+
 def connect() -> sqlite3.Connection:
     path = db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
+    have = {r[1] for r in conn.execute("PRAGMA table_info(option_chain)")}
+    for name, kind in _LATER_COLUMNS:
+        if name not in have:
+            conn.execute(f"ALTER TABLE option_chain ADD COLUMN {name} {kind}")
     return conn
 
 
@@ -217,7 +244,7 @@ def remember(rows, when: dt.datetime | None = None) -> int:
         out.append((
             symbol, day, str(expiry), strike, option_type,
             stamp, price, _opt(r.get("oi")), _opt(r.get("volume")),
-            _opt(r.get("spot")),
+            _opt(r.get("spot")), _opt(r.get("bid")), _opt(r.get("ask")),
         ))
 
     if not out:
@@ -226,8 +253,8 @@ def remember(rows, when: dt.datetime | None = None) -> int:
         before = conn.total_changes
         conn.executemany(
             "INSERT OR IGNORE INTO option_chain (symbol, day, expiry, strike, "
-            "option_type, captured_at, last_price, oi, volume, spot) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)", out)
+            "option_type, captured_at, last_price, oi, volume, spot, bid, ask) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", out)
         return conn.total_changes - before
 
 

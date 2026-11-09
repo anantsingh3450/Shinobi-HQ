@@ -169,10 +169,19 @@ def capture(kite, symbol: str, segment: str, spot_key: str,
             meta = wanted.get(key)
             if meta is None:
                 continue
+            # BEST BID AND BEST ASK, from the depth book. The spread between
+            # them is what a round trip costs before anything else, and it is
+            # the one cost that cannot be recovered later: an unquoted option
+            # delists and its book never existed anywhere.
+            depth = q.get("depth") or {}
+            buy = (depth.get("buy") or [{}])[0]
+            sell = (depth.get("sell") or [{}])[0]
             rows.append({**meta,
                          "last_price": q.get("last_price"),
                          "oi": q.get("oi"),
-                         "volume": q.get("volume")})
+                         "volume": q.get("volume"),
+                         "bid": buy.get("price"),
+                         "ask": sell.get("price")})
     print(f"  {symbol:8} spot {spot:>10,.2f}   {len(expiries)} expiries   "
           f"{len(rows)} contracts quoted")
     return rows
