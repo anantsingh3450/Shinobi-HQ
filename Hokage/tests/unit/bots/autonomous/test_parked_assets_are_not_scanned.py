@@ -163,3 +163,83 @@ def test_the_skip_is_logged_not_swallowed():
         assert f'{league}: {{symbol' in src or f'{league}: {{symbol_upper' in src, (
             f"{league} must log the skip"
         )
+
+
+# ================== a parked asset is reported even when strategies cover it
+class TestAParkedAssetIsNeverHiddenByCoverage:
+    """2026-11-09. Parking the four cost-failing assets left five live
+    strategies still scoped to NATURALGAS, and the coverage audit checked
+    coverage BEFORE parking - so gas counted as covered, its parked status was
+    never printed, and the boot announced:
+
+        Asset coverage audit: every asset has a live strategy that can trade it.
+
+    True about the book and false about the day: the scan loop skips a parked
+    asset entirely, so gas would not be traded at all. Coverage is irrelevant
+    to an asset nothing will scan, so parked is decided first.
+    """
+
+    def _bot(self, scoped_to_gas: bool):
+        from types import SimpleNamespace
+
+        bot = AutonomousTradingBot.__new__(AutonomousTradingBot)
+        strategies = {}
+        if scoped_to_gas:
+            strategies["s-gas"] = {
+                "strategy_id": "s-gas", "name": "RangeFade",
+                "status": "ACTIVE", "supported_assets": ["NATURALGAS"]}
+        strategies["s-gold"] = {
+            "strategy_id": "s-gold", "name": "SessionShift",
+            "status": "ACTIVE", "supported_assets": ["GOLDM"]}
+        bot.mcx_strategy_portfolio = SimpleNamespace(
+            portfolio={"strategies": strategies})
+        bot.strategy_portfolio = SimpleNamespace(portfolio={"strategies": {}})
+        bot._chest_of = lambda strat: 100000.0
+        bot._strategy_supports = lambda strat, asset: asset.upper() in [
+            a.upper() for a in (strat.get("supported_assets") or [])]
+        return bot
+
+    def test_a_parked_asset_raises_no_finding_even_when_uncovered(self):
+        """It never was an alarm, and it still must not be."""
+        findings = self._bot(scoped_to_gas=False).audit_asset_coverage()
+        assert not [f for f in findings if "NATURALGAS" in f]
+
+    def test_a_parked_asset_raises_no_finding_when_covered_either(self):
+        findings = self._bot(scoped_to_gas=True).audit_asset_coverage()
+        assert not [f for f in findings if "NATURALGAS" in f]
+
+    def test_the_parked_line_is_logged_even_when_strategies_cover_it(self, caplog):
+        """THE DEFECT. Five live strategies scoped to gas hid the fact that gas
+        is parked."""
+        import logging
+
+        with caplog.at_level(logging.INFO):
+            self._bot(scoped_to_gas=True).audit_asset_coverage()
+        assert "NATURALGAS is PARKED" in caplog.text
+
+    def test_parked_is_decided_before_coverage_in_the_source(self):
+        """A rail on the ORDER, because that is the whole bug: the same two
+        branches in the other order are silently wrong."""
+        import pathlib
+
+        root = next(p for p in pathlib.Path(__file__).resolve().parents
+                    if (p / "pyproject.toml").is_file())
+        src = (root / "src" / "bots" / "autonomous" / "autonomous_bot.py").read_text(
+            encoding="utf-8")
+        body = src.split("def audit_asset_coverage")[1].split("return findings")[0]
+        code = chr(10).join(line.split(chr(35))[0] for line in body.splitlines())
+        parked_at = code.index("self.PARKED_ASSETS")
+        solvent_at = code.index("solvent: list[str] = []")
+        assert parked_at < solvent_at, (
+            "coverage was checked first, which hides a parked asset that "
+            "happens to have strategies scoped to it")
+
+    def test_the_summary_does_not_claim_to_have_cleared_parked_assets(self):
+        import pathlib
+
+        root = next(p for p in pathlib.Path(__file__).resolve().parents
+                    if (p / "pyproject.toml").is_file())
+        src = (root / "src" / "bots" / "autonomous" / "autonomous_bot.py").read_text(
+            encoding="utf-8")
+        assert "every UNPARKED asset has a live " in src
+        assert "Parked and not scanned: %s." in src

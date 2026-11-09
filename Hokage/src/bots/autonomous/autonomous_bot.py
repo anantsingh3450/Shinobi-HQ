@@ -2489,6 +2489,24 @@ class AutonomousTradingBot:
                 # Reporting every asset orphaned here would bury the real one.
                 continue
             for asset in universe:
+                # PARKED IS DECIDED FIRST, because coverage is irrelevant to an
+                # asset the scan loop skips. Checking it last meant a parked
+                # asset with strategies scoped to it counted as COVERED and its
+                # parked status was never printed: on 2026-11-09, five live
+                # strategies were scoped to NATURALGAS, so the audit announced
+                # "every asset has a live strategy that can trade it" about an
+                # asset that will not be scanned at all. A true sentence about
+                # the book and a false one about the day.
+                if asset.upper() in self.PARKED_ASSETS:
+                    # A standing decision, not a fault. Reported so it stays
+                    # visible, but never as an alarm - an alarm that fires every
+                    # boot for a choice already made teaches the commander to
+                    # ignore the one that matters.
+                    logger.info(
+                        f"{league}: {asset} is PARKED - "
+                        f"{self.PARKED_ASSETS[asset.upper()]}"
+                    )
+                    continue
                 solvent: list[str] = []
                 broke: list[str] = []
                 for strat in strategies:
@@ -2508,15 +2526,6 @@ class AutonomousTradingBot:
                         f"{league}: {asset} has no strategy that can trade it. "
                         f"{', '.join(sorted(broke))} is scoped to it but holds no "
                         f"chest, so it will win the auction and fill nothing."
-                    )
-                elif asset.upper() in self.PARKED_ASSETS:
-                    # A standing decision, not a fault. Reported so it stays
-                    # visible, but never as an alarm — an alarm that fires every
-                    # boot for a choice already made teaches the commander to
-                    # ignore the one that matters.
-                    logger.info(
-                        f"{league}: {asset} is PARKED — "
-                        f"{self.PARKED_ASSETS[asset.upper()]}"
                     )
                 else:
                     findings.append(
@@ -2895,7 +2904,19 @@ class AutonomousTradingBot:
             logger.error(f"Asset coverage audit failed: {exc}")
             return
         if not findings:
-            logger.info("Asset coverage audit: every asset has a live strategy that can trade it.")
+            # NAMES WHAT IT CHECKED. "every asset" was false the moment any
+            # asset was parked - the audit skips those deliberately, and a
+            # summary claiming to have cleared them is the kind of reassuring
+            # sentence this project keeps paying for.
+            parked = sorted(self.PARKED_ASSETS)
+            if parked:
+                logger.info(
+                    "Asset coverage audit: every UNPARKED asset has a live "
+                    "strategy that can trade it. Parked and not scanned: %s.",
+                    ", ".join(parked))
+            else:
+                logger.info("Asset coverage audit: every asset has a live "
+                            "strategy that can trade it.")
             return
         for line in findings:
             logger.critical(f"ORPHANED ASSET — {line}")
