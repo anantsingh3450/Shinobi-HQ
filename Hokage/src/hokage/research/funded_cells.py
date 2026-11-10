@@ -128,6 +128,53 @@ TRADED_FOR_THE_RECORD: dict[str, str] = {
         "tape: commander directive 2026-11-09, restating 2026-10-21"),
 }
 
+#: WHAT THE LEDGER SAYS ABOUT ALL OF THE ABOVE, measured 2026-11-10.
+#:
+#: The header calls the agreement between this file's two methods "the
+#: strongest thing in the file". Both methods are model-side: power_lab scores
+#: a signal's forward move on the UNDERLYING, and the cost side prices a
+#: hypothetical contract on a live book. Neither had ever been compared with
+#: the account's own record. `tools/research/model_vs_ledger.py` does that,
+#: and the two disagree.
+#:
+#: FIRST, A DEFECT IN THE NUMBERS ABOVE. Every `edge` in MEASURED was an ATR
+#: edge multiplied by 3.31% of premium per ATR - one constant for all seven
+#: underlyings. `transfer_lab` warns in its own docstring that it "POOLS
+#: ASSETS ... per-asset slopes need an n this does not have", and the fifteen
+#: rows it was fitted on contain exactly ONE SILVERM trade. Fitted per asset
+#: over 93 closed positions instead:
+#:
+#:     SENSEX +8.53  NIFTY +7.36  GOLDM +5.40  SILVERM +4.43
+#:     CRUDEOIL +3.39  NATURALGAS +3.30  BANKNIFTY +3.19   (% of premium/ATR)
+#:
+#: Re-running the comparison on each asset's own slope WIDENS all three
+#: funded margins and leaves all four parked assets parked. The verdicts above
+#: survive the better measurement; the numbers behind them do not.
+#:
+#: SECOND, AND HARDER. In ATR - the model's own unit, with no conversion and
+#: no cost in the way - the hold-out edges do not predict what the system
+#: actually captured over the holds it took:
+#:
+#:     GOLDM/SessionShift    edge +0.496   captured +0.013 over 15 (t +0.02)
+#:     SILVERM/SessionShift  edge +0.072   captured +0.374 over  8 (t +0.50)
+#:
+#: The widest-margin cell in the system, and the only funded MCX cell, has
+#: captured three percent of its measured edge. The asset parked beside it is
+#: the only one in the ledger with a positive net record (PF 1.96 over 30
+#: round trips, net of charges).
+#:
+#: NOTHING HERE IS A REASON TO MOVE A CELL. No figure on either side clears a
+#: ship bar: the realised samples run t +0.02 to +1.64, and the index rows are
+#: July and August trades carrying defects since fixed. Two unconfirmed
+#: numbers disagreeing is a reason to measure again, not to swap one for the
+#: other - and un-parking an asset or defunding a cell is the commander's
+#: call, on evidence that clears the bar, not on this note.
+#:
+#: WHAT WOULD SETTLE IT: sessions on GOLDM and SILVERM under the current
+#: geometry, scored per cell against the hold-out, with the gap between
+#: measured edge and captured ATR tracked as its own number. That gap is the
+#: thing nobody was watching.
+
 #: Modules whose hold-out edge is negative on EVERY asset they trade. This is
 #: a module-level verdict rather than a per-cell one, and no amount of further
 #: tape improves it: more data drives a negative t further from the bar.

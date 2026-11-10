@@ -254,7 +254,23 @@ def resolve_active_friction_profile(resolver: Any = None) -> FrictionProfile:
     Checks:
     1. The environment variable 'HOKAGE_FRICTION_PROFILE'
     2. The 'friction_profile' key inside commander_profile.json
-    3. Falls back to FrictionProfile.NSE_EQUITY as the standard realistic default.
+    3. Falls back to FrictionProfile.ZERO.
+
+    THE FALLBACK IS ZERO, AND NOTHING SETS THE OTHER TWO. This docstring used
+    to claim the fallback was NSE_EQUITY, "the standard realistic default",
+    while the code below returned ZERO - so every reader of this function was
+    told that paper fills pay a spread and some slippage, and they pay
+    neither. Fills land on the mark.
+
+    That is not a small caption on the record. The spread measured live on
+    2026-11-09 runs 0.14% of premium on SILVERM to 0.67% on NATURALGAS, which
+    is the same order as the whole charges schedule, so every realised figure
+    in the ledger is gross of it. `tools/research/model_vs_ledger.py` adds it
+    back on the cost side and says where.
+
+    Changing the fallback would make paper stricter, and it would also rewrite
+    every number the commander has been shown. It is his call, not a tidy-up,
+    so the lie was corrected here rather than in the return.
     """
     import os
 
