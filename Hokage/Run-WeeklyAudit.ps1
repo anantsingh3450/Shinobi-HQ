@@ -56,9 +56,34 @@ try {
     }
 
     Write-AuditLog "START: running weekly_audit.py --telegram"
-    & $Python (Join-Path $Root 'tools\research\weekly_audit.py') --telegram 2>&1 |
-        Out-File -FilePath $Log -Append -Encoding utf8
-    $code = $LASTEXITCODE
+    # A LINE ON STDERR IS NOT A FAILURE, AND POWERSHELL 5.1 DISAGREES.
+    #
+    # With 2>&1 on a native command, 5.1 wraps every stderr LINE in a
+    # NativeCommandError ErrorRecord, and ErrorActionPreference='Stop' turns
+    # the first one into a terminating error. The audit writes warnings to
+    # stderr and RECOVERS from them - the Telegram Markdown rejection falls
+    # back to plain text and the message goes out - so three of the last four
+    # Fridays logged "FAILED before completion" and exited 1 AFTER the
+    # snapshot had already been written:
+    #
+    #     2026-10-16, 2026-10-30, 2026-11-06   all "Telegram rejected Markdown"
+    #     2026-10-23                           exited 0, the only clean one
+    #
+    # The damage is not the lost END line. It is that LastTaskResult=1 became
+    # the normal weekly reading, so a week the audit genuinely fails looks
+    # exactly like a week it succeeded - the same way a watchdog heartbeat
+    # that always says OK is a rubber stamp.
+    #
+    # The process's exit code is its verdict. Stderr is where it talks.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Python (Join-Path $Root 'tools\research\weekly_audit.py') --telegram 2>&1 |
+            Out-File -FilePath $Log -Append -Encoding utf8
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
     Write-AuditLog "END: weekly_audit.py exited $code"
     exit $code
 } catch {
