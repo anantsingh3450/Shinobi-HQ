@@ -25,7 +25,10 @@ A line on stderr is where a process talks. Its exit code is its verdict.
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "Run-WeeklyAudit.ps1"
@@ -99,6 +102,53 @@ def test_the_session_check_still_bails_before_measuring():
 def test_the_catch_still_records_a_real_failure():
     assert "FAILED before completion:" in SOURCE
     assert re.search(r"}\s*catch\s*{", SOURCE)
+
+
+# ======================== the header describes the trigger it actually has
+def test_the_header_does_not_claim_a_saturday_run():
+    """It said "Scheduled for SATURDAY MORNING on purpose" while the trigger
+    was Friday 23:45, and Saturday is the one slot this job cannot use: the
+    Zerodha token dies overnight and Morning Start does not run at weekends,
+    so a Saturday run would sit waiting for a login nothing asked for."""
+    header = SOURCE[:SOURCE.index("$ErrorActionPreference")]
+    assert "Scheduled for FRIDAY 23:45" in header
+    assert "SATURDAY MORNING on purpose" not in header
+
+
+def test_the_header_gives_the_binding_reason_not_only_the_convenient_ones():
+    """Markets-are-closed and a-weekend-to-think are both true of Saturday
+    too, so neither explains the slot. The token does."""
+    header = SOURCE[:SOURCE.index("$ErrorActionPreference")]
+    assert "token" in header.lower()
+    assert "Morning Start" in header
+
+
+def _trigger_days():
+    """Friday-ness of the real scheduled task, or None when it is absent."""
+    try:
+        out = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command",
+             "(Get-ScheduledTask -TaskName 'Hokage Weekly Audit')"
+             ".Triggers | ForEach-Object "
+             "{ \"$($_.DaysOfWeek)|$($_.StartBoundary)\" }"],
+            capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() if out.returncode == 0 and out.stdout.strip() else None
+
+
+def test_the_registered_task_really_does_run_on_friday_at_2345():
+    """Pins the comment to the machine. Skipped where the task is not
+    registered, because a bare checkout has no scheduler to ask - a rail
+    that cannot run anywhere is not a rail, and one that fails everywhere
+    gets deleted."""
+    trigger = _trigger_days()
+    if trigger is None:
+        pytest.skip("'Hokage Weekly Audit' is not registered on this machine")
+    days, _, boundary = trigger.partition("|")
+    # The Windows bitmask: Sun 1, Mon 2, Tue 4, Wed 8, Thu 16, Fri 32, Sat 64.
+    assert days.strip() == "32", f"trigger is not Friday-only: {trigger}"
+    assert "T23:45" in boundary, f"trigger is not 23:45: {trigger}"
 
 
 def test_the_reason_is_written_down_where_the_next_reader_will_be():

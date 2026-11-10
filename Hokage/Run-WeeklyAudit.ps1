@@ -7,15 +7,28 @@
 # ImprovementBot has written 430 autopsies and applied zero improvements; the
 # labs measure correctly but had to be fired by hand. This fires them.
 #
-# Scheduled for SATURDAY MORNING on purpose:
-#   - markets are closed, so it competes with nothing
-#   - the week's tape is complete, so the measurement window is whole
-#   - the commander gets the report with a weekend to think about it before
-#     any lineup change lands on Monday
+# Scheduled for FRIDAY 23:45 on purpose. This comment said SATURDAY MORNING
+# until 2026-11-10, which was never what the trigger did, and the difference
+# is not cosmetic: a Saturday run is the one slot this job cannot use.
 #
-# It needs a LIVE broker session for candle history. If the token has expired
-# the run exits non-zero without writing a snapshot rather than recording an
-# empty week — a gap in the series is honest, a fabricated row is not.
+#   - MCX closes at 23:30, so by 23:45 every market is shut and the audit
+#     competes with nothing. Fifteen minutes of margin, and no more - moving
+#     it earlier puts a seven-asset measurement sweep on top of a live
+#     commodity session.
+#   - The week's tape is complete, so the measurement window is whole.
+#   - The commander gets the report with a weekend to think about it before
+#     any lineup change lands on Monday.
+#   - AND THE TOKEN IS STILL ALIVE. This is the binding reason. The audit
+#     needs a live broker session for candle history, a Zerodha access token
+#     dies overnight, and `Hokage Morning Start` only runs Monday to Friday.
+#     Friday morning's login is still good at 23:45 that night; a Saturday
+#     morning run would need the commander to log in on a Saturday, and
+#     nothing would have told him it was waiting. The snapshot series is the
+#     proof the current slot works.
+#
+# If the token HAS expired the run exits non-zero without writing a snapshot
+# rather than recording an empty week — a gap in the series is honest, a
+# fabricated row is not.
 
 # 2026-10-09 23:45 this exited 1 and left NOTHING BEHIND -- no log file, no
 # Telegram, no trace. By Monday the only evidence it had run at all was
