@@ -44,7 +44,11 @@ from datetime import datetime, timezone
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
 from hokage.memory.resolver import brain_root as _brain_root  # noqa: E402
+from net_record import cost_for, day_concentration  # noqa: E402
+from shared.instrument import underlying_of  # noqa: E402
 
 BRAIN = _brain_root()
 DB = BRAIN / "hokage.db"
@@ -93,20 +97,125 @@ def _load(since: str | None) -> list[dict]:
         con.close()
 
 
-def measure(rows: list[dict], capital: float | None = None) -> dict:
+def _day_of(row: dict) -> str:
+    """The session a round trip belongs to: the day it CLOSED.
+
+    Not the day it opened. P&L is realised at the exit, and every position in
+    this ledger is intraday anyway, so the two agree - but when they stop
+    agreeing the profit belongs to the day it was booked.
+    """
+    return str(row.get("closed_at") or row.get("opened_at") or "")[:10]
+
+
+def _by_day(rows: list[dict], pnl_key: str) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for r in rows:
+        day = _day_of(r)
+        if day:
+            out[day] = out.get(day, 0.0) + float(r.get(pnl_key) or 0.0)
+    return out
+
+
+def without_the_best_day(rows: list[dict],
+                         pnl_key: str = "net_pnl") -> tuple[str | None, list[dict]]:
+    """The same record with its single best session removed.
+
+    A TIME HOLD-OUT, NOT A TRIM. The gate already refuses to be judged on the
+    2026-07-15 cascade, on the stated ground that "a system is not judged on
+    its best day's accounting artifact" - and then said nothing about a best
+    day that was NOT an artifact. On 2026-11-10 the attributed record was
+    +23,458 at PF 1.40 net, which clears the 1.30 bar, and 2026-08-19 alone
+    was +22,416 of it: five long calls riding one gold trend inside three
+    hours. Sixty-seven trades over the remaining twenty-three days were worth
+    +1,042.
+
+    Those five positions are one observation, not five. A bar that one session
+    can carry is not a bar, so the gate is asked to hold without it. This
+    removes the best day, never the worst: the question is whether the edge
+    survives losing its luck, not whether the losses can be tidied away.
+    """
+    rows = with_net(rows) if rows and pnl_key not in rows[0] else rows
+    traded = [r for r in rows if float(r.get("realized_pnl") or 0) != 0]
+    best, _, _, _ = day_concentration(_by_day(traded, pnl_key))
+    if best is None:
+        return None, list(rows)
+    return best, [r for r in rows if _day_of(r) != best]
+
+
+def with_net(rows: list[dict]) -> list[dict]:
+    """Every row given a `net_pnl`: its realised P&L minus what it cost.
+
+    THE BAR WAS BEING JUDGED ON THE PRICE DIFFERENCE. Brokerage is flat at 40
+    rupees a round trip, so across this ledger charges came to 3.2x the entire
+    gross profit and moved the lifetime profit factor from 1.03 to 0.94. A gate
+    that decides whether real money gets traded cannot be the last screen in
+    the system still reading gross.
+
+    The costing is `net_record.cost_for`, not a second copy of it: the gate and
+    the record must not be able to disagree about the same ledger. A row the
+    ledger has no charge for is PRICED FROM THE SCHEDULE rather than counted
+    free - absent is not zero - and `charges_measured` says which it was, so
+    a reconstruction is never presented as a record.
+    """
+    out = []
+    for r in rows:
+        row = dict(r)
+        qty = abs(float(row.get("quantity") or 0.0))
+        entry = abs(float(row.get("entry_price") or 0.0)) * qty
+        exit_ = abs(float(row.get("current_price") or 0.0)) * qty
+        gross = float(row.get("realized_pnl") or 0.0)
+        recorded = row.get("charges")
+        if entry <= 0:
+            # Nothing to price a percentage charge against. Reporting it as
+            # free would understate the cost of exactly the rows least worth
+            # trusting, so it is carried at gross and counted.
+            row["cost"], row["charges_measured"] = 0.0, False
+            row["cost_unknown"] = True
+        else:
+            cost, measured = cost_for(
+                entry, exit_, underlying_of(str(row.get("market") or "")),
+                recorded)
+            row["cost"], row["charges_measured"] = cost, measured
+            row["cost_unknown"] = False
+        row["net_pnl"] = gross - float(row["cost"])
+        out.append(row)
+    return out
+
+
+def measure(rows: list[dict], capital: float | None = None,
+            pnl_key: str = "net_pnl") -> dict:
     """Sharpe, profit factor and drawdown from realised P&L.
 
     Zero-P&L rows are excluded from the ratios: a position opened and closed at
     the same price is not a trade that won or lost, and counting 208 of them
     drags a win rate from 62% to nothing while moving no money. They are
     counted and reported separately rather than quietly dropped.
+
+    FLAT IS DECIDED ON GROSS, MEASURED ON NET. A position that opened and
+    closed at one price still paid brokerage, so its net is not zero - but it
+    is still not a trade that won or lost, and letting charges promote 208 of
+    them into "losers" would be the cascade flattering the ratios all over
+    again, in the other direction.
     """
     closed = sorted(rows, key=lambda r: r["closed_at"] or r["opened_at"])
-    pnl_all = [float(r["realized_pnl"] or 0) for r in closed]
-    pnl = [p for p in pnl_all if p != 0]
-    flats = len(pnl_all) - len(pnl)
+    if pnl_key != "realized_pnl" and closed and pnl_key not in closed[0]:
+        closed = with_net(closed)
+    gross_all = [float(r["realized_pnl"] or 0) for r in closed]
+    pnl = [float(r.get(pnl_key) or 0) for r, g in zip(closed, gross_all) if g != 0]
+    flats = len(gross_all) - len(pnl)
 
-    out: dict = {"n": len(pnl), "flats": flats, "total_pnl": sum(pnl)}
+    traded = [r for r, g in zip(closed, gross_all) if g != 0]
+    out: dict = {
+        "n": len(pnl), "flats": flats, "total_pnl": sum(pnl),
+        "gross_pnl": sum(g for g in gross_all if g != 0),
+        "cost_total": sum(float(r.get("cost") or 0.0) for r in traded),
+        "charges_measured": sum(1 for r in traded if r.get("charges_measured")),
+        "cost_unknown": sum(1 for r in traded if r.get("cost_unknown")),
+        "pnl_key": pnl_key,
+        # The daily series, so a caller can ask whether one session is the
+        # whole record without re-deriving which rows were counted.
+        "by_day": _by_day(traded, pnl_key),
+    }
     if not pnl:
         return out
 
@@ -192,18 +301,31 @@ def main() -> int:
         print("  No closed positions. Nothing to judge.")
         return 0
 
+    rows = with_net(rows)
     clean_rows = [r for r in rows if r["opened_at"][:10] != CASCADE_DAY]
     everything = measure(rows, capital_for(rows))
     clean = measure(clean_rows, capital_for(clean_rows))
+    best_day, lonely_rows = without_the_best_day(clean_rows)
+    lonely = measure(lonely_rows, capital_for(lonely_rows))
+
+    print("\n  P&L IS NET OF CHARGES throughout. Brokerage is flat per round")
+    print("  trip, so it falls hardest on the smallest positions and does not")
+    print("  cancel out of a ratio.")
 
     for label, m in (("ALL POSITIONS", everything),
-                     (f"EXCLUDING THE {CASCADE_DAY} CASCADE", clean)):
+                     (f"EXCLUDING THE {CASCADE_DAY} CASCADE", clean),
+                     (f"AND WITHOUT ITS BEST DAY ({best_day})"
+                      if best_day else "AND WITHOUT ITS BEST DAY", lonely)):
         print(f"\n  {label}")
         if not m["n"]:
             print("    no trades that moved money")
             continue
         print(f"    round trips      {m['n']}  (+{m['flats']} zero-P&L rows excluded)")
-        print(f"    realised P&L     {m['total_pnl']:+,.0f}")
+        print(f"    gross P&L        {m['gross_pnl']:+,.0f}")
+        print(f"    charges          {-m['cost_total']:+,.0f}"
+              f"   ({m['charges_measured']} of {m['n']} from the ledger, "
+              f"the rest priced from the schedule)")
+        print(f"    net P&L          {m['total_pnl']:+,.0f}")
         print(f"    win rate         {m['win_rate']:.1f}%")
         print(f"    avg win / loss   {m['avg_win']:+,.0f} / {m['avg_loss']:+,.0f}")
         print(f"    expectancy       {m['expectancy']:+,.0f} per trade")
@@ -217,9 +339,21 @@ def main() -> int:
         print(f"    max drawdown     {m['max_drawdown']:,.0f}"
               + (f" ({ddp:.1f}% of capital)" if ddp is not None else ""))
 
+    cbest, cbest_pnl, cshare, crest = day_concentration(clean.get("by_day") or {})
+    if cbest:
+        print("\n  CONCENTRATION")
+        days = clean.get("by_day") or {}
+        won = sum(1 for v in days.values() if v > 0)
+        print(f"    trading days     {len(days)}  ({won} up, {len(days) - won} down)")
+        print(f"    best day         {cbest}  {cbest_pnl:+,.0f}"
+              + (f"   {cshare:.1f}% of the net total" if cshare else ""))
+        print(f"    without it       {crest:+,.0f} over {len(days) - 1} days")
+
     print("\n" + "-" * 78)
     print("  THE GATE — judged on the record EXCLUDING the cascade, because a")
-    print("  bug's accounting artifact is not a trading result.")
+    print("  bug's accounting artifact is not a trading result, AND again")
+    print("  without its best single day, because one session is one")
+    print("  observation however many trades it contains.")
     print("-" * 78)
 
     total_cells, names, snap = confirmed_cells()
@@ -243,6 +377,15 @@ def main() -> int:
         (f"confirmed cells >= {MIN_CONFIRMED_CELLS} (t>={SHIP_BAR_T})",
          len(names) >= MIN_CONFIRMED_CELLS,
          f"{len(names)} of {total_cells} measured" + (f", audit {snap}" if snap else "")),
+        # THE SAME BAR, WITHOUT THE LUCK. Not a second, softer criterion: it is
+        # the agreed profit factor asked of a record that no single session can
+        # carry. Added 2026-11-10, when the record cleared 1.30 at 1.40 and one
+        # day was 95.6% of it.
+        (f"profit factor >= {MIN_PROFIT_FACTOR} without its best day",
+         (lonely.get("profit_factor", 0) >= MIN_PROFIT_FACTOR)
+         if lonely["n"] else None,
+         f"{lonely.get('profit_factor', 0):.2f} over {lonely['n']} trades"
+         + (f", ex {best_day}" if best_day else "") if lonely["n"] else "no data"),
     ]
 
     for label, ok, detail in checks:

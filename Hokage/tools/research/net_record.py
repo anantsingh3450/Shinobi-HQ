@@ -75,6 +75,52 @@ class Trade:
         return (self.cost / self.entry_value * 100.0) if self.entry_value else 0.0
 
 
+def cost_for(entry_value: float, exit_value: float, underlying: str,
+             recorded: float | None) -> tuple[float, bool]:
+    """What one round trip cost, and whether that is a record or an estimate.
+
+    THE ONE DEFINITION. `live_readiness` judges the go-live gate on net P&L
+    and this file reports the net record; two copies of this rule is how the
+    gate and the record come to disagree about the same ledger. WHAT WAS
+    ACTUALLY TAKEN BEATS WHAT THIS TOOL WOULD CHARGE: since 2026-11-09 the
+    ledger records the real figure per position, and before that the column is
+    NULL and the estimate is all there is.
+    """
+    if recorded is not None:
+        return float(recorded), True
+    return (charges.option_round_trip(entry_value, underlying,
+                                      exit_value=exit_value).total, False)
+
+
+def day_concentration(
+    pnl_by_day: dict[str, float],
+) -> tuple[str | None, float, float, float]:
+    """The best day, what it was worth, its share of the profit, and the rest.
+
+    WHY A GATE NEEDS THIS. On 2026-11-10 the whole attributed-era record was
+    +23,458 over 68 trades, PF 1.40 net - and 2026-08-19 alone was +22,416 of
+    it, five long calls riding one gold trend inside three hours. Strip that
+    one day and 67 trades are worth +1,042; strip two and the era is negative.
+
+    A ratio that one day can carry is not a measurement of a system, and
+    `live_readiness` already refuses to judge on the 2026-07-15 cascade for
+    the same reason - with the difference that the cascade was a bug and this
+    day was real. A real day is still n=1.
+
+    Share is of the TOTAL, which may be negative or zero; it is returned as
+    0.0 there rather than as an infinity, because "this day is 400% of a tiny
+    total" is arithmetic, not information.
+    """
+    if not pnl_by_day:
+        return None, 0.0, 0.0, 0.0
+    best = max(pnl_by_day, key=lambda d: pnl_by_day[d])
+    best_pnl = pnl_by_day[best]
+    total = sum(pnl_by_day.values())
+    rest = total - best_pnl
+    share = (100.0 * best_pnl / total) if total > 0 else 0.0
+    return best, best_pnl, share, rest
+
+
 def closed_trades(db: Path) -> list[Trade]:
     """Every real closed position, with its charges priced on both legs.
 
@@ -110,12 +156,7 @@ def closed_trades(db: Path) -> list[Trade]:
         # 2026-11-09 the ledger records the real figure per position; before
         # that the column is NULL and the estimate is all there is.
         recorded = row["charges"] if charge_col else None
-        if recorded is not None:
-            cost, measured = float(recorded), True
-        else:
-            cost = charges.option_round_trip(
-                entry, root, exit_value=exit_).total
-            measured = False
+        cost, measured = cost_for(entry, exit_, root, recorded)
         out.append(Trade(
             symbol=symbol,
             underlying=root,
@@ -223,6 +264,30 @@ def report(db: Path) -> int:
           f"          net {whole.net_wins}/{whole.n}")
     flipped = [t for t in trades if t.gross > 0 >= t.net]
     print(f"  wins that charges turned into losses: {len(flipped)}")
+
+    # HOW MANY DAYS IS THIS RECORD, REALLY. A profit factor that one session
+    # carries is arithmetic on n=1, and net_total alone cannot show that.
+    by_day: dict[str, float] = {}
+    for t in trades:
+        if t.closed_at:
+            by_day[t.closed_at[:10]] = by_day.get(t.closed_at[:10], 0.0) + t.net
+    best, best_pnl, share, rest = day_concentration(by_day)
+    if best:
+        print()
+        print("-" * 74)
+        print("  CONCENTRATION — is this a system, or is it one day?")
+        print("-" * 74)
+        won = sum(1 for v in by_day.values() if v > 0)
+        print(f"  trading days     {len(by_day)}  ({won} up, "
+              f"{len(by_day) - won} down)")
+        print(f"  best day         {best}  Rs {best_pnl:>+12,.0f}"
+              + (f"   {share:.1f}% of the net total" if share else ""))
+        print(f"  without it       Rs {rest:>+12,.0f} over "
+              f"{len(by_day) - 1} days")
+        if share >= 50.0:
+            print(f"  ONE DAY IS {share:.0f}% OF THIS RECORD. Every ratio above "
+                  f"is that day")
+            print("  plus noise, whatever its sample size says.")
 
     print()
     print("-" * 74)
