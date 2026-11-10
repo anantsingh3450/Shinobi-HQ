@@ -159,9 +159,9 @@ def test_each_asset_gets_its_own_slope():
     SILVERM on a fit containing one SILVERM trade."""
     rows = []
     for x in (1.0, 2.0, 3.0, 4.0):
-        rows.append(mvl.Row("GOLDM", "s", "2026-10-28", 1000.0,
+        rows.append(mvl.Row("GOLDM", "s", "strat-s-v1", "2026-10-28", 1000.0,
                             gross_pct=2.0 * x, cost_pct=0.3, atr_move=x))
-        rows.append(mvl.Row("SILVERM", "s", "2026-10-28", 1000.0,
+        rows.append(mvl.Row("SILVERM", "s", "strat-s-v1", "2026-10-28", 1000.0,
                             gross_pct=8.0 * x, cost_pct=0.3, atr_move=x))
     fitted = mvl.slopes_by_asset(rows)
     assert fitted["GOLDM"][1] == pytest.approx(2.0)
@@ -181,15 +181,15 @@ def test_a_pooled_fit_would_have_given_neither_answer():
 
 
 def test_an_asset_with_too_few_rows_is_absent_rather_than_guessed():
-    rows = [mvl.Row("SILVERM", "s", "2026-10-28", 1000.0, 1.0, 0.3, 1.0),
-            mvl.Row("SILVERM", "s", "2026-10-28", 1000.0, 2.0, 0.3, 2.0)]
+    rows = [mvl.Row("SILVERM", "s", "strat-s-v1", "2026-10-28", 1000.0, 1.0, 0.3, 1.0),
+            mvl.Row("SILVERM", "s", "strat-s-v1", "2026-10-28", 1000.0, 2.0, 0.3, 2.0)]
     assert "SILVERM" not in mvl.slopes_by_asset(rows)
 
 
 def test_rows_without_an_atr_move_do_not_enter_the_fit():
-    rows = [mvl.Row("GOLDM", "s", "2026-10-28", 1000.0, 2.0 * x, 0.3, x)
+    rows = [mvl.Row("GOLDM", "s", "strat-s-v1", "2026-10-28", 1000.0, 2.0 * x, 0.3, x)
             for x in (1.0, 2.0, 3.0)]
-    rows.append(mvl.Row("GOLDM", "s", "2026-10-28", 1000.0, 99.0, 0.3, None))
+    rows.append(mvl.Row("GOLDM", "s", "strat-s-v1", "2026-10-28", 1000.0, 99.0, 0.3, None))
     assert mvl.slopes_by_asset(rows)["GOLDM"] == (3, pytest.approx(2.0),
                                                   pytest.approx(1.0))
 
@@ -309,7 +309,7 @@ def test_the_strategy_id_is_shortened_but_not_invented(tmp_path, monkeypatch):
 
 
 def test_net_is_gross_less_cost():
-    row = mvl.Row("SILVERM", "s", "2026-10-28", 1000.0, 3.40, 0.34, None)
+    row = mvl.Row("SILVERM", "s", "strat-s-v1", "2026-10-28", 1000.0, 3.40, 0.34, None)
     assert row.net_pct == pytest.approx(3.06)
 
 

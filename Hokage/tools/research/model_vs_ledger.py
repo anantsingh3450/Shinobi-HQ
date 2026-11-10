@@ -76,6 +76,7 @@ sys.path.insert(0, str(ROOT / "tools" / "research"))
 import transfer_lab as TL  # noqa: E402
 
 from bots.execution import charges  # noqa: E402
+from hokage.memory.resolver import brain_root  # noqa: E402
 from shared.instrument import underlying_of  # noqa: E402
 
 #: The best measured hold-out edge per underlying, in ATR, from power_lab on
@@ -113,7 +114,11 @@ SPREAD_PCT: dict[str, float] = {
 #: Where those two tables came from, printed so a reader can date the basis.
 BASIS = "power_lab + spread_lab, 2026-11-09"
 
-DEFAULT_DB = Path(r"C:\Hokage\hokage_brain\hokage.db")
+#: RESOLVED, NOT TYPED. The candle bars come from `brain_root()` by way of
+#: transfer_lab, so a hardcoded ledger path here would read one brain for the
+#: fills and another for the tape the moment HOKAGE_BRAIN_ROOT is set - the
+#: same silent split weekly_audit carries a comment about.
+DEFAULT_DB = brain_root() / "hokage.db"
 
 
 @dataclass(frozen=True)
@@ -121,7 +126,13 @@ class Row:
     """One closed position, as both units see it."""
 
     asset: str
+    #: Shortened for display: `strat-sessionshift-mcx-v1` -> `sessionshift-mcx`.
     strategy: str
+    #: The ledger's own spelling, carried UNCHANGED so a join never has to
+    #: rebuild it. Reconstructing `strat-{strategy}-v1` turned the real row
+    #: `Heuristic BANKNIFTY Strategy` into an identifier that has never
+    #: existed, and an invented id is worse than an unmatched one.
+    strategy_id: str
     closed_on: str
     premium: float
     gross_pct: float
@@ -208,10 +219,11 @@ def read_rows(db: Path) -> tuple[list[Row], int, int]:
         if move is None:
             no_atr += 1
 
+        strategy_id = str(r["strategy_id"] or "unattributed")
         rows.append(Row(
             asset=asset,
-            strategy=str(r["strategy_id"] or "unattributed")
-            .replace("strat-", "").replace("-v1", ""),
+            strategy=strategy_id.replace("strat-", "").replace("-v1", ""),
+            strategy_id=strategy_id,
             closed_on=str(r["closed_at"] or "")[:10],
             premium=entry,
             gross_pct=float(r["realized_pnl"] or 0.0) / entry * 100.0,

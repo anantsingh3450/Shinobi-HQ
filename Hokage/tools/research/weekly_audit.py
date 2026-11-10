@@ -695,6 +695,265 @@ def render(current: dict, report: dict) -> str:
 
 
 # ------------------------------------------------------------------------ main
+#: AUDIT MODULE ID -> LEDGER STRATEGY ID. Two namespaces for one thing: the
+#: entry modules are `entry-...` and the strategies that trade them are
+#: `strat-...`, and for the index the stems differ as well
+#: (entry-macrobreakout-v1 is traded by strat-macrobreakout-commodities-v1).
+#:
+#: WHY THIS IS A TABLE AND NOT A STRING REPLACE. A join that silently matches
+#: nothing reports "no gap anywhere" forever, which is the failure mode that
+#: made my own day-watch blind for four days and the one a missing
+#: `strategy_id` caused for a week. `unmapped_modules()` below is asserted by
+#: a test, so adding a module forces a decision here instead of quietly
+#: dropping that module out of this section.
+LEDGER_ID: dict[str, str] = {
+    "entry-sessionshift-mcx-v1": "strat-sessionshift-mcx-v1",
+    "entry-eventrider-mcx-v1": "strat-eventrider-mcx-v1",
+    "entry-rangefade-mcx-v1": "strat-rangefade-mcx-v1",
+    "entry-trendrider-mcx-v1": "strat-trendrider-mcx-v1",
+    # The mirrors. They have never traded, so they have no ledger rows and
+    # will report "no fills yet" rather than a gap - which is the honest
+    # answer, not a missing one.
+    "entry-eiareaction-mcx-v1": "strat-eiareaction-mcx-v1",
+    "entry-faderange-mcx-v1": "strat-faderange-mcx-v1",
+    "entry-ridertrend-mcx-v1": "strat-ridertrend-mcx-v1",
+    "entry-trendpullback-v1": "strat-trendpullback-v1",
+    "entry-macrobreakout-v1": "strat-macrobreakout-commodities-v1",
+    "entry-meanreversion-v1": "strat-meanreversion-v1",
+    "entry-malfoy-momentum-v1": "strat-malfoy-momentum-v1",
+}
+
+#: Fewest fills before a captured figure is quoted at all. Far below MIN_N,
+#: and deliberately: the ledger holds 125 real round trips in total against
+#: thousands of measured signals, so a bar of 30 fills would silence this
+#: section on every cell for years. A number this thin is reported WITH its n
+#: and never compared to a ship bar.
+MIN_FILLS = 5
+
+
+def unmapped_modules() -> list[str]:
+    """Audit modules with no ledger id. Must be empty, and a test says so."""
+    known = set(ENTRY_MODULES.values()) | set(MCX_ENTRY_MODULES.values())
+    ids = {getattr(m, "module_id", None) for m in known} - {None}
+    return sorted(i for i in ids if i not in LEDGER_ID)
+
+
+def ledger_capture(db: Path | None = None) -> dict[str, dict[str, dict]]:
+    """What each cell actually CAPTURED, in ATR, from the real fills.
+
+    Keyed [asset][ledger strategy_id] -> {n, captured_atr, t, last}. The
+    ledger is opened read-only: this job runs at 23:45 while Hokage is live.
+    """
+    import model_vs_ledger as mvl
+
+    path = db or (BRAIN / "hokage.db")
+    if not Path(path).exists():
+        return {}
+    rows, _phantoms, _no_atr = mvl.read_rows(Path(path))
+    groups: dict[tuple[str, str], list] = {}
+    for row in rows:
+        if row.atr_move is None:
+            continue
+        # The ledger's own spelling, never rebuilt from the display form.
+        groups.setdefault((row.asset, row.strategy_id), []).append(row)
+    out: dict[str, dict[str, dict]] = {}
+    for (asset, strategy), group in groups.items():
+        moves = [r.atr_move for r in group]
+        n, mean, t = mvl._t(moves)
+        out.setdefault(asset, {})[strategy] = {
+            "n": n,
+            "captured_atr": mean,
+            "t": t,
+            "last": max(r.closed_on for r in group),
+        }
+    return out
+
+
+def capture_block(measurements: dict, captured: dict) -> dict[str, dict]:
+    """The gap per cell, in a shape a snapshot can carry and next week diff.
+
+    MEASURED is this week's hold-out edge_atr. CAPTURED is the mean underlying
+    move, in ATR, over the holds the system actually took on that cell. Same
+    unit, no transfer constant, no cost schedule - so a difference here cannot
+    be blamed on either.
+    """
+    block: dict[str, dict] = {}
+    for asset, rows in measurements.items():
+        for module, stat in rows.items():
+            strategy = LEDGER_ID.get(module)
+            fills = (captured.get(asset) or {}).get(strategy or "") if strategy else None
+            cell = {
+                "measured_atr": stat.get("edge_atr"),
+                "measured_t": stat.get("t"),
+                "measured_n": stat.get("n"),
+                # None, not 0.0: a cell with no fills has not been contradicted,
+                # and writing zero here would claim it captured nothing.
+                "captured_atr": None,
+                "captured_n": 0,
+                "captured_t": None,
+                "last_fill": None,
+                "gap": None,
+            }
+            if fills and fills["n"] >= MIN_FILLS:
+                cell.update({
+                    "captured_atr": fills["captured_atr"],
+                    "captured_n": fills["n"],
+                    "captured_t": fills["t"],
+                    "last_fill": fills["last"],
+                    "gap": fills["captured_atr"] - (stat.get("edge_atr") or 0.0),
+                })
+            elif fills:
+                cell["captured_n"] = fills["n"]
+                cell["last_fill"] = fills["last"]
+            block[f"{module}/{asset}"] = cell
+    return block
+
+
+def capture_watch(block: dict, history: list[dict]) -> str:
+    """Does the measured edge reach the account? Reported every week.
+
+    WHY THIS EXISTS. Every lab in this directory scores `edge_atr` - the
+    UNDERLYING's forward move - and every docstring carries the caveat that it
+    is not option P&L. The caveat was never measured against the ledger, and
+    on 2026-11-10 it turned out to matter more than anything it qualified:
+    SessionShift/GOLDM measures +0.496 ATR on the hold-out and had captured
+    +0.013 over fifteen fills, while SessionShift/SILVERM measures +0.072 and
+    had captured +0.374 over eight. The widest-margin cell in the system - the
+    only funded MCX cell - was returning three percent of its measured edge,
+    and the asset parked beside it was the only one in the ledger making
+    money.
+
+    Nothing was watching that. This watches it.
+
+    WHAT A GAP IS AND IS NOT EVIDENCE OF. It is not a second edge measurement
+    and it cannot confirm or retire anything: n is the number of real fills,
+    which is single digits per cell, and every fill is a trade a gate let
+    through rather than a sample of the signal. What a persistent gap DOES say
+    is that the quantity the audit ships against is not reaching the account -
+    and the honest responses to that are to measure the geometry between them
+    (exits, stop, target, slippage) or to collect sessions, never to reweight
+    a lineup on this number.
+
+    REPORTS ONLY. Like `parked_watch`, however large the gap.
+    """
+    if not block:
+        return ""
+    prior = {}
+    for snapshot in history:
+        prior = snapshot.get("capture") or {}
+        if prior:
+            break
+
+    scored = [(key, cell) for key, cell in block.items()
+              if cell.get("gap") is not None]
+    lines = ["", "-" * 60, "MEASURED EDGE AGAINST CAPTURED EDGE"]
+    if not scored:
+        lines.append(f"  No cell has {MIN_FILLS} fills with a measurable hold "
+                     f"yet. Nothing to compare.")
+        waiting = sorted(k for k, c in block.items() if c["captured_n"])
+        if waiting:
+            lines.append("  closest: " + ", ".join(
+                f"{k} ({block[k]['captured_n']})" for k in waiting[:4]))
+        return "\n".join(lines)
+
+    lines.append(f"  {'cell':<40} {'measured':>9} {'captured':>9} "
+                 f"{'gap':>8} {'fills':>6} {'last fill':>11} {'was':>8}")
+    for key, cell in sorted(scored, key=lambda kv: kv[1]["gap"]):
+        was = (prior.get(key) or {}).get("gap")
+        was_text = "-" if was is None else f"{was:+.3f}"
+        lines.append(
+            f"  {key:<40} {cell['measured_atr']:>+9.3f} "
+            f"{cell['captured_atr']:>+9.3f} {cell['gap']:>+8.3f} "
+            f"{cell['captured_n']:>6} {cell['last_fill'] or '-':>11} "
+            f"{was_text:>8}")
+
+    # A cell is only worth naming when the shortfall is most of the edge it
+    # was funded on. A small gap on a small edge is noise with a sign.
+    short = [(k, c) for k, c in scored
+             if (c["measured_atr"] or 0.0) > 0 and c["gap"] < 0
+             and abs(c["gap"]) >= 0.5 * (c["measured_atr"] or 0.0)]
+    for key, cell in sorted(short, key=lambda kv: kv[1]["gap"]):
+        if cell["captured_atr"] < 0:
+            # A share of a negative capture reads as "-48% of its edge",
+            # which hides the only thing that matters about it: the sign
+            # flipped. The module called a direction and the tape went the
+            # other way.
+            lines.append(
+                f"  -> {key} captured the OPPOSITE sign to its measured edge "
+                f"({cell['captured_atr']:+.3f} against {cell['measured_atr']:+.3f}) "
+                f"over {cell['captured_n']} fills.")
+        else:
+            share = cell["captured_atr"] / cell["measured_atr"]
+            lines.append(
+                f"  -> {key} has returned {share * 100:.0f}% of its measured "
+                f"edge over {cell['captured_n']} fills.")
+    over = [(k, c) for k, c in scored
+            if (c["measured_atr"] or 0.0) > 0
+            and c["captured_atr"] >= 2.0 * c["measured_atr"]]
+    for key, cell in sorted(over, key=lambda kv: -kv[1]["gap"]):
+        lines.append(
+            f"  -> {key} captured {cell['captured_atr'] / cell['measured_atr']:.1f}x "
+            f"its measured edge over {cell['captured_n']} fills.")
+    if short or over:
+        lines.append("")
+        lines.append("  A gap is not an edge measurement. These are single-digit")
+        lines.append("  fill counts on trades the gates allowed, so nothing here")
+        lines.append("  confirms, retires, funds or un-parks a cell. It says the")
+        lines.append("  number this audit ships against is not reaching the")
+        lines.append("  account, and the next step is to measure what sits")
+        lines.append("  between them - the exits - or to collect sessions.")
+
+    # NAMED, NOT DROPPED. A cell with one to four fills is excluded from the
+    # table above, and a silent exclusion reads exactly like a cell that has
+    # never traded. Both counts are stated so the floor is visible.
+    thin = sorted((k, c) for k, c in block.items()
+                  if c.get("gap") is None and c["captured_n"])
+    if thin:
+        lines.append("")
+        lines.append(f"  below the {MIN_FILLS}-fill floor, not compared: "
+                     + ", ".join(f"{k} ({c['captured_n']})" for k, c in thin))
+    never = sorted(k for k, c in block.items() if not c["captured_n"])
+    if never:
+        noun = "cell" if len(never) == 1 else "cells"
+        lines.append(f"  no fills on record at all: {len(never)} {noun} "
+                     f"({', '.join(never[:3])}"
+                     + (", ..." if len(never) > 3 else "") + ")")
+
+    missing = unmapped_modules()
+    if missing:
+        lines.append("")
+        lines.append("  NOT JOINED TO THE LEDGER AT ALL (fix LEDGER_ID): "
+                     + ", ".join(missing))
+    return "\n".join(lines)
+
+
+def capture_news(block: dict, history: list[dict]) -> list[str]:
+    """Cells whose shortfall is NEW this week, for the Telegram trigger.
+
+    A gap that has been there for weeks is in the report and does not need to
+    break a quiet week's silence; a gap that was not there last week does.
+    Without this the whole section could sit in a log nobody reads - the same
+    way the mirror experiment ran correctly for eleven days and told him
+    nothing because no one read the archive.
+    """
+    prior = {}
+    for snapshot in history:
+        prior = snapshot.get("capture") or {}
+        if prior:
+            break
+    news = []
+    for key, cell in block.items():
+        gap, edge = cell.get("gap"), cell.get("measured_atr") or 0.0
+        if gap is None or edge <= 0 or gap >= 0:
+            continue
+        if abs(gap) < 0.5 * edge:
+            continue
+        was = (prior.get(key) or {}).get("gap")
+        if was is None or abs(was) < 0.5 * edge:
+            news.append(key)
+    return sorted(news)
+
+
 def parked_watch(measurements: dict) -> str:
     """Is a PARKED asset ready to come back? Reported every week.
 
@@ -927,6 +1186,20 @@ def main() -> int:
         "pooled": pool(raw_hold),
     }
 
+    # THE GAP BETWEEN WHAT IS MEASURED AND WHAT IS CAPTURED, stamped so next
+    # week can diff it. Stamped rather than recomputed for the same reason as
+    # `geometry`: the ledger grows, so a gap re-derived later from a different
+    # set of fills is not the number this snapshot reported.
+    #
+    # It is a KEY ONLY. evolution.plan() does not read it and must not: a
+    # single-digit fill count cannot retire a module, and wiring a shortfall
+    # into a decision is how a directive turns into a measurement.
+    try:
+        current["capture"] = capture_block(measurements, ledger_capture())
+    except Exception as exc:
+        current["capture"] = {}
+        print(f"  capture gap could not be measured: {exc}")
+
     history = previous_snapshots(2, exclude=today)
     report = build_report(current, history)
     text = render(current, report)
@@ -952,6 +1225,12 @@ def main() -> int:
     # A parked asset is deliberately absent from the orphan list, so it needs
     # its own section or it is never spoken about again.
     text += chr(10) + parked_watch(measurements)
+
+    # After the parked watch deliberately. That section asks whether a parked
+    # asset has earned its way back on the MODEL; this one asks whether the
+    # model is reaching the account at all. Reading them the other way round
+    # invites treating a gap as a revival argument, which it is not.
+    text += chr(10) + capture_watch(current.get("capture") or {}, history)
 
     gaps = coverage_gaps(lineup)
     if gaps:
@@ -1032,8 +1311,12 @@ def main() -> int:
         # A knob proposal is a decision waiting on the commander, so it counts
         # as news even in a week where nothing else moved. Without this the loop
         # would close and then talk to a log file nobody reads.
+        # A cell that has NEWLY stopped delivering its measured edge is news
+        # in a week where nothing else moved: it is the first sign that the
+        # number this audit ships against has come loose from the account.
+        fresh_gaps = capture_news(current.get("capture") or {}, history)
         worth_sending = bool(report["demotions"] or report["revivals"]
-                             or report["moves"] or swept)
+                             or report["moves"] or swept or fresh_gaps)
         if not worth_sending:
             print("telegram: nothing changed, staying quiet.")
         else:
