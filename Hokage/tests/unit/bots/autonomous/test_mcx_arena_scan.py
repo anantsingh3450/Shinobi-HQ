@@ -263,3 +263,59 @@ def test_an_unreadable_balance_is_journaled_as_a_fault_not_a_verdict(mock_orches
         assert records, "an unreadable balance must not be silent"
         assert "RuntimeError" in records[0].reasons[0]
         assert "Not a market verdict" in records[0].reasons[0]
+
+
+def test_a_shut_exchange_no_longer_denies_the_league_in_silence(
+        mock_orchestrator_with_mcx, tmp_path):
+    """THE DENIAL THAT ACTUALLY COST A SESSION.
+
+    2026-11-10 was Diwali Balipratipada: NSE shut, MCX trading its full
+    17:00-23:30 evening. The calendar was missing that evening, so
+    `session_manager.is_tradable` answered False for every commodity and this
+    loop's bare `continue` refused both live assets on every cycle from 17:00
+    to 22:30 — no log line, no journal row. The whole day's record was the
+    two window rows written at 22:30, which read exactly like a quiet market.
+
+    The calendar is fixed. This is the record that makes the NEXT missing
+    evening visible on the day rather than eight months later.
+    """
+    orch = mock_orchestrator_with_mcx
+    orch.session_manager.is_tradable.return_value = False
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(PathResolver, "__init__", lambda self, brain_root=None: setattr(self, "_brain_root", tmp_path)))
+        bot = AutonomousTradingBot(orch, watchlist=["CRUDEOIL"], scan_interval_seconds=1)
+        records = _recorder(bot)
+
+        # Tuesday 18:00: inside the entry window, chest funded, venue
+        # attached. Nothing but the exchange status can stop this.
+        bot._now_ist = lambda: datetime(2026, 7, 21, 18, 0, tzinfo=timezone.utc)
+        bot._scan_and_enter_mcx_opportunities()
+
+        orch.mcx_venue.place_order.assert_not_called()
+        assert records, "a shut exchange must not deny the league in silence"
+        assert {r.asset for r in records} == {"NATURALGAS", "GOLDM"}
+        assert "not open for trading" in records[0].reasons[0]
+
+        # Once a day, not once a cycle: session_coverage counts these rows.
+        before = len(records)
+        for _ in range(5):
+            bot._scan_and_enter_mcx_opportunities()
+        assert len(records) == before
+
+
+def test_a_tradable_exchange_is_not_journaled_as_a_standdown(
+        mock_orchestrator_with_mcx, tmp_path):
+    """The inverse rail. A stand-down row on an open exchange would be a
+    fabricated reason, and this project has paid for those repeatedly."""
+    orch = mock_orchestrator_with_mcx
+    orch.session_manager.is_tradable.return_value = True
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(PathResolver, "__init__", lambda self, brain_root=None: setattr(self, "_brain_root", tmp_path)))
+        bot = AutonomousTradingBot(orch, watchlist=["CRUDEOIL"], scan_interval_seconds=1)
+        records = _recorder(bot)
+
+        bot._now_ist = lambda: datetime(2026, 7, 21, 18, 0, tzinfo=timezone.utc)
+        bot._scan_and_enter_mcx_opportunities()
+
+        assert not [r for r in records
+                    if "not open for trading" in r.reasons[0]]

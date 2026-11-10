@@ -282,17 +282,50 @@ def test_the_backstop_never_writes_itself_into_the_table():
     dates from the tape would be inferred data presented as an exchange
     announcement, and it still could not anticipate - the tape exists only
     after the session it was needed for."""
+    # AIMED AT THE FUNCTION, NOT AT A BYTE WINDOW. This sliced the source
+    # between two `def` lines and banned any `.update(` inside it. On
+    # 2026-11-11 `unlisted_sessions_by_segment` was added between those two
+    # defs and its `days.update(...)` — a local set of dates — tripped a rail
+    # that has no opinion about it. A blanket ban on a method name inside a
+    # text window is not a rail on the table; the table's own name is.
+    # ASK THE AST, NOT THE TEXT. The text version of this ban fired on the
+    # docstring that explains the trap it guards — `_EQUITY_HOLIDAYS[2027] =
+    # {}` is written out in the module header as the WRONG thing to do — and
+    # on the module-level `_EQUITY_HOLIDAYS[2026] = {...}` that is the table
+    # itself. Prose is not code and a declaration is not a mutation; the
+    # question is whether any FUNCTION writes to these tables.
+    import ast
+    import inspect
+    import textwrap
+
     src = (_repo_root() / "src" / "hokage" / "memory"
            / "trading_calendar.py").read_text(encoding="utf-8")
-    reader = src.split("def unlisted_sessions_from_archive")[1].split(
-        "def confirmed_holidays_from_archive")[0]
-    assert "_SPECIAL_SESSIONS[" not in reader
-    assert ".update(" not in reader
+    reader = textwrap.dedent(
+        inspect.getsource(tc.unlisted_sessions_from_archive))
     assert "_SPECIAL_SESSIONS" in reader          # it reads the table
-    # and nothing anywhere mutates it
-    for marker in ("_SPECIAL_SESSIONS[", "_SPECIAL_SESSIONS.update",
-                   "_SPECIAL_SESSIONS.setdefault", "_SPECIAL_SESSIONS.pop"):
-        assert marker not in src, f"the table is being mutated: {marker}"
+
+    tables = {"_SPECIAL_SESSIONS", "_EQUITY_HOLIDAYS",
+              "_MCX_EVENING_ON_EQUITY_HOLIDAY"}
+    mutators = {"update", "setdefault", "pop", "add", "discard", "remove",
+                "clear", "append", "__setitem__"}
+    offences = []
+    for fn in (n for n in ast.walk(ast.parse(src))
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))):
+        for node in ast.walk(fn):
+            if isinstance(node, (ast.Assign, ast.AugAssign, ast.Delete)):
+                targets = (node.targets
+                           if isinstance(node, (ast.Assign, ast.Delete))
+                           else [node.target])
+                for target in targets:
+                    if (isinstance(target, ast.Subscript)
+                            and getattr(target.value, "id", None) in tables):
+                        offences.append(f"{fn.name}: {ast.unparse(target)}")
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in mutators
+                    and getattr(node.func.value, "id", None) in tables):
+                offences.append(f"{fn.name}: {ast.unparse(node.func)}()")
+    assert not offences, f"the tables are being mutated: {offences}"
 
 
 def test_boot_names_the_day_and_warns_about_a_missing_session():
@@ -307,7 +340,12 @@ def test_boot_names_the_day_and_warns_about_a_missing_session():
     # fails on an addition rather than on a removal, which is backwards.
     boot = src.split("# WHAT DAY IS IT.")[1].split("def _cleanup")[0]
     assert 'logger.info("Session calendar: %s", self._describe_today())' in boot
-    assert "unlisted_sessions_from_archive()" in boot
+    # PER LEAGUE since 2026-11-11. This asserted the single-segment default,
+    # `unlisted_sessions_from_archive()`, which is an NSE question — and for
+    # six months it was the only question boot asked, while MCX accumulated
+    # six evening sessions the calendar called shut. The strictly stronger
+    # assertion is that boot asks about every segment.
+    assert "unlisted_sessions_by_segment()" in boot
     assert "logger.warning" in boot
 
 

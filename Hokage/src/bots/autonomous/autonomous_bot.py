@@ -776,14 +776,19 @@ class AutonomousTradingBot:
             for problem in trading_calendar.coverage_problems():
                 logger.error("Session calendar: %s", problem)
 
-            unlisted = trading_calendar.unlisted_sessions_from_archive()
-            if unlisted:
+            # PER LEAGUE, because asking about one is how the other's missing
+            # sessions stay missing. This called the NSE default for six
+            # months and answered "nothing to report" while MCX accumulated
+            # six evening sessions the calendar called shut - the last of
+            # them 2026-11-10, when Hokage was awake for all five and a half
+            # hours of it and entered nothing.
+            for segment, days in trading_calendar.unlisted_sessions_by_segment().items():
                 logger.warning(
-                    "Session calendar: the archive has candles for %s, which "
-                    "this calendar calls closed - a special session is "
-                    "missing from the table and every calendar-gated sender "
-                    "will go silent through it",
-                    ", ".join(str(d) for d in unlisted))
+                    "Session calendar: the archive has %s candles for %s, "
+                    "which this calendar calls closed - a session is missing "
+                    "from the table, so %s will not be scanned and every "
+                    "calendar-gated sender will go silent through it",
+                    segment, ", ".join(str(d) for d in days), segment)
         except Exception as exc:
             logger.debug("Could not describe today's session: %s", exc)
 
@@ -6474,6 +6479,21 @@ class AutonomousTradingBot:
                 logger.debug(f"MCX Arena: {symbol} is parked; not scanned.")
                 continue
             if not self.orchestrator.session_manager.is_tradable(symbol):
+                # THE FIFTH SILENT DENIAL, and the one that actually cost a
+                # session. On 2026-11-10 the calendar was missing MCX's
+                # Balipratipada evening, so this line refused both live
+                # assets on every cycle from 17:00 to 22:30 of a session the
+                # tape proves ran - with no log line and no journal row to
+                # say so. The whole day's record was the two window rows
+                # written at 22:30.
+                #
+                # Rate-limited to once a day per reason inside the helper,
+                # for the same reason as every other stand-down here:
+                # session coverage counts rows in this table.
+                self._journal_league_standdown(
+                    "mcx-exchange-not-open",
+                    "MCX is not open for trading right now, so no commodity "
+                    f"was scanned: {self._describe_today()}")
                 continue
 
             # Post-exit re-entry cooldown (shared dict with the index league;

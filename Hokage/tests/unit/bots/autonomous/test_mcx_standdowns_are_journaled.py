@@ -157,7 +157,13 @@ def test_every_standdown_key_is_distinct():
             and isinstance(getattr(n.func, "attr", None), str)
             and n.func.attr == "_journal_league_standdown"
             and n.args and isinstance(n.args[0], ast.Constant)]
-    assert len(keys) == 4, f"expected four journaled stand-downs, got {keys}"
+    # Five, not four, since 2026-11-11: `is_tradable` returning False was a
+    # bare `continue` too, and it is the one that actually cost a session.
+    # MCX ran its Balipratipada evening while the calendar called it shut, so
+    # both live assets were refused from 17:00 to 22:30 with no trace.
+    # The window call passes a conditional, so it is not a Constant and is
+    # counted by the test above instead.
+    assert len(keys) == 5, f"expected five journaled stand-downs, got {keys}"
     assert len(set(keys)) == len(keys), f"duplicate key collapses two causes: {keys}"
 
 

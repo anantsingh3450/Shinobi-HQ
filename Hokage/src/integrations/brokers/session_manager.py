@@ -231,10 +231,22 @@ class TradingSessionManager:
         #               through it and archived no candles - a hole in the tape
         #               of exactly the kind that cost three months of training
         #               data on an MCX roll.
-        #   2026-11-10  Diwali Balipratipada, a shut Tuesday absent from the
-        #               list below, so the engine would have scanned a closed
-        #               market and priced decisions off whatever last quote
-        #               it could find.
+        #   2026-11-10  Diwali Balipratipada, a Tuesday absent from the list
+        #               below, so the engine would have scanned a closed
+        #               EQUITY market and priced decisions off whatever last
+        #               quote it could find.
+        #
+        # 2026-11-11, the other edge of that same day: calling it "shut" was
+        # only half right and the wrong half was expensive. NSE was closed;
+        # MCX ran its full 17:00-23:30 evening session, which the real
+        # calendar also called CLOSED because the date was missing from
+        # `_MCX_EVENING_ON_EQUITY_HOLIDAY`. So `is_tradable` answered False
+        # for every commodity all evening, the MCX scan's `continue` denied
+        # both live assets in silence, and the day's whole journal was two
+        # rows. A holiday that closes NSE does not close MCX, and six such
+        # evenings had stacked up since March. Fixed in the calendar, where
+        # the dates live, and now watched per league by
+        # `trading_calendar.unlisted_sessions_by_segment`.
         if exchange in (Exchange.NSE, Exchange.BSE, Exchange.MCX):
             segment = "MCX" if exchange == Exchange.MCX else "NSE"
             status = self._indian_session_status(local_dt, segment)

@@ -118,12 +118,54 @@ _EQUITY_HOLIDAYS[2026] = {
 #:
 #: 2026-10-20 is confirmed by the broker's own notice: "MCX and NCOM will
 #: operate only during the evening session, starting at 5:00 PM".
+#:
+#: 2026-11-11: SIX OF THESE WERE MISSING AND THE TAPE IS WHAT FOUND THEM.
+#: `session_kind(2026-11-10, "MCX")` answered CLOSED on a day the archive
+#: holds 27 fifteen-minute bars per commodity, 17:00 to 23:30. Hokage logged
+#:
+#:     Session calendar: 2026-11-10: Diwali Balipratipada - everything closed
+#:
+#: and stood both live assets down through the entire 17:00-22:30 entry
+#: window of a session that genuinely ran. The day's whole record was the two
+#: window rows written at 22:30, because the line that actually refused -
+#: `if not session_manager.is_tradable(symbol): continue` - was a bare
+#: `continue`. That is the comment in this file's own header coming true:
+#: "being wrong in this direction writes off a tradeable evening".
+#:
+#: NOT ONE OF THESE DATES CAME FROM A HOLIDAY WEBSITE. Each is a day the
+#: archive HAS candles for while this table called MCX shut, which is exactly
+#: the standard `unlisted_sessions_from_archive` already applies to weekends:
+#: a day with candles in it is a session that happened, and the tape cannot
+#: be mistyped. From his own Kite history:
+#:
+#:     2026-03-03  Holi                  17:00-23:45
+#:     2026-03-26  exchange holiday      17:00-23:15
+#:     2026-03-31  exchange holiday      17:00-23:15
+#:     2026-05-28  exchange holiday      17:00-23:15
+#:     2026-06-26  exchange holiday      17:00-23:15
+#:     2026-11-10  Diwali Balipratipada  17:00-23:30
+#:
+#: Only the last one cost anything. `no_trade_decisions` starts 2026-07-14
+#: and `positions` 2026-07-15, so the other five are evidence about the
+#: EXCHANGE, not about him.
+#:
+#: 2026-04-03 (Good Friday) and 2026-12-25 (Christmas) STAY SHUT. The archive
+#: has no candles for either, and absent is not false: he was switched off on
+#: one and the other has not happened yet. A guessed evening is the precise
+#: error this file exists to prevent, so they wait for the tape - which is
+#: now watched for both leagues, see `unlisted_sessions_by_segment`.
 _MCX_EVENING_ON_EQUITY_HOLIDAY: set[dt.date] = {
+    dt.date(2026, 3, 3),
+    dt.date(2026, 3, 26),
+    dt.date(2026, 3, 31),
     dt.date(2026, 4, 14),
     dt.date(2026, 5, 1),
+    dt.date(2026, 5, 28),
+    dt.date(2026, 6, 26),
     dt.date(2026, 9, 14),
     dt.date(2026, 10, 2),
     dt.date(2026, 10, 20),
+    dt.date(2026, 11, 10),
     dt.date(2026, 11, 24),
 }
 
@@ -482,8 +524,9 @@ def describe(day: dt.date) -> str:
     return f"{day}: {name} — everything closed"
 
 
-def unlisted_sessions_from_archive(symbol: str = "NIFTY") -> list[dt.date]:
-    """Weekend days the archive has candles for that this file calls closed.
+def unlisted_sessions_from_archive(symbol: str = "NIFTY",
+                                   segment: str = "NSE") -> list[dt.date]:
+    """Days the archive has candles for that this file calls closed.
 
     THE OTHER HALF OF THE CROSS-CHECK, and the only part of this file that can
     notice its own gap. `confirmed_holidays_from_archive` catches a day listed
@@ -492,10 +535,24 @@ def unlisted_sessions_from_archive(symbol: str = "NIFTY") -> list[dt.date]:
     Muhurat trading is and exactly the state in which five senders go silent
     through a live session.
 
-    It cannot be fooled and it cannot be mistyped: a weekend with candles in
-    it is a session that happened. It also cannot anticipate - it speaks only
-    after the tape exists - so it is a backstop for an unmaintained table, not
-    a substitute for entering the dates.
+    It cannot be fooled and it cannot be mistyped: a day with candles in it is
+    a session that happened. It also cannot anticipate - it speaks only after
+    the tape exists - so it is a backstop for an unmaintained table, not a
+    substitute for entering the dates.
+
+    IT USED TO LOOK ONLY AT WEEKENDS, AND ONLY AT NIFTY. Both halves of that
+    were blind to the same bug. On 2026-11-10, a WEEKDAY equity holiday, MCX
+    ran a full evening session that this table called CLOSED; the day was not
+    a weekend, so the old test skipped it, and the probe symbol was NIFTY,
+    which has no MCX candles to disagree with. Six such evenings had stacked
+    up unnoticed since March. The question is not "was it a weekend" but
+    "does this file positively call it shut", which is `session_kind`.
+
+    THE WEEKEND RULE IS KEPT SEPARATELY ON PURPOSE. `session_kind` answers
+    None outside the entered years, so asking it alone would switch this
+    backstop off the moment the table runs out - 2026-12-31, 51 days from
+    writing - which is precisely when a backstop is needed. An uncovered
+    weekend with candles in it is still a session that happened.
 
     Returns [] when the archive is absent: missing data, never an assertion.
     """
@@ -518,9 +575,52 @@ def unlisted_sessions_from_archive(symbol: str = "NIFTY") -> list[dt.date]:
             day = dt.date.fromisoformat(stamp)
         except ValueError:
             continue
-        if day.weekday() >= 5 and day not in _SPECIAL_SESSIONS:
+        kind = session_kind(day, segment)
+        if kind == CLOSED:
+            # Positively shut for THIS segment, and candles exist anyway:
+            # a weekend, or a holiday whose evening session is missing.
+            out.append(day)
+        elif kind is None and day.weekday() >= 5 and day not in _SPECIAL_SESSIONS:
+            # Outside the entered years the exchange's weekend rule still
+            # holds without any list, so the backstop keeps working after
+            # this table expires.
             out.append(day)
     return sorted(out)
+
+
+#: Which archived symbol speaks for which segment. More than one each,
+#: because a segment's probe must not depend on one symbol being present:
+#: NIFTY has no MCX candles and GOLDM has no index candles, so a single
+#: default probe is blind to the other league by construction.
+_SEGMENT_PROBES: dict[str, tuple[str, ...]] = {
+    "NSE": ("NIFTY", "BANKNIFTY", "SENSEX"),
+    "MCX": ("GOLDM", "CRUDEOIL", "NATURALGAS", "SILVERM"),
+}
+
+
+def unlisted_sessions_by_segment() -> dict[str, list[dt.date]]:
+    """Every segment's traded-but-unlisted days, keyed by segment.
+
+    WHAT BOOT ASKS, because asking about one league is how the other one's
+    missing sessions stay missing. `unlisted_sessions_from_archive()` on its
+    defaults is an NSE question, and for six months it was the only question
+    anyone asked - while MCX quietly accumulated six evenings this file
+    called shut (see `_MCX_EVENING_ON_EQUITY_HOLIDAY`).
+
+    A parked asset is still probed. Parking stops the money, not the archive,
+    and the tape is what makes the answer trustworthy.
+
+    Segments with nothing to report are absent rather than empty, so a caller
+    can treat a truthy result as "there is something to say".
+    """
+    out: dict[str, list[dt.date]] = {}
+    for segment, symbols in _SEGMENT_PROBES.items():
+        days: set[dt.date] = set()
+        for symbol in symbols:
+            days.update(unlisted_sessions_from_archive(symbol, segment))
+        if days:
+            out[segment] = sorted(days)
+    return out
 
 
 def confirmed_holidays_from_archive(symbol: str = "NIFTY") -> list[dt.date]:
