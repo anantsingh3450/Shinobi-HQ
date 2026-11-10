@@ -38,7 +38,10 @@ def seeded_brain(monkeypatch, tmp_path):
         "CREATE TABLE positions (market TEXT, account_id TEXT, direction TEXT, "
         "quantity REAL, entry_price REAL, current_price REAL, "
         "unrealized_pnl REAL, realized_pnl REAL, opened_at TEXT, "
-        "closed_at TEXT, status TEXT)"
+        # `charges` is part of the real schema (version 10, 2026-11-09). A
+        # fixture that omits it tests a brain that no longer exists, and the
+        # tools read it.
+        "closed_at TEXT, status TEXT, charges REAL)"
     )
     conn.commit()
     conn.close()

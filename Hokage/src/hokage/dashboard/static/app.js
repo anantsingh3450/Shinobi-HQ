@@ -633,6 +633,32 @@ document?.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    async function loadChargesPaid() {
+        // WHAT THE BROKER TOOK, named on screen rather than buried in a net
+        // total. On 125 closed positions charges came to 3.2x the whole
+        // gross profit, which is the difference between a profit factor of
+        // 1.03 and 0.94 — not a footnote.
+        try {
+            const res = await fetch("/api/v1/portfolio/paper/overview");
+            if (!res.ok) return;
+            const o = await res.json();
+            const set = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+            const charges = Number(o.charges_paid || 0);
+            set("port-charges-paid", charges > 0 ? "−" + formatINR(charges) : formatINR(0));
+            const gross = Number(o.total_realized_pnl || 0);
+            set("port-realized-basis", `gross ${formatINR(gross)} − charges ${formatINR(charges)}`);
+            // A closed position with no charges is not a free trade, it is an
+            // unmeasured one. Say how many, or the net total implies it covers
+            // the whole history.
+            const grossEra = Number(o.gross_era_positions || 0);
+            set("port-charges-note", grossEra > 0
+                ? `${grossEra} closed position${grossEra === 1 ? "" : "s"} predate charge accounting and carry none`
+                : "");
+            const el = document.getElementById("port-charges-paid");
+            if (el) el.style.color = charges > 0 ? "var(--color-red)" : "var(--color-cyan)";
+        } catch (e) { console.error("Charges paid:", e); }
+    }
+
     async function loadPortfolioStats() {
         try {
             const res = await fetch("/api/v1/portfolio/paper/metrics");
@@ -640,10 +666,17 @@ document?.addEventListener("DOMContentLoaded", () => {
             const m = await res.json();
             const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
             const unrealized = m.equity - m.cash - m.margin_used;
+            // total_return is equity - initial_balance, and equity derives
+            // from cash, which has been net of the broker since 2026-11-09.
+            // So this figure was already net while the card said only
+            // "Realized P&L" and nothing on screen named the charges. The
+            // card is labelled net now and the amount taken is shown beside
+            // it, read from the overview endpoint below.
             const realized = m.total_return - unrealized;
             el("port-unrealized-pnl", formatINR(unrealized));
             el("port-realized-pnl", formatINR(realized));
             el("port-buying-power", formatINR(m.margin_available));
+            loadChargesPaid();
             if (m.win_rate !== null && m.win_rate !== undefined) {
                 el("port-win-rate", m.win_rate.toFixed(1) + "%");
             }
@@ -4594,7 +4627,17 @@ document?.addEventListener("DOMContentLoaded", () => {
             
             if (stcgEl) stcgEl.textContent = formatINR(data.stcg) || "Not Available";
             if (ltcgEl) ltcgEl.textContent = formatINR(data.ltcg) || "Not Available";
-            if (realizedEl) realizedEl.textContent = formatINR(data.realized_pnl) || "Not Available";
+            // Net, with the gross it came from stated beside it. This card
+            // read the gross figure while the card below it was titled
+            // "Net P&L (After Tax & Charges)" and was computed from the
+            // SIMULATED tax ledger — two charge models on one panel, neither
+            // labelled. The endpoint now nets from what cash actually paid.
+            if (realizedEl) {
+                const net = data.net_realized_pnl;
+                realizedEl.textContent = (net === undefined || net === null)
+                    ? (formatINR(data.realized_pnl) || "Not Available")
+                    : `${formatINR(net)} net (gross ${formatINR(data.realized_pnl)})`;
+            }
             if (unrealizedEl) unrealizedEl.textContent = formatINR(data.unrealized_pnl) || "Not Available";
             
             if (netPnlEl) {
@@ -4606,13 +4649,26 @@ document?.addEventListener("DOMContentLoaded", () => {
                 liabilityEl.textContent = formatINR(data.estimated_tax) || "Not Available";
             }
             
-            if (brokerageEl) brokerageEl.textContent = formatINR(data.brokerage) || "Not Available";
-            if (gstEl) gstEl.textContent = formatINR(data.gst) || "Not Available";
-            if (sttEl) sttEl.textContent = formatINR(data.stt) || "Not Available";
-            if (stampEl) stampEl.textContent = formatINR(data.stamp_duty) || "Not Available";
-            if (exchangeEl) exchangeEl.textContent = formatINR(data.exchange_charges) || "Not Available";
-            if (sebiEl) sebiEl.textContent = formatINR(data.sebi_charges) || "Not Available";
-            if (totalChargesEl) totalChargesEl.textContent = formatINR(data.total_charges) || "Not Available";
+            // THE BREAKDOWN IS SIMULATED AND THE TOTAL IS REAL, so they do
+            // not add up and the labels have to say so. The components come
+            // from integrations/tax/mock_provider, which invents a rate per
+            // fill and has never been deducted from anything; the total is
+            // bots/execution/charges.py, which comes out of cash.
+            const sim = data.components_are_simulated ? " (simulated)" : "";
+            if (brokerageEl) brokerageEl.textContent = (formatINR(data.brokerage) || "Not Available") + sim;
+            if (gstEl) gstEl.textContent = (formatINR(data.gst) || "Not Available") + sim;
+            if (sttEl) sttEl.textContent = (formatINR(data.stt) || "Not Available") + sim;
+            if (stampEl) stampEl.textContent = (formatINR(data.stamp_duty) || "Not Available") + sim;
+            if (exchangeEl) exchangeEl.textContent = (formatINR(data.exchange_charges) || "Not Available") + sim;
+            if (sebiEl) sebiEl.textContent = (formatINR(data.sebi_charges) || "Not Available") + sim;
+            if (totalChargesEl) {
+                totalChargesEl.textContent = (formatINR(data.total_charges) || "Not Available")
+                    + " actually paid";
+                totalChargesEl.title = "From the broker's published schedule, deducted from cash. "
+                    + "The breakdown above is the older simulated model ("
+                    + (formatINR(data.simulated_total_charges) || "n/a")
+                    + ") and does not sum to this.";
+            }
             if (divIncomeEl) divIncomeEl.textContent = formatINR(data.dividend_income) || "Not Available";
             if (intIncomeEl) intIncomeEl.textContent = formatINR(data.interest_income) || "Not Available";
             if (projectionEl) projectionEl.textContent = data.tax_forecast || "Not Available";

@@ -25,8 +25,13 @@ class PositionSnapshot:
         entry_price: Price at which position was opened.
         current_price: Current market price (if open).
         unrealized_pnl: Profit/loss if position were closed now (if open).
-        realized_pnl: Profit/loss if position is closed.
+        realized_pnl: Profit/loss if position is closed, GROSS.
         status: 'OPEN' or 'CLOSED'.
+        charges: What the broker took on this position, both legs. None for
+            positions opened before 2026-11-09, which were accounted gross.
+        net_pnl: realized_pnl minus charges, or None when charges is None -
+            there is no net figure for a position that was never charged,
+            and subtracting zero would claim the trade was free.
     """
     position_id: str
     market: str
@@ -39,6 +44,8 @@ class PositionSnapshot:
     status: str
     closed_at: str | None = None
     opened_at: str | None = None
+    charges: float | None = None
+    net_pnl: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -65,6 +72,8 @@ class PositionSnapshot:
             status=position.status.name,
             closed_at=closed_at,
             opened_at=opened_at,
+            charges=getattr(position, "charges", None),
+            net_pnl=getattr(position, "net_pnl", None),
         )
 
 
@@ -77,7 +86,15 @@ class PortfolioOverview:
         initial_balance: Starting capital.
         current_equity: Cash + unrealized PnL.
         cash: Available cash.
-        total_realized_pnl: All closed position profits/losses.
+        total_realized_pnl: All closed position profits/losses, GROSS.
+        charges_paid: What the broker took, in rupees.
+        net_realized_pnl: total_realized_pnl minus charges_paid. THE FIGURE
+            TO DISPLAY - gross was on every screen until 2026-11-10, and on
+            125 closed positions charges came to 3.2x the gross profit.
+        gross_era_positions: Closed positions predating charge accounting,
+            which carry no charges and cannot be netted. For those, net
+            equals gross; that is a hole in the measurement, not a free
+            trade, so the count travels with the number.
         total_unrealized_pnl: All open position profits/losses.
         open_positions_count: Number of currently open positions.
         total_trades_count: All trades ever executed.
@@ -94,6 +111,9 @@ class PortfolioOverview:
     total_trades_count: int
     return_percentage: float
     last_updated: str
+    charges_paid: float = 0.0
+    net_realized_pnl: float = 0.0
+    gross_era_positions: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -131,6 +151,9 @@ class PortfolioOverview:
             total_trades_count=total_trades,
             return_percentage=return_pct,
             last_updated=datetime.now().isoformat(),
+            charges_paid=account.charges_paid,
+            net_realized_pnl=account.net_realized_pnl,
+            gross_era_positions=account.gross_era_closed,
         )
 
 

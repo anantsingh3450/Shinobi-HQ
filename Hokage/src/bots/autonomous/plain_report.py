@@ -75,9 +75,19 @@ def build_plain_report(
     """Compose the full plain-language report.
 
     Each dict in ``closed_trades`` should carry: symbol, entry_price,
-    exit_price, quantity, pnl, exit_reason, closed_at_label (optional).
+    exit_price, quantity, pnl, exit_reason, closed_at_label (optional),
+    charges and net_pnl (optional).
     ``open_trades``: symbol, entry_price, current_price, quantity,
     unrealized_pnl (optional).
+
+    WHAT REACHED THE ACCOUNT, NOT THE PRICE DIFFERENCE. `pnl` is gross. If
+    `charges` is present the sentence says what the broker took and what was
+    left, because on the lifetime record those charges are 3.2x the whole
+    gross profit - a report that says "made ₹500" about a trade that put
+    ₹448 in the account is telling him the wrong thing in plain English.
+    A missing `charges` means the trade was booked before charge accounting;
+    the report then says nothing about costs rather than implying there were
+    none.
     """
     lines: list[str] = []
     lines.append(f"📊 Hokage — how today went ({date_label})")
@@ -89,6 +99,8 @@ def build_plain_report(
 
     # ---- closed trades -------------------------------------------------
     total_pnl = 0.0
+    total_charges = 0.0
+    uncharged = 0
     winners = 0
     if closed_trades:
         lines.append(f"Trades finished today: {len(closed_trades)}")
@@ -97,8 +109,14 @@ def build_plain_report(
             entry = float(t.get("entry_price") or 0.0)
             exit_ = float(t.get("exit_price") or 0.0)
             qty = float(t.get("quantity") or 0.0)
-            pnl = float(t.get("pnl") or 0.0)
+            gross = float(t.get("pnl") or 0.0)
+            charges = t.get("charges")
+            charges = None if charges is None else float(charges)
+            pnl = gross if charges is None else round(gross - charges, 2)
             total_pnl += pnl
+            total_charges += charges or 0.0
+            if charges is None:
+                uncharged += 1
             if pnl > 0:
                 winners += 1
             what = humanize_instrument(str(t.get("symbol", "")))
@@ -109,9 +127,23 @@ def build_plain_report(
             )
             when = t.get("closed_at_label")
             when_str = f" around {when}" if when else ""
+            cost_str = ""
+            if charges:
+                # Spelled out, because this is the line that turns a winner
+                # into a loser often enough to matter.
+                if gross > 0:
+                    cost_str = (f" The price move was {_fmt_rupees(gross)} in our "
+                                f"favour and the broker took {_fmt_rupees(charges)} "
+                                f"of it.")
+                else:
+                    # The broker does not take a share of a loss, it adds to
+                    # one. "took X of it" reads as if the loss were smaller.
+                    cost_str = (f" The price move cost {_fmt_rupees(abs(gross))} "
+                                f"and the broker added {_fmt_rupees(charges)} "
+                                f"on top.")
             lines.append(
                 f"{i}. Hokage bought {what}. It paid ₹{entry:,.2f} per unit and sold at "
-                f"₹{exit_:,.2f}{when_str}. Because {why}, this trade {outcome}."
+                f"₹{exit_:,.2f}{when_str}. Because {why}, this trade {outcome}.{cost_str}"
             )
         lines.append("")
         net_word = "made" if total_pnl > 0 else ("lost" if total_pnl < 0 else "broke even")
@@ -120,7 +152,19 @@ def build_plain_report(
         else:
             lines.append(
                 f"Bottom line on finished trades: {winners} of {len(closed_trades)} made money, "
-                f"and together they {net_word} {_fmt_rupees(abs(total_pnl))} today."
+                f"and together they {net_word} {_fmt_rupees(abs(total_pnl))} today "
+                f"after costs."
+            )
+        if total_charges:
+            lines.append(
+                f"The broker was paid {_fmt_rupees(total_charges)} today. Every figure "
+                f"above already has that taken out."
+            )
+        if uncharged:
+            lines.append(
+                f"({uncharged} of these trades were booked before Hokage started "
+                f"counting broker costs, so for those the figure is the price move "
+                f"only — the costs were real, they were just never recorded.)"
             )
 
     # ---- still-open trades --------------------------------------------

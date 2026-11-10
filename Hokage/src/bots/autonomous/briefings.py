@@ -629,19 +629,34 @@ class BriefingGenerator:
         market_regime = risk_state.get("risk_on_off_status", "RISK-ON")
         vix_stress_delta = risk_state.get("vix_impact_delta", 0.0)
 
-        # Load transaction costs from tax ledger for today
+        # WHAT THE BROKER WAS ACTUALLY PAID TODAY.
+        #
+        # This used to sum the JSON tax ledger, which integrations/tax/
+        # mock_provider invents per fill and which has never been deducted
+        # from anything. The briefing then called the result "net realized
+        # P&L" - a figure computed from a simulated cost, printed beside a
+        # real one, with nothing saying which was which. The real schedule
+        # (bots/execution/charges.py, rates from zerodha.com/charges) comes
+        # out of cash at every option leg and rides on each exit record.
         total_transaction_costs = 0.0
-        try:
-            from integrations.tax.store import JsonTaxLedger
-            tax_dir = self.cache._resolver.resolve_tax_dir()
-            tax_ledger = JsonTaxLedger(tax_dir)
-            events = tax_ledger.load_all()
-            for ev in events:
-                ev_time = getattr(ev, "executed_at", None)
-                if ev_time and ev_time.strftime("%Y-%m-%d") == today_str:
-                    total_transaction_costs += ev.total_tax
-        except Exception as e:
-            logger.warning(f"Could not load transaction costs in daily briefing: {e}")
+        uncharged_exits = 0
+        for ex in report.exits_executed:
+            charge = ex.get("charges")
+            if charge is None:
+                uncharged_exits += 1
+            else:
+                total_transaction_costs += float(charge)
+        total_transaction_costs = round(total_transaction_costs, 2)
+        # None is not zero: an exit with no charge recorded is unmeasured,
+        # and saying so is the difference between a gap and a free trade.
+        uncharged_note = (
+            f" {uncharged_exits} of today's exits "
+            f"{'carries' if uncharged_exits == 1 else 'carry'} no charge record, "
+            f"so {'that cost' if uncharged_exits == 1 else 'those costs'} "
+            f"{'is' if uncharged_exits == 1 else 'are'} real but unmeasured and "
+            f"NOT in the net figure."
+            if uncharged_exits else ""
+        )
 
         # 7. Compile natural language briefing lines
         lines = [
@@ -649,7 +664,7 @@ class BriefingGenerator:
             "",
             "## Executive Summary",
             f"Hokage completed today's trading session operating strictly under **Shadow Mode** with zero real capital at risk. "
-            f"The session concluded with a gross realized P&L of **INR {report.realized_pnl:+,.2f}**, total transaction costs/friction of **INR {total_transaction_costs:,.2f}**, and net realized P&L of **INR {report.realized_pnl - total_transaction_costs:+,.2f}** (unrealized P&L: **INR {report.unrealized_pnl:+,.2f}**). "
+            f"The session concluded with a gross realized P&L of **INR {report.realized_pnl:+,.2f}**, total transaction costs/friction of **INR {total_transaction_costs:,.2f}**, and net realized P&L of **INR {report.realized_pnl - total_transaction_costs:+,.2f}** (unrealized P&L: **INR {report.unrealized_pnl:+,.2f}**).{uncharged_note} "
             f"Our daily execution win rate was **{report.win_rate:.2f}%** across completed exit orders.",
             "",
             "## 1. Actionable Intelligence Narrative",

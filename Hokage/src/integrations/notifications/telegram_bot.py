@@ -747,19 +747,37 @@ class TelegramBotUplink:
         strategy: str | None = None,
         pnl: float | None = None,
         context: Any | None = None,
+        charges: float | None = None,
     ) -> None:
         """Send a real-time exit notification.
 
         Carries the same strategy attribution as the entry, so a closed trade
         can be read back to its author without opening the dashboard.
         `context` behaves exactly as in notify_entry.
+
+        `pnl` is the GROSS price move; `charges` is what the broker took on
+        the round trip. When the charge is known the headline becomes the NET
+        figure, because that is what reached the account - on the lifetime
+        record charges are 3.2x the whole gross profit, which is enough to
+        turn a green exit into a red one. `charges=None` means the fill had
+        no charge accounting, and then the alert claims nothing about costs.
         """
         who = f"• *Strategy*: {self.escape_markdown(strategy)}\n" if strategy else ""
         # Sign OUTSIDE the currency symbol: "+₹2,720.00", never "₹+2,720.00".
+        net = pnl if (pnl is None or charges is None) else round(pnl - charges, 2)
         money = ""
-        if pnl is not None:
-            money = f"• *P&L*: {'+' if pnl >= 0 else '-'}₹{abs(pnl):,.2f}\n"
-        mark = "🟢" if (pnl or 0) > 0 else ("🔴" if pnl is not None else "🛑")
+        if net is not None:
+            money = f"• *P&L*: {'+' if net >= 0 else '-'}₹{abs(net):,.2f}"
+            if charges is not None:
+                # Parentheses are NOT control characters in legacy Markdown
+                # (the parse_mode this bot sends), so escaping them would
+                # print a literal backslash to him. Only _ * ` [ matter here.
+                money += (f" net of ₹{charges:,.2f} charges "
+                          f"(gross {'+' if pnl >= 0 else '-'}₹{abs(pnl):,.2f})")
+            money += "\n"
+        # THE MARK FOLLOWS THE NET FIGURE. A trade whose price move was
+        # positive but whose charges ate it is not a green exit.
+        mark = "🟢" if (net or 0) > 0 else ("🔴" if net is not None else "🛑")
         msg = (
             f"{mark} *EXIT · {self.escape_markdown(self._instrument_line(symbol))}*\n"
             f"{who}"

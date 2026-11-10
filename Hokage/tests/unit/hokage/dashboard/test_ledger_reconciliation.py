@@ -19,8 +19,11 @@ from bots.execution.models import TradeStatus
 
 
 def _settled(account: Account) -> float:
-    """The comparison the dashboard now makes: starting + realised."""
-    return float(account.initial_balance) + float(account.realized_pnl)
+    """The comparison the dashboard makes: starting + realised, NET of the
+    broker since 2026-11-10. The chests subtract charges too; had only one
+    side been netted this panel would have reported the broker's cut as
+    drift every week and taught its reader to ignore the warning."""
+    return float(account.initial_balance) + float(account.net_realized_pnl)
 
 
 def _account_with_open_mark(unrealized: float) -> Account:
@@ -70,3 +73,46 @@ def test_a_genuinely_unbooked_exit_still_shows_as_drift():
 
     assert drift == pytest.approx(-1_959.75)
     assert abs(drift) >= 1.0  # ok would be False, correctly
+
+
+def test_charges_are_not_drift():
+    """Both sides net. A chest that has correctly subtracted the broker's
+    cut must reconcile, or the panel cries wolf on every charged trade."""
+    acct = Account(account_id="paper_mcx", initial_balance=100_000.0,
+                   cash=100_000.0)
+    acct.realized_pnl = -1_000.0
+    pos = Position(
+        position_id="p1", market="NATURALGAS26NOV285PE",
+        direction="LONG", quantity=1250.0, entry_price=14.70,
+        current_price=13.90, status=TradeStatus.CLOSED,
+    )
+    pos.realized_pnl = -1_000.0
+    pos.charges = 74.11
+    acct.positions["p1"] = pos
+    acct.cash = 100_000.0 - 1_074.11
+
+    # What get_capital_report now produces: starting + gross - charges.
+    chest_total = 100_000.0 + (-1_000.0) - 74.11
+    assert round(chest_total - _settled(acct), 2) == pytest.approx(0.0)
+
+
+def test_an_unbooked_charge_is_still_drift():
+    """Netting must not make the check blind. A chest that books the price
+    difference and forgets the broker is exactly the old defect, and it has
+    to show."""
+    acct = Account(account_id="paper_mcx", initial_balance=100_000.0,
+                   cash=100_000.0 - 1_074.11)
+    acct.realized_pnl = -1_000.0
+    pos = Position(
+        position_id="p1", market="NATURALGAS26NOV285PE",
+        direction="LONG", quantity=1250.0, entry_price=14.70,
+        current_price=13.90, status=TradeStatus.CLOSED,
+    )
+    pos.realized_pnl = -1_000.0
+    pos.charges = 74.11
+    acct.positions["p1"] = pos
+
+    gross_chest_total = 100_000.0 + (-1_000.0)   # the broker forgotten
+    drift = round(gross_chest_total - _settled(acct), 2)
+    assert drift == pytest.approx(74.11)
+    assert abs(drift) >= 1.0

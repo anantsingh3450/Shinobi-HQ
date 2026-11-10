@@ -6,7 +6,7 @@ portfolio-level operations used by higher-level workflow orchestrators.
 from __future__ import annotations
 
 from bots.execution.models import TradeRecord
-from bots.portfolio.models import Account
+from bots.portfolio.models import Account, TradeApplication
 
 
 class PortfolioBot:
@@ -24,15 +24,20 @@ class PortfolioBot:
         """
         self._account = account
 
-    def apply_trade(self, trade: TradeRecord) -> None:
+    def apply_trade(self, trade: TradeRecord) -> TradeApplication:
         """Apply a trade to the account.
 
         Delegates the trade application logic to ``Account.apply_trade()``.
 
         Args:
             trade: The trade record to apply to the account.
+
+        Returns:
+            What the account did with it: the order's charges and the
+            positions it closed, so the caller books the same numbers rather
+            than recomputing them from its own prices.
         """
-        self._account.apply_trade(trade)
+        return self._account.apply_trade(trade)
 
     def equity(self) -> float:
         """Return the current account equity.

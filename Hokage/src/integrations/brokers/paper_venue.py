@@ -243,7 +243,7 @@ class PaperVenue(BaseVenue):
         self._tax_ledger.record_event(tax_event)
 
         portfolio_bot = PortfolioBot(account)
-        portfolio_bot.apply_trade(trade)
+        applied = portfolio_bot.apply_trade(trade)
         self._portfolio_store.save_account(account)
 
         # 6. Map results to standard OrderResponse
@@ -256,7 +256,19 @@ class PaperVenue(BaseVenue):
             quantity=trade.quantity,
             filled_quantity=trade.quantity,
             average_price=trade.entry_price,
-            metadata={"trade_record": trade.to_dict(), "tax_event_total": tax_event.total_tax}
+            metadata={
+                "trade_record": trade.to_dict(),
+                "tax_event_total": tax_event.total_tax,
+                # WHAT THE BROKER TOOK, carried to whoever books this fill.
+                # `order_charges` is this leg; `closed_charges` is the whole
+                # round trip on the positions this order CLOSED, which is the
+                # figure a war chest has to subtract to agree with cash. None
+                # there means unknown (a part-close, or a position opened
+                # before charge accounting) and must not be read as zero.
+                "order_charges": applied.order_charges,
+                "closed_charges": applied.closed_charges,
+                "closed_gross_pnl": applied.closed_gross_pnl,
+            }
         )
 
     def cancel_order(self, venue_order_id: str) -> bool:

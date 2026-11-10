@@ -3962,6 +3962,12 @@ class AutonomousTradingBot:
                     "exit_price": pos.current_price,
                     "quantity": pos.quantity,
                     "pnl": pos.realized_pnl,
+                    # The broker's cut, so the report can say what actually
+                    # reached the account instead of the price difference.
+                    # None means this position was closed before charge
+                    # accounting and has no net figure.
+                    "charges": getattr(pos, "charges", None),
+                    "net_pnl": getattr(pos, "net_pnl", None),
                     "exit_reason": reason_by_symbol.get(str(pos.market).upper()) or getattr(pos, "failure_reason", None),
                     "closed_at_label": ist.strftime("%I:%M %p"),
                 })
@@ -5501,12 +5507,35 @@ class AutonomousTradingBot:
                         )
                     live_pnl = round((fill_price - pos.average_price) * pos.quantity * _pnl_sign, 2)
 
+                    # WHAT THE BROKER TOOK ON THIS ROUND TRIP, read from the
+                    # venue that booked it rather than recomputed here. Same
+                    # reasoning as the fill price above: two places computing
+                    # one number is how the chest and the account came to
+                    # disagree by 6.50 an exit, and charges are the same
+                    # defect an order of magnitude larger.
+                    #
+                    # None means the venue does no charge accounting (live
+                    # Kite) or the position was part-closed. It is subtracted
+                    # from the war chest, never from the stats - see
+                    # record_trade_outcome.
+                    _resp_meta = getattr(resp, "metadata", None) or {}
+                    _closed_charges = _resp_meta.get("closed_charges")
+                    round_trip_charges = (
+                        None if _closed_charges is None else float(_closed_charges)
+                    )
+
                     exit_record = {
                         "symbol":     symbol,
                         "side":       exit_side.value,
                         "quantity":   pos.quantity,
                         "reason":     exit_reason,
                         "pnl":        live_pnl,
+                        # Gross above, the broker's cut and the net beside it.
+                        # `net_pnl` is None when the charge is unknown, so a
+                        # reader cannot mistake "not measured" for "free".
+                        "charges":    round_trip_charges,
+                        "net_pnl":    (None if round_trip_charges is None
+                                       else round(live_pnl - round_trip_charges, 2)),
                         "timestamp":  datetime.now(timezone.utc).isoformat(),
                     }
                     self._exits_executed_today.append(exit_record)
@@ -5523,6 +5552,7 @@ class AutonomousTradingBot:
                                 symbol, price=current_price, reason=exit_reason,
                                 strategy=self._strategy_display_name(tracking.get("strategy_id")),
                                 pnl=live_pnl,
+                                charges=round_trip_charges,
                                 context=self._trade_context(
                                     symbol, tracking, side="exit",
                                     exit_price=current_price,
@@ -5680,7 +5710,8 @@ class AutonomousTradingBot:
                             asset=outcome_asset,
                             is_win=is_win,
                             pnl=live_pnl,
-                            market_regime=regime_str
+                            market_regime=regime_str,
+                            charges=round_trip_charges,
                         )
 
                     # Arm the same-day re-entry cooldown for this underlying:

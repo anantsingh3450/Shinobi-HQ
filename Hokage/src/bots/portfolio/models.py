@@ -183,6 +183,61 @@ class EquitySnapshot:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ClosedLeg:
+    """One position an order closed, and what it cost to have held it.
+
+    `charges` is the WHOLE ROUND TRIP on that position - the entry leg's
+    share plus the exit leg's - because that is the number the strategy's war
+    chest has to book if the chest is to agree with cash. None means the
+    position was opened before charge accounting and has no round-trip cost
+    to report; it is not zero.
+    """
+
+    position_id: str
+    realized_pnl: float
+    charges: float | None
+
+    @property
+    def net_pnl(self) -> float | None:
+        if self.charges is None:
+            return None
+        return round(self.realized_pnl - self.charges, 6)
+
+
+@dataclass(frozen=True, slots=True)
+class TradeApplication:
+    """What `apply_trade` did, so callers downstream can book the same
+    numbers instead of recomputing them.
+
+    THIS EXISTS BECAUSE ONE LEDGER KEPT TWO ANSWERS. On 2026-07-30 the war
+    chest credited a NIFTY exit -1,043.25 while the account booked -1,036.75,
+    and the fix was to make the chest read the venue's fill price rather than
+    the decision quote. Charges are the same defect an order of magnitude
+    larger: cash moves by them, the chest did not, so the chest would drift
+    UPWARD on every trade and size the next order on money the account does
+    not hold.
+    """
+
+    order_charges: float
+    closed: tuple[ClosedLeg, ...] = ()
+
+    @property
+    def closed_charges(self) -> float | None:
+        """Round-trip charges across the positions this order closed, or
+        None when any of them predates charge accounting - a partial sum
+        would understate the cost and read as if it were complete."""
+        if not self.closed:
+            return None
+        if any(leg.charges is None for leg in self.closed):
+            return None
+        return round(sum(leg.charges for leg in self.closed), 6)
+
+    @property
+    def closed_gross_pnl(self) -> float:
+        return round(sum(leg.realized_pnl for leg in self.closed), 6)
+
+
 @dataclass(slots=True)
 class Account:
     """Tracks balances, open positions, equity history, and executes trade adjustments.
@@ -216,6 +271,33 @@ class Account:
         """
         return round(sum(p.charges for p in self.positions.values()
                          if p.charges is not None), 6)
+
+    @property
+    def net_realized_pnl(self) -> float:
+        """Realized P&L with the broker's cut taken out, in rupees.
+
+        THE FIGURE EVERY DISPLAY SHOULD BE SHOWING. `realized_pnl` is gross
+        and stays gross so the pre/post-2026-11-09 eras remain comparable on
+        one number; that made it the wrong number to put on a screen, and it
+        was on every screen. Across 125 closed positions charges came to 3.2x
+        the entire gross profit (PF 1.03 gross, 0.94 net), so "gross" is not
+        a rounding difference here - it is the sign.
+
+        Positions from before charge accounting contribute nothing to
+        `charges_paid`, so for them this equals the gross figure. That is
+        correct and it is NOT the same as saying they were free: use
+        `gross_era_closed` to say how many rows cannot be netted.
+        """
+        return round(self.realized_pnl - self.charges_paid, 6)
+
+    @property
+    def gross_era_closed(self) -> int:
+        """Closed positions that predate charge accounting, so carry no
+        charges and can never be netted. Displays that show a net total
+        must be able to name this count rather than implying the whole
+        history was measured net."""
+        return sum(1 for p in self.positions.values()
+                   if p.status == TradeStatus.CLOSED and p.charges is None)
 
     @property
     def equity(self) -> float:
@@ -257,7 +339,7 @@ class Account:
         return charge_schedule.option_leg(
             turnover, instrument.root, side).total
 
-    def apply_trade(self, trade: TradeRecord) -> None:
+    def apply_trade(self, trade: TradeRecord) -> TradeApplication:
         """Apply a TradeRecord, matching opposite positions under FIFO order.
 
         Since 2026-11-09 the broker is paid here too: one order's charges come
@@ -265,10 +347,17 @@ class Account:
         pro rata by quantity. Cash is therefore net; `realized_pnl` on a
         position stays the price difference, and `net_pnl` is the honest
         trade-level figure.
+
+        RETURNS what it did. Callers used to ignore the return (it was None)
+        and recompute P&L from their own prices, which is how the war chest
+        and the account came to hold different numbers for the same exit.
+        The chest now books from this.
         """
         market = trade.market
         leg_cost = self._leg_charges(trade)
         touched: list[tuple[Position, float]] = []
+        fully_closed: list[Position] = []
+        partials: list[tuple[str, float]] = []
 
         # Find all open positions in this market that have an opposite direction
         opposite_positions = [
@@ -292,6 +381,7 @@ class Account:
                 self.realized_pnl += pos.realized_pnl
                 self.cash = round(self.cash + pos.realized_pnl, 6)
                 touched.append((pos, closed_qty))
+                fully_closed.append(pos)
                 remaining_qty = round(remaining_qty - closed_qty, 6)
             else:
                 # Partially close this position
@@ -318,6 +408,11 @@ class Account:
                 updated_pos.update_price(trade.entry_price)
                 self.positions[pos.position_id] = updated_pos
                 touched.append((updated_pos, remaining_qty))
+                # A PART-CLOSE HAS NO ROUND TRIP TO REPORT. The position is
+                # still open and still accruing charges, so the cost of the
+                # slice just sold cannot be separated from the slice still
+                # held. Recorded with charges None - unknown, not zero.
+                partials.append((updated_pos.position_id, realized))
                 remaining_qty = 0.0
 
         # If there is remaining quantity, open a new position
@@ -360,6 +455,14 @@ class Account:
                         allocated = round(allocated + share, 6)
                     pos.add_charges(share)
 
+        # Built AFTER the allocation above, so a closed leg reports the
+        # round trip including this exit's own share and not just the entry's.
+        legs = [ClosedLeg(p.position_id, p.realized_pnl, p.charges)
+                for p in fully_closed]
+        legs.extend(ClosedLeg(pid, realized, None) for pid, realized in partials)
+        return TradeApplication(order_charges=round(leg_cost, 6),
+                                closed=tuple(legs))
+
     def to_dict(self) -> dict:
         """Serialize account to a JSON-compatible dictionary."""
         return {
@@ -369,6 +472,8 @@ class Account:
             "currency": self.currency,
             "realized_pnl": self.realized_pnl,
             "charges_paid": self.charges_paid,   # derived; read-only
+            "net_realized_pnl": self.net_realized_pnl,  # derived; read-only
+            "gross_era_closed": self.gross_era_closed,  # derived; read-only
             "positions": {pid: pos.to_dict() for pid, pos in self.positions.items()},
             "equity_history": [snap.to_dict() for snap in self.equity_history],
         }

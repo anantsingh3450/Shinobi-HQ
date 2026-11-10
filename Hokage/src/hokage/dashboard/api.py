@@ -642,13 +642,32 @@ def create_dashboard_api(
                     else:
                         other_charges += amount
 
+            # TWO CHARGE NUMBERS LIVED HERE AND THE SIMULATED ONE WON.
+            #
+            # `total_charges` above is the sum of the JSON tax ledger, which
+            # integrations/tax/mock_provider invents per fill and which has
+            # never been deducted from anything. The real schedule shipped
+            # 2026-11-09 (bots/execution/charges.py, rates from
+            # zerodha.com/charges) and comes out of cash on every option
+            # leg. This panel was computing "Net P&L (After Tax & Charges)"
+            # from the invented one while the real one sat unread on the
+            # account - a fabricated figure displayed beside a measured one,
+            # with nothing on screen saying which was which.
+            #
+            # The net figure below is now built from what the account
+            # actually paid. The simulated total is still returned, labelled,
+            # so the two can be compared instead of confused.
+            actual_charges = float(getattr(account, "charges_paid", 0.0) or 0.0)
+            net_realized_pnl = float(getattr(account, "net_realized_pnl", realized_pnl))
+            simulated_total_charges = round(total_charges, 2)
+
             # Short-Term Capital Gains (STCG) vs Long-Term (LTCG)
             stcg = max(0.0, realized_pnl)
             ltcg = 0.0
-            
+
             # Under Indian Tax laws, STCG is taxed at 15% flat for equity
             estimated_tax = round(stcg * 0.15, 2)
-            net_profit_after_tax = round(realized_pnl - total_charges - estimated_tax, 2)
+            net_profit_after_tax = round(net_realized_pnl - estimated_tax, 2)
             
             # Other simulated incomes
             dividend_income = 0.0
@@ -675,16 +694,24 @@ def create_dashboard_api(
                 "stcg": stcg,
                 "ltcg": ltcg,
                 "realized_pnl": realized_pnl,
+                "net_realized_pnl": net_realized_pnl,
+                "gross_era_positions": int(getattr(account, "gross_era_closed", 0)),
                 "unrealized_pnl": sum(p.unrealized_pnl for p in account.positions.values() if hasattr(p, "unrealized_pnl")),
                 "estimated_tax": estimated_tax,
                 "net_profit_after_tax": net_profit_after_tax,
+                # The simulated breakdown, kept because it is the only
+                # component-level detail that exists; it does NOT sum to
+                # total_charges and is not what cash paid.
                 "brokerage": brokerage,
                 "gst": gst,
                 "stt": stt,
                 "stamp_duty": stamp_duty,
                 "exchange_charges": exchange_charges,
                 "sebi_charges": sebi_charges,
-                "total_charges": total_charges,
+                "components_are_simulated": True,
+                "simulated_total_charges": simulated_total_charges,
+                # What the broker was actually paid out of cash.
+                "total_charges": round(actual_charges, 2),
                 "dividend_income": dividend_income,
                 "interest_income": interest_income,
                 "tax_ledger": tax_ledger_data[:20],  # Limit to 20 events
@@ -1742,7 +1769,15 @@ def create_dashboard_api(
             return jsonify({
                 "equity": overview.current_equity,
                 "cash": overview.cash,
+                # `realized_pnl` IS GROSS and is kept only so the two
+                # accounting eras stay comparable on one number. Displays
+                # must read `net_realized_pnl`; `gross_era_positions` says
+                # how many closed rows have no charge to subtract, so the
+                # net total can never silently claim to cover all of them.
                 "realized_pnl": overview.total_realized_pnl,
+                "net_realized_pnl": overview.net_realized_pnl,
+                "charges_paid": overview.charges_paid,
+                "gross_era_positions": overview.gross_era_positions,
                 "unrealized_pnl": overview.total_unrealized_pnl,
                 "open_positions_count": len(open_positions),
                 "status": status_info,
@@ -2096,12 +2131,21 @@ def create_dashboard_api(
             # reported phantom drift (₹100.75 on 2026-07-30) — and worse, real
             # drift would have been indistinguishable from mark-to-market noise,
             # blinding the very check built for the 2026-07-16 unbooked exits.
-            account_settled = float(account.initial_balance) + float(account.realized_pnl)
+            #
+            # BOTH SIDES ARE NET SINCE 2026-11-10. The chests now subtract the
+            # broker's cut (get_capital_report) and so does this, because cash
+            # has been net since charge accounting shipped. Had only one side
+            # been netted, this panel would have reported the charges as drift
+            # every week and taught its own reader to ignore it.
+            account_settled = float(account.initial_balance) + float(account.net_realized_pnl)
             drift = round(chest_total - account_settled, 2)
             payload["ledger_reconciliation"] = {
                 "chest_total": round(chest_total, 2),
                 "account_settled": round(account_settled, 2),
                 "account_equity": round(float(account.equity), 2),
+                "account_charges_paid": round(float(account.charges_paid), 2),
+                "account_gross_realized": round(float(account.realized_pnl), 2),
+                "gross_era_positions": int(account.gross_era_closed),
                 "open_mark_to_market": round(float(account.equity) - float(account.cash), 2),
                 "drift": drift,
                 "ok": abs(drift) < 1.0,
@@ -2210,7 +2254,12 @@ def create_dashboard_api(
                     "quantity": pos.quantity,
                     "entry_price": pos.entry_price,
                     "exit_price": pos.current_price,
+                    # Gross, then the broker's cut, then the net. `net_pnl`
+                    # is None for the 417 positions closed before charge
+                    # accounting: unmeasured, not free.
                     "pnl": pos.realized_pnl,
+                    "charges": getattr(pos, "charges", None),
+                    "net_pnl": getattr(pos, "net_pnl", None),
                     "closed_at": pos.closed_at.isoformat() if pos.closed_at else None,
                     "reason": None,
                 })
@@ -2353,15 +2402,17 @@ def create_dashboard_api(
             )
             account = orchestrator.portfolio_store.load_account("paper_mcx")
             # Same like-with-like rule as the index arena above: starting +
-            # realized on both sides, never mark-to-market equity. The MCX
-            # ledger has simply not opened a position yet, so this arena had
-            # not yet had the chance to report phantom drift.
-            account_settled = float(account.initial_balance) + float(account.realized_pnl)
+            # realized on both sides, never mark-to-market equity, and NET on
+            # both sides since 2026-11-10 because cash is net of the broker.
+            account_settled = float(account.initial_balance) + float(account.net_realized_pnl)
             drift = round(chest_total - account_settled, 2)
             payload["ledger_reconciliation"] = {
                 "chest_total": round(chest_total, 2),
                 "account_settled": round(account_settled, 2),
                 "account_equity": round(float(account.equity), 2),
+                "account_charges_paid": round(float(account.charges_paid), 2),
+                "account_gross_realized": round(float(account.realized_pnl), 2),
+                "gross_era_positions": int(account.gross_era_closed),
                 "open_mark_to_market": round(float(account.equity) - float(account.cash), 2),
                 "drift": drift,
                 "ok": abs(drift) < 1.0,
@@ -2438,7 +2489,12 @@ def create_dashboard_api(
                     "symbol": pos.market,
                     "side": "BUY" if getattr(pos.direction, "value", str(pos.direction)) == "LONG" else "SELL",
                     "quantity": pos.quantity, "entry_price": pos.entry_price, "exit_price": pos.current_price,
+                    # Gross, then the broker's cut, then the net. `net_pnl`
+                    # is None for the 417 positions closed before charge
+                    # accounting: unmeasured, not free.
                     "pnl": pos.realized_pnl,
+                    "charges": getattr(pos, "charges", None),
+                    "net_pnl": getattr(pos, "net_pnl", None),
                     "closed_at": pos.closed_at.isoformat() if pos.closed_at else None,
                     "reason": None,
                 })
@@ -3913,8 +3969,15 @@ def create_dashboard_api(
                         else:
                             playbook_id = "SCARECROW_EMA"
                     
-                    pnl = row["realized_pnl"] + row["unrealized_pnl"]
-                    
+                    # `net_pnl` BELOW WAS A GROSS SUM UNDER A NET NAME, the
+                    # same defect as the chat tool's today-summary. The
+                    # broker's cut is subtracted here so the key means what
+                    # it says, and the rows with no charge recorded are
+                    # counted rather than passing as free trades.
+                    gross = row["realized_pnl"] + row["unrealized_pnl"]
+                    charge = row["charges"] if "charges" in row.keys() else None
+                    pnl = gross if charge is None else gross - charge
+
                     if playbook_id not in playbook_data:
                         playbook_data[playbook_id] = {
                             "playbook_id": playbook_id,
@@ -3922,10 +3985,18 @@ def create_dashboard_api(
                             "wins": 0,
                             "losses": 0,
                             "net_pnl": 0.0,
+                            "gross_pnl": 0.0,
+                            "charges_paid": 0.0,
+                            "uncharged_trades": 0,
                         }
                     
                     playbook_data[playbook_id]["trades"].append(pnl)
                     playbook_data[playbook_id]["net_pnl"] += pnl
+                    playbook_data[playbook_id]["gross_pnl"] += gross
+                    if charge is None:
+                        playbook_data[playbook_id]["uncharged_trades"] += 1
+                    else:
+                        playbook_data[playbook_id]["charges_paid"] += charge
                     if pnl > 0:
                         playbook_data[playbook_id]["wins"] += 1
                     elif pnl < 0:
@@ -3956,6 +4027,9 @@ def create_dashboard_api(
                     "win_loss_ratio": round(win_loss_ratio, 2),
                     "win_rate_pct": round(win_rate, 2),
                     "net_pnl": round(pdata["net_pnl"], 2),
+                    "gross_pnl": round(pdata["gross_pnl"], 2),
+                    "charges_paid": round(pdata["charges_paid"], 2),
+                    "uncharged_trades": pdata["uncharged_trades"],
                     "max_drawdown": round(max_dd, 2),
                     "total_trades": total
                 })

@@ -106,26 +106,37 @@ async function load() {
   const inr = v => "₹" + Number(v || 0).toLocaleString("en-IN", {maximumFractionDigits: 0});
   const chests = d.war_chests || [];
   const totalStart = chests.reduce((a, c) => a + Number(c.starting_capital || 0), 0);
+  // c.realized_pnl is NET of the broker since 2026-11-10 (get_capital_report).
+  // Gross and charges are carried separately so neither is hidden behind it.
   const totalPnl = chests.reduce((a, c) => a + Number(c.realized_pnl || 0), 0);
+  const totalGross = chests.reduce((a, c) => a + Number(c.gross_realized_pnl || 0), 0);
+  const totalCharges = chests.reduce((a, c) => a + Number(c.charges_paid || 0), 0);
+  const uncharged = chests.reduce((a, c) => a + Number(c.trades_without_charges || 0), 0);
   const totalAvail = chests.reduce((a, c) => a + Number(c.available || 0), 0);
   const pnlCls = totalPnl > 0 ? "ok" : totalPnl < 0 ? "bad" : "dim";
   const rec = d.ledger_reconciliation || {};
+  // IT RECONCILES AGAINST account_settled, SO IT MUST PRINT THAT. This said
+  // "chests = account <equity>" while comparing against settled cash, so with
+  // a position open the tick appeared beside a number that was not the one
+  // checked. Both sides are net of charges.
   const recHtml = rec.ok === true
-    ? ` · <span class="ok">✓ ledger reconciled (chests = account ${inr(rec.account_equity)})</span>`
+    ? ` · <span class="ok">✓ ledger reconciled, net (chests = account ${inr(rec.account_settled)})</span>`
     : rec.ok === false
-      ? ` · <span class="bad">⚠ LEDGER DRIFT: chests ${inr(rec.chest_total)} vs account ${inr(rec.account_equity)} (${inr(rec.drift)})</span>`
+      ? ` · <span class="bad">⚠ LEDGER DRIFT: chests ${inr(rec.chest_total)} vs account settled ${inr(rec.account_settled)} (${inr(rec.drift)})</span>`
       : "";
   document.getElementById("chest-total").innerHTML = chests.length
-    ? `Total war chest: <b>${inr(totalStart)}</b> <span class="dim">(PAPER money — ${chests.length} strategies × ${inr(chests[0].starting_capital)})</span> · Combined realized P&L: <span class="${pnlCls}">${inr(totalPnl)}</span> · Available: <b>${inr(totalAvail)}</b>${recHtml}`
+    ? `Total war chest: <b>${inr(totalStart)}</b> <span class="dim">(PAPER money — ${chests.length} strategies × ${inr(chests[0].starting_capital)})</span> · Combined realized P&L <span class="dim">(net)</span>: <span class="${pnlCls}">${inr(totalPnl)}</span> <span class="dim">(gross ${inr(totalGross)} − charges ${inr(totalCharges)}${uncharged ? `; ${uncharged} fill${uncharged === 1 ? "" : "s"} never charged` : ""})</span> · Available: <b>${inr(totalAvail)}</b>${recHtml}`
     : "";
   document.getElementById("chests").innerHTML = chests.length
-    ? `<table><tr><th>Strategy</th><th>Status</th><th>Starting</th><th>Deployed</th><th>Realized P&L</th><th>Available</th></tr>` +
+    ? `<table><tr><th>Strategy</th><th>Status</th><th>Starting</th><th>Deployed</th><th>Gross P&L</th><th>Charges</th><th>Realized P&L (net)</th><th>Available</th></tr>` +
       chests.map(c => {
         const pnlCls = c.realized_pnl > 0 ? "ok" : c.realized_pnl < 0 ? "bad" : "dim";
         const availCls = c.available <= 0 ? "bad" : c.deployed > 0 ? "warn" : "ok";
         return `<tr><td>${c.name}</td><td>${badge(c.status)}</td><td>${inr(c.starting_capital)}</td>
           <td>${c.deployed > 0 ? inr(c.deployed) : '<span class="dim">idle</span>'}</td>
-          <td class="${pnlCls}">${inr(c.realized_pnl)}</td>
+          <td class="dim">${inr(c.gross_realized_pnl)}</td>
+          <td class="${Number(c.charges_paid || 0) > 0 ? "bad" : "dim"}">${Number(c.charges_paid || 0) > 0 ? "−" + inr(c.charges_paid) : "—"}</td>
+          <td class="${pnlCls}">${inr(c.realized_pnl)}${Number(c.trades_without_charges || 0) > 0 ? ` <span class="dim" title="${c.trades_without_charges} fill(s) booked with no charge accounting; for those net is gross">*</span>` : ""}</td>
           <td class="${availCls}">${inr(c.available)}</td></tr>`;
       }).join("") + "</table>"
     : '<span class="dim">war chests unavailable</span>';
@@ -201,8 +212,8 @@ async function load() {
 
   const closed = d.closed_trades || [];
   document.getElementById("closed-trades").innerHTML = closed.length
-    ? `<table><tr><th>Book</th><th>Strategy</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Closed</th><th>Reason</th></tr>` +
-      closed.map(t => `<tr><td>${bookBadge(t.book)}</td><td>${fmt(t.strategy)}</td><td>${fmt(t.symbol)}</td><td>${fmt(t.side)}</td><td>${num(t.quantity)}</td><td>${num(t.entry_price)}</td><td>${num(t.exit_price)}</td>${pnlCell(t.pnl)}<td>${istTime(t.closed_at)}</td><td>${fmt(t.reason)}</td></tr>`).join("") + "</table>"
+    ? `<table><tr><th>Book</th><th>Strategy</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Exit</th><th>Gross P&L</th><th>Charges</th><th>Net P&L</th><th>Closed</th><th>Reason</th></tr>` +
+      closed.map(t => `<tr><td>${bookBadge(t.book)}</td><td>${fmt(t.strategy)}</td><td>${fmt(t.symbol)}</td><td>${fmt(t.side)}</td><td>${num(t.quantity)}</td><td>${num(t.entry_price)}</td><td>${num(t.exit_price)}</td>${pnlCell(t.pnl)}<td class="dim">${t.charges == null ? "—" : "−" + num(t.charges)}</td>${t.net_pnl == null ? '<td class="dim" title="closed before charge accounting; no net figure exists">—</td>' : pnlCell(t.net_pnl)}<td>${istTime(t.closed_at)}</td><td>${fmt(t.reason)}</td></tr>`).join("") + "</table>"
     : '<span class="dim">no closed trades yet</span>';
 
   const refusals = d.no_trade_today || [];

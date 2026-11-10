@@ -761,7 +761,14 @@ class CommandRouter:
             account = self.orchestrator.portfolio_store.load_account("paper")
             cash = account.cash
             initial = account.initial_balance
-            realized = account.realized_pnl
+            # NET, because `cash` two lines up has been net of the broker
+            # since 2026-11-09 and the gross figure described an account
+            # that does not exist. The gross total and the charges are
+            # printed under it so the change is auditable from the output.
+            realized = account.net_realized_pnl
+            gross_realized = account.realized_pnl
+            charges_paid = account.charges_paid
+            gross_era = account.gross_era_closed
             open_positions = [p for p in account.positions.values() if p.status.name == "OPEN"]
             unrealized = sum(p.unrealized_pnl for p in open_positions)
             equity = cash + sum(p.quantity * p.current_price for p in open_positions)
@@ -773,7 +780,11 @@ class CommandRouter:
             f"Account ID:         {account.account_id}",
             f"Initial Balance:    {format_inr(initial)}",
             f"Current Cash:       {format_inr(cash)}",
-            f"Realized P&L:       {format_inr(realized)}",
+            f"Realized P&L:       {format_inr(realized)}  (net of charges)",
+            f"  gross:            {format_inr(gross_realized)}",
+            f"  charges paid:     {format_inr(charges_paid)}",
+            *([f"  unmeasured:       {gross_era} closed positions predate charge accounting"]
+              if gross_era else []),
             f"Unrealized P&L:     {format_inr(unrealized)}",
             f"Total Equity:       {format_inr(equity)}",
             f"Open Positions:     {len(open_positions)}",

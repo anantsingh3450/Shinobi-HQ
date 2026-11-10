@@ -89,3 +89,53 @@ def test_unknown_id_falls_back_to_the_id_rather_than_inventing_a_name():
 
 def test_no_strategy_id_yields_no_attribution():
     assert _NAME(_bot_with({}), None) is None
+
+
+# ======================= the alert reports what reached the account
+def test_the_exit_alert_headline_is_net_of_charges():
+    """The number in the alert was the price move. On the lifetime record
+    the broker's cut is 3.2x the whole gross profit, so a per-trade alert
+    quoting gross is quoting the wrong number to the only person reading."""
+    up = _uplink()
+    up.notify_exit(symbol="NATURALGAS26NOV285PE", price=13.90,
+                   reason="STOP_LOSS", strategy="TrendRider",
+                   pnl=-1000.0, charges=74.11)
+    body = up.send_message.call_args[0][0]
+    assert "-₹1,074.11" in body
+    assert "net of ₹74.11 charges" in body
+    assert "gross -₹1,000.00" in body
+
+
+def test_a_gross_winner_eaten_by_charges_is_not_a_green_exit():
+    """The mark is the thing he reads first. A trade that moved 50 in our
+    favour and cost 74 is red, and the emoji has to agree with the money."""
+    up = _uplink()
+    up.notify_exit(symbol="NATURALGAS26NOV285PE", price=14.74,
+                   reason="TARGET_HIT", strategy="TrendRider",
+                   pnl=50.0, charges=74.11)
+    body = up.send_message.call_args[0][0]
+    assert body.startswith("🔴")
+    assert "-₹24.11" in body
+
+
+def test_an_alert_with_no_charge_accounting_claims_nothing_about_costs():
+    """None is unknown, not free. The old call sites and the live venue pass
+    nothing, and the alert must read exactly as it did before."""
+    up = _uplink()
+    up.notify_exit(symbol="SENSEX2681378300PE", price=449.75,
+                   reason="TIERED_PREMIUM_BACKSTOP", pnl=-1301.0)
+    body = up.send_message.call_args[0][0]
+    assert "-₹1,301.00" in body
+    assert "charges" not in body
+
+
+def test_the_net_line_carries_no_stray_backslash():
+    """Legacy Markdown — the parse_mode this bot sends — does not treat
+    parentheses as control characters, so escaping them prints the backslash
+    to him instead of hiding it."""
+    up = _uplink()
+    up.notify_exit(symbol="NATURALGAS26NOV285PE", price=13.90,
+                   reason="STOP_LOSS", pnl=-1000.0, charges=74.11)
+    body = up.send_message.call_args[0][0]
+    assert r"\(" not in body and r"\)" not in body
+    assert "(gross -₹1,000.00)" in body

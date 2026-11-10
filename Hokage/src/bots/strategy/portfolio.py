@@ -375,11 +375,20 @@ class StrategyPortfolioManager:
         asset: str,
         is_win: bool,
         pnl: float,
-        market_regime: str = "BULL"
+        market_regime: str = "BULL",
+        charges: float | None = None,
     ) -> None:
         """Gradually update strategy domain confidence, win rate, and expectancy using evidence.
-        
+
         Confidence evolves gradually; isolated wins or losses never cause huge spikes or drops.
+
+        `pnl` is GROSS - the price difference, which is what every stat below
+        has always been measured on and must stay measured on, or this week's
+        expectancy stops being comparable with last week's with nothing
+        saying so. `charges` is the round trip the broker took on the same
+        trade, and it is subtracted from the WAR CHEST only, because the
+        chest is money and the stats are edge. None means unknown (no charge
+        accounting on that fill) and is counted, never treated as zero.
         """
         strat = self.portfolio["strategies"].get(strategy_id)
         if not strat:
@@ -470,10 +479,25 @@ class StrategyPortfolioManager:
         strat.setdefault("pnl_history", {}).setdefault("DEFAULT", pnl_history)
 
         # War chest: realized PnL settles into the strategy's own capital.
+        #
+        # `realized_pnl` STAYS GROSS. Every chest in both portfolio files
+        # already holds a gross running total, and reinterpreting a stored
+        # key is how a number comes to mean two things at once. The broker's
+        # cut goes in its own key and `available` subtracts it, so the chest
+        # spends what the account actually holds.
         capital = strat.setdefault(
             "capital", {"starting": STRATEGY_STARTING_CAPITAL, "realized_pnl": 0.0}
         )
         capital["realized_pnl"] = round(capital.get("realized_pnl", 0.0) + pnl, 2)
+        if charges is None:
+            # Absent is not zero. A fill booked with no charge accounting is
+            # counted so the arena can say how much of the chest is gross,
+            # rather than the total quietly implying all of it is net.
+            capital["trades_without_charges"] = int(
+                capital.get("trades_without_charges", 0)) + 1
+        else:
+            capital["charges_paid"] = round(
+                capital.get("charges_paid", 0.0) + float(charges), 2)
 
         log_msg = f"Recorded trade outcome for {strat['name']} on {asset_upper}: Win={is_win}, PnL={pnl:.2f}. " \
                   f"New Win Rate: {new_win_rate:.1f}%, Expectancy: {new_expectancy:.1f}, Confidence: {new_confidence:.1f}%."
@@ -570,7 +594,20 @@ class StrategyPortfolioManager:
 
         deployed_by_strategy maps strategy_id to the capital currently locked
         in open positions (real for the ACTIVE strategy, simulated for shadow
-        strategies). Available = starting + realized_pnl - deployed.
+        strategies).
+
+        AVAILABLE IS NET OF THE BROKER: starting + gross realized - charges
+        paid - deployed. Until 2026-11-10 it was gross, so every chest
+        believed it held more than the account did and sized the next order
+        on the difference. On 125 closed positions charges came to 3.2x the
+        whole gross profit, so that gap does not stay small.
+
+        `realized_pnl` in this report is the NET figure, because it is what
+        the arena prints and a screen should never show gross. The gross
+        total and the charges are carried beside it so neither is hidden,
+        and `trades_without_charges` says how many fills had no charge
+        accounting at all - for those, net and gross are the same number and
+        that is a gap in the measurement, not a free trade.
         """
         deployed_by_strategy = deployed_by_strategy or {}
         report = []
@@ -579,7 +616,10 @@ class StrategyPortfolioManager:
                 "capital", {"starting": self._starting_capital, "realized_pnl": 0.0}
             )
             starting = float(capital.get("starting", self._starting_capital))
-            realized = float(capital.get("realized_pnl", 0.0))
+            gross = float(capital.get("realized_pnl", 0.0))
+            charges = float(capital.get("charges_paid", 0.0))
+            uncharged = int(capital.get("trades_without_charges", 0))
+            realized = round(gross - charges, 2)
             deployed = round(float(deployed_by_strategy.get(s_id, 0.0)), 2)
             report.append(
                 {
@@ -587,7 +627,10 @@ class StrategyPortfolioManager:
                     "name": strat.get("name", s_id),
                     "status": strat.get("status", "UNKNOWN"),
                     "starting_capital": starting,
-                    "realized_pnl": round(realized, 2),
+                    "realized_pnl": realized,
+                    "gross_realized_pnl": round(gross, 2),
+                    "charges_paid": round(charges, 2),
+                    "trades_without_charges": uncharged,
                     "deployed": deployed,
                     "available": round(starting + realized - deployed, 2),
                 }

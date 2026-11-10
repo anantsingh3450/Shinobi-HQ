@@ -111,17 +111,51 @@ def get_account_summary() -> dict:
     def _run():
         from bots.autonomous import capital_regime as cr
         with _connect() as conn:
+            # `portfolio.realized_pnl` IS GROSS and the charges live one
+            # table over, on the positions. `cash` has been net since
+            # 2026-11-09, so quoting the gross figure beside it described an
+            # account that does not exist. Both are reported, and the
+            # uncharged count says how many closed rows have no charge to
+            # subtract - for those net equals gross because nothing was
+            # measured, not because nothing was paid.
+            # A brain older than schema 10 has no `charges` column at all.
+            # Then charges_paid is 0.00 and EVERY closed position counts as
+            # uncharged, which is the true description of such a brain - not
+            # a fallback that hides the difference.
+            charged_brain = any(
+                r[1] == "charges" for r in
+                conn.execute("pragma table_info(positions)").fetchall()
+            )
+            charges_sql = (
+                " coalesce((select sum(charges) from positions x"
+                "           where x.account_id = p.account_id"
+                "             and x.charges is not null), 0.0) as charges_paid,"
+                " (select count(*) from positions x"
+                "  where x.account_id = p.account_id and x.status = 'CLOSED'"
+                "    and x.charges is null) as uncharged_closed"
+                if charged_brain else
+                " 0.0 as charges_paid,"
+                " (select count(*) from positions x"
+                "  where x.account_id = p.account_id and x.status = 'CLOSED')"
+                " as uncharged_closed"
+            )
             rows = conn.execute(
-                "select account_id, initial_balance, cash, realized_pnl from portfolio"
+                "select p.account_id, p.initial_balance, p.cash, p.realized_pnl,"
+                + charges_sql + " from portfolio p"
             ).fetchall()
         out = []
         for r in rows:
             regime = cr.profile_for(r["cash"])
+            gross = float(r["realized_pnl"] or 0.0)
+            charges = float(r["charges_paid"] or 0.0)
             out.append({
                 "league": _ACCOUNT_LABELS.get(r["account_id"], r["account_id"]),
                 "cash": r["cash"],
                 "started_with": r["initial_balance"],
-                "realized_pnl": r["realized_pnl"],
+                "realized_pnl": round(gross - charges, 2),
+                "gross_realized_pnl": round(gross, 2),
+                "charges_paid": round(charges, 2),
+                "uncharged_closed_positions": int(r["uncharged_closed"] or 0),
                 "capital_regime": regime.name,
                 "regime_means": regime.summary,
             })
@@ -136,9 +170,17 @@ def get_trades(days: int = 1) -> dict:
     def _run():
         cutoff = (datetime.now() - timedelta(days=max(1, int(days)) - 1)).strftime("%Y-%m-%d")
         with _connect() as conn:
+            # `charges` arrived with schema 10. On an older brain the column
+            # is absent and NULL is the honest value: unknown, not zero.
+            charges_col = (
+                " charges,"
+                if any(r[1] == "charges" for r in
+                       conn.execute("pragma table_info(positions)").fetchall())
+                else " NULL as charges,"
+            )
             rows = conn.execute(
                 "select market, account_id, direction, entry_price, current_price,"
-                " realized_pnl, opened_at, closed_at from positions"
+                " realized_pnl," + charges_col + " opened_at, closed_at from positions"
                 " where status = 'CLOSED' and substr(opened_at,1,10) >= ?"
                 " order by opened_at", (cutoff,)
             ).fetchall()
@@ -149,14 +191,29 @@ def get_trades(days: int = 1) -> dict:
             "entry_price": r["entry_price"],
             "exit_price": r["current_price"],
             "pnl": r["realized_pnl"],
+            "charges": r["charges"],
+            "net_pnl": (None if r["charges"] is None
+                        else round((r["realized_pnl"] or 0.0) - r["charges"], 2)),
             "opened_at": r["opened_at"],
             "closed_at": r["closed_at"],
         } for r in rows]
         wins = [t for t in trades if (t["pnl"] or 0) > 0]
+        # `net_pnl` USED TO BE THE GROSS SUM UNDER A NET NAME, and this is
+        # what answers "how did we do today" in chat and in the EOD report.
+        # Charges are 3.2x the lifetime gross profit, so the name was not a
+        # detail. Gross, charges and net are now three separate keys, and
+        # `uncharged_trades` counts the rows that have no charge to subtract
+        # rather than letting them pass as free.
+        gross_total = round(sum(t["pnl"] or 0 for t in trades), 2)
+        charged = [t for t in trades if t["charges"] is not None]
+        charges_total = round(sum(t["charges"] for t in charged), 2)
         return {
             "as_of": _now(), "since": cutoff, "count": len(trades),
             "wins": len(wins), "losses": len(trades) - len(wins),
-            "net_pnl": round(sum(t["pnl"] or 0 for t in trades), 2),
+            "gross_pnl": gross_total,
+            "charges": charges_total,
+            "net_pnl": round(gross_total - charges_total, 2),
+            "uncharged_trades": len(trades) - len(charged),
             "trades": trades,
             "caveat": ("A handful of trades says nothing about edge. Do not draw "
                        "conclusions about strategy quality from fewer than ~100."),
@@ -172,7 +229,11 @@ def get_strategy_lineup() -> dict:
         for league, book in _load_portfolios().items():
             for sid, s in (book.get("strategies") or {}).items():
                 cap = s.get("capital") or {}
-                chest = float(cap.get("starting", 0) or 0) + float(cap.get("realized_pnl", 0) or 0)
+                # NET of the broker, like get_capital_report: the chest can
+                # only deploy what the account actually holds.
+                chest = (float(cap.get("starting", 0) or 0)
+                         + float(cap.get("realized_pnl", 0) or 0)
+                         - float(cap.get("charges_paid", 0) or 0))
                 out.append({
                     "league": league,
                     "name": s.get("name", sid),
@@ -334,7 +395,9 @@ def current_state_digest() -> str:
         for a in acct["accounts"]:
             parts.append(
                 f"- {a['league']}: cash {a['cash']:,.2f}, realised "
-                f"{a['realized_pnl']:+,.2f}, regime {a['capital_regime']}"
+                f"{a['realized_pnl']:+,.2f} net of charges "
+                f"(gross {a['gross_realized_pnl']:+,.2f}, charges "
+                f"{a['charges_paid']:,.2f}), regime {a['capital_regime']}"
             )
     pos = get_open_positions()
     if "count" in pos:
@@ -347,6 +410,7 @@ def current_state_digest() -> str:
     if "count" in today:
         parts.append(
             f"- Today: {today['count']} closed trades, {today['wins']} wins, "
-            f"net {today['net_pnl']:+,.2f}"
+            f"net {today['net_pnl']:+,.2f} (gross {today['gross_pnl']:+,.2f}, "
+            f"charges {today['charges']:,.2f})"
         )
     return "\n".join(parts)
