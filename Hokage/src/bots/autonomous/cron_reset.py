@@ -133,6 +133,32 @@ class CronScheduler(threading.Thread):
                     except Exception:
                         pass
 
+                    # HOW LONG THE CALENDAR HAS LEFT. The holiday table covers
+                    # whole years and expires on a date known in advance; past
+                    # it every answer is "unknown", which every caller handles
+                    # correctly - so nothing errors while six behaviours
+                    # revert, this checklist's own weekend silence first among
+                    # them. Deliberately NOT part of checklist_passed: the fix
+                    # is a commit, not something to do before 09:00, and a red
+                    # that cannot be cleared before the open is a red he
+                    # learns to ignore. It is here because this is the one
+                    # message that arrives every morning.
+                    calendar_line = ""
+                    try:
+                        from hokage.memory import trading_calendar
+                        warning = trading_calendar.coverage_warning()
+                        problems = trading_calendar.coverage_problems()
+                        if warning:
+                            blind = ("EXPIRED" in warning
+                                     or "does not cover" in warning
+                                     or "NO DATA" in warning)
+                            calendar_line = (
+                                f"\n\n{'🚨' if blind else '⚠️'} {warning}")
+                        for problem in problems:
+                            calendar_line += f"\n🚨 Calendar: {problem}"
+                    except Exception:
+                        pass
+
                     msg = (
                         f"{'✅' if checklist_passed else '🚨'} Morning Systems Check: \n"
                         f"DB: {db_status}\n"
@@ -140,6 +166,7 @@ class CronScheduler(threading.Thread):
                         f"Engine: {engine_status}\n"
                         f"Code: {code_line}\n\n"
                         f"{f'Awaiting {open_at} Open.' if checklist_passed else 'ACTION REQUIRED BEFORE OPEN.'}"
+                        f"{calendar_line}"
                     )
                     
                     if self.bot.telegram_bot and self.bot.telegram_bot.enabled:

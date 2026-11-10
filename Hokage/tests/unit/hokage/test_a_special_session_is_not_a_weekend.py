@@ -226,10 +226,14 @@ def test_every_special_session_carries_its_source():
 
 
 def test_a_special_session_sits_inside_the_calendars_span():
-    """A date outside the span is unreachable - session_kind returns None
-    before it ever looks at the table."""
+    """A date in an uncovered year is unreachable - session_kind returns None
+    before it ever looks at the table, so a Muhurat session entered for a
+    year whose holidays were never typed silences every sender through a
+    live afternoon."""
     for day in tc._SPECIAL_SESSIONS:
-        assert tc._KNOWN_FROM <= day <= tc._KNOWN_TO
+        assert tc.covers(day), (
+            f"{day} is a special session in a year this calendar does not "
+            f"cover, so it answers unknown")
         assert tc.session_kind(day, "NSE") is not None
 
 
@@ -298,7 +302,10 @@ def test_boot_names_the_day_and_warns_about_a_missing_session():
 
     src = (_repo_root() / "src" / "bots" / "autonomous"
            / "autonomous_bot.py").read_text(encoding="utf-8")
-    boot = src.split("# WHAT DAY IS IT.")[1][:1200]
+    # Wide enough to hold the whole calendar block, which grew when the
+    # coverage warning joined it. A fixed-width slice that ends mid-block
+    # fails on an addition rather than on a removal, which is backwards.
+    boot = src.split("# WHAT DAY IS IT.")[1].split("def _cleanup")[0]
     assert 'logger.info("Session calendar: %s", self._describe_today())' in boot
     assert "unlisted_sessions_from_archive()" in boot
     assert "logger.warning" in boot

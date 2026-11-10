@@ -208,7 +208,7 @@ def test_a_closed_equity_holiday_with_no_mcx_session_is_quiet():
 
     from shared.watchdog.watchdog import Watchdog
 
-    shut = [d for d in tc._EQUITY_HOLIDAYS_2026
+    shut = [d for d in tc.holidays()
             if tc.anything_trades(d) is False and d.weekday() < 5]
     if not shut:
         pytest.skip("no full-closure weekday holiday in the calendar")

@@ -31,6 +31,38 @@ hand-entered part of this file.
 NOTHING HERE IS INFERRED FROM A WEEKDAY RULE BEYOND THE WEEKEND. Saturday
 and Sunday are closed by exchange rule and need no list. Everything else is
 data or it is None.
+
+THE DATA RUNS OUT, AND THE EXPIRY IS THE DANGEROUS PART. Every function
+here answers None for a year nobody has entered, and every caller handles
+None correctly — so nothing breaks, nothing errors, and SIX behaviours
+quietly revert at midnight on 31 December:
+
+    the 08:45 checklist goes back to red-flagging every Saturday
+    the blind-feed alarm goes back to nagging for a login on a holiday
+    both EOD reports go back to reporting "no trades" about a shut market
+    the watchdog's staleness window goes back to expecting a dead feed
+    the option archive goes back to storing a chain nobody traded
+    and a holiday with an MCX evening in it gets written off entirely
+
+That is 2026-10-20 and 2026-11-07 arriving together, on a date known
+years in advance, with nothing on fire. So THIS FILE SAYS HOW LONG IT HAS
+LEFT (`coverage_warning`), from 75 days out, in the log at boot and in the
+08:45 checklist he reads every morning. The warning names the fix, and it
+escalates once the date has passed.
+
+COVERAGE IS DERIVED FROM THE DATA, NEVER DECLARED BESIDE IT. A year is
+covered because its holidays are entered, so there is no second fact to
+forget: `_EQUITY_HOLIDAYS[2027] = {}` is NOT coverage, it is a year half
+typed, and it answers None exactly like a year nobody touched. A declared
+span that can disagree with the dates under it is how a correctly entered
+year gets silently ignored, and the fail-safe direction is unknown.
+
+ONLY THE EXCHANGE'S OWN LIST GOES IN. Checked 2026-11-10, NSE had not yet
+published 2027 (they publish in December) and six third-party lists
+disagreed with each other on Holi, Ambedkar Jayanti, Muharram, Id-ul-Fitr
+and Balipratipada. A guessed holiday is worse than no holiday: it is the
+nagging and the written-off evening at the same time, with the authority
+of a typed date. Wait for the circular.
 """
 from __future__ import annotations
 
@@ -48,11 +80,20 @@ CLOSED = "CLOSED"
 #: MCX's evening-only session on an equity holiday starts here.
 EVENING_SESSION_START = dt.time(17, 0)
 
-#: NSE/BSE equity and F&O holidays, 2026. Hand-entered from the exchange
+#: NSE/BSE equity and F&O holidays, BY YEAR. Hand-entered from the exchange
 #: list and cross-checked against the candle archive (see
-#: confirmed_holidays_from_archive). The ten dates before 2026-10-20 are
-#: each confirmed by an absence of NIFTY candles on a weekday.
-_EQUITY_HOLIDAYS_2026: dict[dt.date, str] = {
+#: confirmed_holidays_from_archive). The ten 2026 dates before 2026-10-20
+#: are each confirmed by an absence of NIFTY candles on a weekday.
+#:
+#: A YEAR IS COVERED BECAUSE ITS DATES ARE HERE. Adding a year is one block
+#: and nothing else; an empty block is a year half typed and is not coverage
+#: (see `covers`). To add 2027: take the dates from the NSE circular at
+#: nseindia.com - not from a holiday website, which on 2026-11-10 disagreed
+#: with five other holiday websites - add the block, add any MCX evenings to
+#: the set below, and the warning stops on its own.
+_EQUITY_HOLIDAYS: dict[int, dict[dt.date, str]] = {}
+
+_EQUITY_HOLIDAYS[2026] = {
     dt.date(2026, 3, 3): "Holi",
     dt.date(2026, 3, 26): "exchange holiday",
     dt.date(2026, 3, 31): "exchange holiday",
@@ -123,11 +164,153 @@ _SPECIAL_SESSIONS: dict[dt.date, dict] = {
     },
 }
 
-#: Dates the calendar covers. Outside this span every answer is None,
-#: because a 2027 date is not "open" simply because 2027 is not in a 2026
-#: holiday list.
-_KNOWN_FROM = dt.date(2026, 1, 1)
-_KNOWN_TO = dt.date(2026, 12, 31)
+#: How long before the cliff this file starts saying so. NSE publishes the
+#: next year's holidays in December, so 75 days before 31 December is the
+#: earliest the warning could be acted on - it starts nagging in the middle
+#: of October and the circular arrives inside the window.
+COVERAGE_WARNING_DAYS = 75
+
+#: Where the dates come from, named in the warning so the fix needs no
+#: memory. No underscores, brackets or asterisks in any warning text: these
+#: go out over legacy Telegram Markdown, where one unpaired control
+#: character used to eat the whole message.
+COVERAGE_SOURCE = "the NSE circular at nseindia.com"
+
+
+def covered_years() -> tuple[int, ...]:
+    """The years whose holidays are actually entered, in order.
+
+    A year with an EMPTY table is not in here. That is the fail-safe
+    direction: a year half typed answers None like a year nobody touched,
+    rather than calling Republic Day a normal session.
+    """
+    return tuple(sorted(y for y, table in _EQUITY_HOLIDAYS.items() if table))
+
+
+def covers(day: dt.date) -> bool:
+    """Whether this calendar has data for the year `day` falls in."""
+    if not isinstance(day, dt.date):
+        return False
+    return bool(_EQUITY_HOLIDAYS.get(day.year))
+
+
+def covered_until(today: dt.date | None = None) -> dt.date | None:
+    """The last day covered by an unbroken run of years from `today`.
+
+    UNBROKEN IS THE POINT. With 2026 and 2028 entered and 2027 missing, the
+    answer is 2026-12-31 - a gap in the middle is a cliff like any other,
+    and reporting the furthest year entered would hide it.
+
+    None when this calendar does not cover `today` at all.
+    """
+    today = _today() if today is None else today
+    if not covers(today):
+        return None
+    year = today.year
+    while _EQUITY_HOLIDAYS.get(year + 1):
+        year += 1
+    return dt.date(year, 12, 31)
+
+
+def days_of_coverage(today: dt.date | None = None) -> int | None:
+    """Days until the data runs out. 0 on the last covered day.
+
+    None when `today` itself is uncovered - already past the cliff, where
+    "how many days left" has no answer and `coverage_warning` speaks
+    instead.
+    """
+    today = _today() if today is None else today
+    until = covered_until(today)
+    return None if until is None else (until - today).days
+
+
+def coverage_warning(today: dt.date | None = None) -> str | None:
+    """The loud line, or None while there is nothing to say.
+
+    THIS IS THE WHOLE POINT OF THE EXPIRY BEING KNOWN IN ADVANCE. It goes
+    in the boot log and the 08:45 checklist, and it names the fix.
+    """
+    today = _today() if today is None else today
+    years = covered_years()
+    if not years:
+        return ("The trading calendar has NO DATA AT ALL, so every holiday "
+                "check answers unknown. Enter a year from "
+                f"{COVERAGE_SOURCE} in the calendar file under "
+                "src/hokage/memory/.")
+
+    left = days_of_coverage(today)
+    if left is None:
+        # The last year covered BEFORE today, not the furthest year in the
+        # table: with 2027 missing and 2028 entered, 2027 is still a cliff.
+        earlier = [y for y in years if y < today.year]
+        if not earlier:
+            return ("The trading calendar does not cover today at all - it "
+                    f"starts in {years[0]}, so every holiday check answers "
+                    "unknown.")
+        last = dt.date(earlier[-1], 12, 31)
+        gone = (today - last).days
+        return (f"The trading calendar EXPIRED {gone} day"
+                f"{'' if gone == 1 else 's'} ago, on {last}. Hokage no "
+                "longer knows what day it is: the 08:45 checklist will "
+                "red-flag every Saturday, the blind-feed alarm will nag for "
+                "a login on a holiday, both EOD reports will talk about a "
+                f"market that never opened, and a holiday with an MCX "
+                f"evening in it gets written off. Enter {today.year} from "
+                f"{COVERAGE_SOURCE} in the calendar file under "
+                "src/hokage/memory/.")
+
+    if left > COVERAGE_WARNING_DAYS:
+        return None
+    when = (f"TODAY, {covered_until(today)}" if left == 0 else
+            f"in {left} day{'' if left == 1 else 's'}, on "
+            f"{covered_until(today)}")
+    return (f"The trading calendar runs out {when}. After "
+            f"that every holiday check answers unknown and six "
+            "calendar-gated behaviours revert, starting with the 08:45 "
+            f"checklist red-flagging every Saturday. Enter "
+            f"{covered_until(today).year + 1} "
+            f"from {COVERAGE_SOURCE} in the calendar file under "
+            "src/hokage/memory/.")
+
+
+def coverage_problems() -> list[str]:
+    """Ways the tables above contradict each other. [] when they agree.
+
+    A HALF-TYPED YEAR IS SAFE BUT SILENT, and silent is what this file
+    exists to stop. Read at boot and asserted in the suite.
+    """
+    out = []
+    for year, table in sorted(_EQUITY_HOLIDAYS.items()):
+        if not table:
+            out.append(f"{year} is listed with no holidays in it, so it is "
+                       f"NOT covered - every {year} date answers unknown")
+            continue
+        wrong = sorted(d for d in table if d.year != year)
+        if wrong:
+            # isoformat, not repr: this line goes to Telegram, where
+            # "datetime.date(2028, 1, 26)" says nothing to a reader.
+            out.append(f"{year}'s table contains "
+                       f"{', '.join(d.isoformat() for d in wrong)}, which "
+                       f"are not {year} dates and will never be found")
+    for day in sorted(_MCX_EVENING_ON_EQUITY_HOLIDAY):
+        if day not in _EQUITY_HOLIDAYS.get(day.year, {}):
+            out.append(f"{day} is listed as an MCX evening but is not an "
+                       f"equity holiday, so the evening is unreachable")
+    for day in sorted(_SPECIAL_SESSIONS):
+        if not covers(day):
+            out.append(f"{day} is a special session in a year this calendar "
+                       f"does not cover, so it answers unknown and every "
+                       f"calendar-gated sender goes silent through it")
+    return out
+
+
+def _today() -> dt.date:
+    """Today in IST, which is the only timezone the exchange has.
+
+    Deliberately not `session_manager.KolkataTime` - that module imports
+    this one.
+    """
+    return dt.datetime.now(dt.timezone(dt.timedelta(hours=5, minutes=30))).date()
 
 
 def session_kind(day: dt.date, segment: str = "NSE") -> str | None:
@@ -137,7 +320,7 @@ def session_kind(day: dt.date, segment: str = "NSE") -> str | None:
     """
     if not isinstance(day, dt.date):
         return None
-    if not (_KNOWN_FROM <= day <= _KNOWN_TO):
+    if not covers(day):
         return None            # outside the data, not "normal"
 
     # BEFORE the weekend rule, which is the whole point: a Muhurat session on
@@ -150,7 +333,7 @@ def session_kind(day: dt.date, segment: str = "NSE") -> str | None:
 
     if day.weekday() >= 5:
         return CLOSED          # exchange rule, no list needed
-    if day not in _EQUITY_HOLIDAYS_2026:
+    if day not in _EQUITY_HOLIDAYS[day.year]:
         return FULL
 
     if segment.upper() == "MCX":
@@ -159,7 +342,24 @@ def session_kind(day: dt.date, segment: str = "NSE") -> str | None:
 
 
 def holiday_name(day: dt.date) -> str | None:
-    return _EQUITY_HOLIDAYS_2026.get(day)
+    if not isinstance(day, dt.date):
+        return None
+    return _EQUITY_HOLIDAYS.get(day.year, {}).get(day)
+
+
+def holidays(year: int | None = None) -> dict[dt.date, str]:
+    """Every entered holiday, or one year's. A copy, not the table.
+
+    THE PUBLIC WAY IN. Three tests used to read the module's private dict
+    and broke the day it was keyed by year; a reader that wants the dates
+    should not have to know the shape of the storage.
+    """
+    if year is not None:
+        return dict(_EQUITY_HOLIDAYS.get(year, {}))
+    merged: dict[dt.date, str] = {}
+    for table in _EQUITY_HOLIDAYS.values():
+        merged.update(table)
+    return merged
 
 
 def anything_trades(day: dt.date) -> bool | None:
@@ -256,8 +456,11 @@ def describe(day: dt.date) -> str:
     nse = session_kind(day, "NSE")
     mcx = session_kind(day, "MCX")
     if nse is None or mcx is None:
+        years = covered_years()
+        covered = ", ".join(str(y) for y in years) if years else "no year"
         return (f"{day}: outside this calendar — unknown, which is not the "
-                f"same as open")
+                f"same as open. Entered: {covered}; the rest comes from "
+                f"{COVERAGE_SOURCE}.")
     if nse == FULL:
         return f"{day}: normal session"
 

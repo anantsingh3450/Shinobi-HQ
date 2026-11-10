@@ -757,6 +757,25 @@ class AutonomousTradingBot:
             from hokage.memory import trading_calendar
 
             logger.info("Session calendar: %s", self._describe_today())
+
+            # HOW LONG THE CALENDAR HAS LEFT. The table covers whole years
+            # and runs out on a date known in advance; past it, every
+            # calendar-gated behaviour reverts without erroring, which is
+            # 2026-10-20 and 2026-11-07 arriving together with nothing on
+            # fire. ERROR rather than WARNING once it has actually expired.
+            warning = trading_calendar.coverage_warning()
+            if warning:
+                expired = "EXPIRED" in warning or "does not cover" in warning
+                logger.log(
+                    logging.ERROR if expired else logging.WARNING,
+                    "Session calendar: %s", warning)
+            else:
+                logger.info("Session calendar: data through %s (%s days)",
+                            trading_calendar.covered_until(),
+                            trading_calendar.days_of_coverage())
+            for problem in trading_calendar.coverage_problems():
+                logger.error("Session calendar: %s", problem)
+
             unlisted = trading_calendar.unlisted_sessions_from_archive()
             if unlisted:
                 logger.warning(
