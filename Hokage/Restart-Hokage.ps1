@@ -16,13 +16,19 @@
 # before a stop - a stopped Hokage stops managing exits - and the login stays
 # the commander's own, through the link Telegram sends him.
 
+# The reason is a PARAMETER because it is written into the stop marker and
+# into Stop-Hokage's log line. It was hardcoded to "restart to load the
+# session calendar" long after that calendar had shipped, so every later
+# restart recorded a reason that was not true. A log line that is always the
+# same is not a record of anything.
+param([string]$Reason = 'restart to load new code')
+
 $ErrorActionPreference = 'Stop'
 
 $Root = 'C:\Users\anant\OneDrive\Documents\AI PROJECT\AI COMMAND CENTRE\Hokage'
 $Marker = 'C:\Hokage\hokage_brain\state\stopped_deliberately.json'
 $LogFile = 'C:\Hokage\hokage_brain\logs\hokage.log'
 $TaskName = 'Hokage Morning Start'
-$Reason = 'restart to load the session calendar'
 
 . (Join-Path $Root 'tools\ops\HokageProcess.ps1')
 
