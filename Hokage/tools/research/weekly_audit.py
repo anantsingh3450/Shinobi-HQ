@@ -140,13 +140,60 @@ SHIP_BAR = round(corrected_t(FAMILY_SIZE), 2)
 FUNDED_BAR = round(corrected_t(funded_cells.family_size()), 2)
 
 
+def ledger_id(module_id: str | None) -> str | None:
+    """Either namespace -> the LEDGER's spelling of this module.
+
+    THE FUNDED FAMILY WAS APPROVED ON 2026-11-09 AND THIS AUDIT NEVER APPLIED
+    IT. Found 2026-11-10.
+
+    `funded_cells.FUNDED` is keyed by the ledger's strategy ids, which is also
+    how ENTRY_MODULES is keyed. But `main()` re-keys every module to its
+    `module_id` before measuring --
+
+        named = {getattr(m, "module_id", k): m for k, m in modules.items()}
+
+    -- because that is the spelling five snapshots of history are written in,
+    and `_get` matches last week's row by it. So the real audit called
+    `bar_for("entry-macrobreakout-v1", "NIFTY")`, `is_funded` found no such
+    key, and every funded cell was judged at the full family's bar.
+
+    Two consequences, both the opposite of the decision:
+      - a funded cell could not be CONFIRMED at its own bar, and
+      - it was eligible for DEMOTION on the very bar it was exempted from,
+        which the comment beside that check says must not happen.
+    Every row in every snapshot since also carries `funded: false`, so the
+    report's [FUNDED] tag has never once printed.
+
+    FOURTH TIME THIS SHAPE HAS BITTEN. The audit scores `entry-*`, the ledger
+    records `strat-*`, the index stems differ as well, and a lookup across the
+    two namespaces that matches nothing reports a clean answer for ever.
+    LEDGER_ID is the declared table for exactly this translation and is
+    already rail-tested by `unmapped_modules()`; it is now used here, so a
+    module added in one namespace cannot silently drop out of the other.
+    """
+    if not module_id:
+        return None
+    return LEDGER_ID.get(module_id, module_id)
+
+
+def is_funded_cell(module_id: str | None, symbol: str | None) -> bool:
+    """Is this cell funded, asked in EITHER namespace. See `ledger_id`."""
+    if not module_id or not symbol:
+        return False
+    return funded_cells.is_funded(ledger_id(module_id), symbol)
+
+
 def bar_for(module_id: str | None, symbol: str | None) -> float:
     """The bar THIS cell must clear.
 
     Funded cells answer to the three-cell bar. Everything else answers to the
     full family's, because that is the family it was found in.
+
+    Takes a module id in EITHER namespace -- the audit scores under `entry-*`
+    and the funded family is declared in the ledger's `strat-*`. See
+    `ledger_id` for what that cost.
     """
-    if module_id and symbol and funded_cells.is_funded(module_id, symbol):
+    if is_funded_cell(module_id, symbol):
         return FUNDED_BAR
     return SHIP_BAR
 
@@ -347,7 +394,10 @@ def measure_split(symbol: str, modules: dict) -> tuple[dict, dict, tuple]:
             # at 3.22 - in the same table, which is the point: the reader can
             # see both and cannot mistake one for the other.
             "bar": bar_for(name, symbol),
-            "funded": funded_cells.is_funded(name, symbol),
+            # THROUGH `is_funded_cell`, NOT `funded_cells.is_funded`. `name`
+            # is whatever namespace the caller measured in, and this one is
+            # called with `entry-*` by main() and `strat-*` by power_lab.
+            "funded": is_funded_cell(name, symbol),
             "confirmed": bool(
                 train and train["t"] >= bar_for(name, symbol)
                 and hold["t"] >= bar_for(name, symbol)),

@@ -14,6 +14,13 @@ ways it can lie have to be closed first:
      exists. A cell needing n_req signals per half therefore needs
      2 * n_req / rate SESSIONS, not n_req / rate. Forgetting the factor of two
      halves every answer in this file.
+
+2026-11-10: `pl.BAR` is gone. There is no single bar in this system - a funded
+cell answers to the bar for the three pre-committed cells and an exploratory
+one to the bar for the forty it was found in - and a module-level "the bar"
+read as universal. These tests now pass the bar they mean. What they are
+testing is the ARITHMETIC, which is the same at any bar; the cases about WHICH
+bar applies live in test_the_funded_bar_was_never_applied.py.
 """
 from __future__ import annotations
 
@@ -34,23 +41,25 @@ import power_lab as pl  # noqa: E402
 def test_required_n_is_the_square_of_the_shortfall():
     """t scales with sqrt(n), so the sample scales with the SQUARE of how far
     short t falls. A cell at half the bar needs four times the data, not two."""
-    bar = pl.BAR
-    assert pl.required_n(100, bar) == pytest.approx(100)
-    assert pl.required_n(100, bar / 2) == pytest.approx(400)
-    assert pl.required_n(100, bar / 3) == pytest.approx(900)
+    bar = pl.EXPLORATORY_BAR
+    assert pl.required_n(100, bar, bar) == pytest.approx(100)
+    assert pl.required_n(100, bar / 2, bar) == pytest.approx(400)
+    assert pl.required_n(100, bar / 3, bar) == pytest.approx(900)
 
 
 def test_a_cell_already_at_the_bar_needs_nothing_more():
-    assert pl.required_n(50, pl.BAR) == pytest.approx(50)
+    assert pl.required_n(50, pl.EXPLORATORY_BAR, pl.EXPLORATORY_BAR) == pytest.approx(50)
+    assert pl.required_n(50, pl.FUNDED_BAR, pl.FUNDED_BAR) == pytest.approx(50)
 
 
 def test_a_non_positive_t_has_no_required_n():
     """THE DISTINCTION THAT MATTERS MOST. There is no sample size at which a
     negative mean produces a positive t, so the honest answer is None rather
     than a very large number that reads as 'eventually'."""
-    assert pl.required_n(100, 0.0) is None
-    assert pl.required_n(100, -1.5) is None
-    assert pl.required_n(0, 2.0) is None
+    bar = pl.EXPLORATORY_BAR
+    assert pl.required_n(100, 0.0, bar) is None
+    assert pl.required_n(100, -1.5, bar) is None
+    assert pl.required_n(0, 2.0, bar) is None
 
 
 # ==================================================== the sessions formula
@@ -58,7 +67,7 @@ def test_sessions_needed_doubles_for_the_hold_out_rule():
     """Both halves must clear, and each half is half the tape. This is the
     factor of two that a naive n_req / rate silently drops."""
     n, t, rate = 44, 2.31, 0.64
-    need = pl.required_n(n, t)
+    need = pl.required_n(n, t, pl.EXPLORATORY_BAR)
     naive = need / rate
     honest = 2.0 * need / rate
     assert honest == pytest.approx(2 * naive)
@@ -71,8 +80,9 @@ def test_a_faster_firing_cell_answers_sooner_at_the_same_t():
     """Two cells equally short of the bar are not equally far away: the one
     that fires more often banks its sample faster. This is why the ranking is
     by sessions and not by t."""
-    slow = 2.0 * pl.required_n(50, 1.5) / 0.5
-    fast = 2.0 * pl.required_n(50, 1.5) / 5.0
+    need = pl.required_n(50, 1.5, pl.EXPLORATORY_BAR)
+    slow = 2.0 * need / 0.5
+    fast = 2.0 * need / 5.0
     assert fast < slow
 
 
@@ -82,35 +92,41 @@ def _cell(n=100, edge=0.1, t=2.0):
 
 
 def test_a_negative_hold_out_is_wrong_sign_not_underpowered():
-    assert pl.classify(_cell(edge=-0.129, t=-1.28), _cell()) == "WRONG SIGN"
+    bar = pl.EXPLORATORY_BAR
+    assert pl.classify(_cell(edge=-0.129, t=-1.28), _cell(), bar) == "WRONG SIGN"
 
 
 def test_a_zero_edge_is_also_wrong_sign():
     """Exactly zero is not a small positive. It must not get a projection."""
-    assert pl.classify(_cell(edge=0.0, t=0.0), _cell()) == "WRONG SIGN"
+    assert pl.classify(_cell(edge=0.0, t=0.0), _cell(),
+                       pl.EXPLORATORY_BAR) == "WRONG SIGN"
 
 
 def test_clearing_both_halves_is_confirmed():
-    high = _cell(t=pl.BAR + 0.1)
-    assert pl.classify(high, high) == "CONFIRMED"
+    bar = pl.EXPLORATORY_BAR
+    high = _cell(t=bar + 0.1)
+    assert pl.classify(high, high, bar) == "CONFIRMED"
 
 
 def test_clearing_only_the_hold_out_is_not_confirmed():
     """One half is not evidence - the whole reason the split exists."""
-    assert pl.classify(_cell(t=pl.BAR + 1), _cell(t=1.0)) == "UNDERPOWERED"
+    bar = pl.EXPLORATORY_BAR
+    assert pl.classify(_cell(t=bar + 1), _cell(t=1.0), bar) == "UNDERPOWERED"
 
 
 def test_a_thin_half_is_too_thin_rather_than_a_verdict():
-    assert pl.classify(_cell(n=pl.MIN_N - 1), _cell()) == "TOO THIN"
-    assert pl.classify(_cell(), _cell(n=pl.MIN_N - 1)) == "TOO THIN"
+    bar = pl.EXPLORATORY_BAR
+    assert pl.classify(_cell(n=pl.MIN_N - 1), _cell(), bar) == "TOO THIN"
+    assert pl.classify(_cell(), _cell(n=pl.MIN_N - 1), bar) == "TOO THIN"
 
 
 def test_a_missing_train_half_is_no_reading_not_a_failure():
     """MISSING IS NOT ZERO. The audit stores None for a train half that never
     reached MIN_N; reading that as 0.0 once printed a module which had fired
     16 times as 'fired nothing, measured flat'."""
-    assert pl.classify(_cell(), None) == "NO READING"
-    assert pl.classify(None, _cell()) == "NO READING"
+    bar = pl.EXPLORATORY_BAR
+    assert pl.classify(_cell(), None, bar) == "NO READING"
+    assert pl.classify(None, _cell(), bar) == "NO READING"
 
 
 # ======================================================= the family lever
@@ -136,11 +152,14 @@ def test_the_family_lever_is_worth_what_the_plan_claims():
     assert 1.6 <= ratio <= 1.8
 
 
-def test_the_default_bar_is_the_audits_own():
-    """The tool must not invent a gentler bar than the ship decision uses."""
+def test_the_bars_are_the_audits_own():
+    """The tool must not invent a gentler bar than the ship decision uses -
+    either of them. Both come from weekly_audit rather than being recomputed
+    here, so a change of family size cannot leave the two disagreeing."""
     import weekly_audit as audit
 
-    assert pl.BAR == audit.SHIP_BAR
+    assert pl.EXPLORATORY_BAR == audit.SHIP_BAR
+    assert pl.FUNDED_BAR == audit.FUNDED_BAR
     assert pl.MIN_N == audit.MIN_N
 
 
