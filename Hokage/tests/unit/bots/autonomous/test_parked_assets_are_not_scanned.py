@@ -112,9 +112,19 @@ def test_both_scan_loops_consult_the_same_predicate():
 def test_the_skip_happens_before_any_entry_evaluation():
     """Skipping after the modules have run would save nothing — the journal
     entry is written by the module, which is the noise being removed."""
-    src = SRC.read_text(encoding="utf-8")
-    mcx = src.index("for symbol in MCX_UNIVERSE:")
-    block = src[mcx:mcx + 900]
+    # AIMED AT THE FUNCTION, NOT AT A BYTE WINDOW. This read the whole file
+    # and took the 900 bytes after the FIRST "for symbol in MCX_UNIVERSE:".
+    # On 2026-11-10 `_journal_league_standdown` was added above the scan with
+    # the same loop line, `str.index` found that one instead, and this rail
+    # failed on a change it has no opinion about. A rail that can be aimed at
+    # the wrong function by an unrelated edit is reporting on the file, not on
+    # the behaviour.
+    import inspect
+    import textwrap
+
+    src = textwrap.dedent(inspect.getsource(
+        AutonomousTradingBot._scan_and_enter_mcx_opportunities))
+    block = src[src.index("for symbol in MCX_UNIVERSE:"):]
     assert "self.is_parked(symbol)" in block
     assert block.index("self.is_parked(symbol)") < block.index("is_tradable")
 

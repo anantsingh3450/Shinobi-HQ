@@ -170,3 +170,96 @@ def test_weekend_and_outside_window_are_silent_no_ops(mock_orchestrator_with_mcx
         bot._now_ist = lambda: datetime(2026, 7, 21, 22, 45, tzinfo=timezone.utc)
         bot._scan_and_enter_mcx_opportunities()
         orch.mcx_venue.place_order.assert_not_called()
+
+
+def _recorder(bot):
+    """Swap the bot's journal for a list. Returns the list."""
+    records = []
+    bot.journal = type(
+        "_J", (), {"record_no_trade_decision": lambda _s, d: records.append(d)}
+    )()
+    return records
+
+
+def test_the_after_cutoff_standdown_reaches_the_journal(mock_orchestrator_with_mcx, tmp_path):
+    """22:30-23:30 used to leave no trace at all.
+
+    2026-11-10: four of the five bare `return`s in this method deny the whole
+    league, and the index league journals its equivalent cutoff while these
+    journaled nothing. Rationale and the rate-limit argument live in
+    tests/unit/bots/autonomous/test_mcx_standdowns_are_journaled.py.
+    """
+    orch = mock_orchestrator_with_mcx
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(PathResolver, "__init__", lambda self, brain_root=None: setattr(self, "_brain_root", tmp_path)))
+        bot = AutonomousTradingBot(orch, watchlist=["CRUDEOIL"], scan_interval_seconds=1)
+        records = _recorder(bot)
+
+        # Saturday: the absence of a session, not a stand-down.
+        bot._now_ist = lambda: datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
+        bot._scan_and_enter_mcx_opportunities()
+        assert records == [], "a weekend must not be journaled"
+
+        # Tuesday 22:45 — past the 22:30 cutoff, which is where the record went
+        # silent every single day.
+        bot._now_ist = lambda: datetime(2026, 7, 21, 22, 45, tzinfo=timezone.utc)
+        bot._scan_and_enter_mcx_opportunities()
+        assert records, "the 22:30 stand-down must reach the journal"
+        assert {r.asset for r in records} == {"NATURALGAS", "GOLDM"}
+        assert "shut for the day" in records[0].reasons[0]
+        assert "22:30" in records[0].reasons[0]
+
+        # Once, however many cycles run. A row per cycle would pad the table
+        # that session_coverage counts.
+        before = len(records)
+        for _ in range(5):
+            bot._scan_and_enter_mcx_opportunities()
+        assert len(records) == before
+
+        # The morning half of the same branch keeps its own slot.
+        bot._now_ist = lambda: datetime(2026, 7, 21, 9, 0, tzinfo=timezone.utc)
+        bot._scan_and_enter_mcx_opportunities()
+        assert len(records) == before + 2
+        assert "not open yet" in records[-1].reasons[0]
+
+
+def test_an_empty_chest_no_longer_stands_the_arena_down_silently(mock_orchestrator_with_mcx, tmp_path):
+    """A strategy with no chest wins its auction and then cannot fill.
+
+    That has already cost both leagues a day. The `bal.cash <= 1000` return
+    is the league-wide version of it, and it was invisible.
+    """
+    orch = mock_orchestrator_with_mcx
+    orch.mcx_venue.get_account_balance.return_value = AccountBalance(
+        venue_id="paper_mcx", total_equity=400.0, cash=400.0,
+        margin_available=0.0, margin_used=0.0,
+    )
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(PathResolver, "__init__", lambda self, brain_root=None: setattr(self, "_brain_root", tmp_path)))
+        bot = AutonomousTradingBot(orch, watchlist=["CRUDEOIL"], scan_interval_seconds=1)
+        records = _recorder(bot)
+
+        # Well inside the entry window, so the window is not what stops it.
+        bot._now_ist = lambda: datetime(2026, 7, 21, 18, 0, tzinfo=timezone.utc)
+        bot._scan_and_enter_mcx_opportunities()
+
+        orch.mcx_venue.place_order.assert_not_called()
+        assert {r.asset for r in records} == {"NATURALGAS", "GOLDM"}
+        assert "400" in records[0].reasons[0]
+        assert "stood down" in records[0].reasons[0]
+
+
+def test_an_unreadable_balance_is_journaled_as_a_fault_not_a_verdict(mock_orchestrator_with_mcx, tmp_path):
+    orch = mock_orchestrator_with_mcx
+    orch.mcx_venue.get_account_balance.side_effect = RuntimeError("socket closed")
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(PathResolver, "__init__", lambda self, brain_root=None: setattr(self, "_brain_root", tmp_path)))
+        bot = AutonomousTradingBot(orch, watchlist=["CRUDEOIL"], scan_interval_seconds=1)
+        records = _recorder(bot)
+
+        bot._now_ist = lambda: datetime(2026, 7, 21, 18, 0, tzinfo=timezone.utc)
+        bot._scan_and_enter_mcx_opportunities()
+
+        assert records, "an unreadable balance must not be silent"
+        assert "RuntimeError" in records[0].reasons[0]
+        assert "Not a market verdict" in records[0].reasons[0]

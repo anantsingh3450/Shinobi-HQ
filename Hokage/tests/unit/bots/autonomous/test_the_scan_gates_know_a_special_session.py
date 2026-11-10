@@ -132,15 +132,23 @@ def test_the_mcx_guard_no_longer_returns_on_the_weekday_alone():
     """The published hours REPLACE the usual 09:30-22:30 window. Reusing that
     window on 2026-11-08 would open five hours before the session and stay
     open seven hours after it closed."""
-    import pathlib
+    # THE SLICE IS THE FUNCTION, NOT 1200 BYTES. This took a fixed 1200 bytes
+    # after the guard's comment, so on 2026-11-10 adding journal rows to the
+    # window branches pushed `_MCX_FIRST_ENTRY` past the cut and failed a rail
+    # that only ever cared whether both paths still exist. A byte count is not
+    # a scope.
+    import inspect
+    import textwrap
 
-    root = next(p for p in pathlib.Path(__file__).resolve().parents
-                if (p / "pyproject.toml").is_file())
-    src = (root / "src" / "bots" / "autonomous" / "autonomous_bot.py").read_text(
-        encoding="utf-8")
-    guard = src.split("# Weekday guard: MCX runs Monday-Friday")[1][:1200]
+    from bots.autonomous.autonomous_bot import AutonomousTradingBot
+
+    src = textwrap.dedent(inspect.getsource(
+        AutonomousTradingBot._scan_and_enter_mcx_opportunities))
+    guard = src.split("# Weekday guard: MCX runs Monday-Friday")[1]
     assert "now_ist.weekday() >= 5 and special_window is None" in guard
     assert "self._MCX_FIRST_ENTRY" in guard      # the ordinary path survives
+    # The special window must still be consulted BEFORE the ordinary one.
+    assert guard.index("special_window is not None") < guard.index("self._MCX_FIRST_ENTRY")
 
 
 @pytest.mark.parametrize("hhmm,inside", [

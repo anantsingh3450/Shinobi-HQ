@@ -1662,6 +1662,61 @@ class AutonomousTradingBot:
         except Exception as exc:
             logger.debug(f"Could not journal the MCX no-trade for {symbol}: {exc}")
 
+    def _journal_league_standdown(self, key: str, reason: str) -> None:
+        """Record a stand-down that denies the WHOLE MCX league, once a day.
+
+        WHY THESE WERE INVISIBLE. `_scan_and_enter_mcx_opportunities` leaves by
+        a bare `return` in five places, and four of them deny every commodity
+        for that cycle: the entry window shut, a special session's published
+        hours shut, no MCX venue attached, and an account at or below the cash
+        floor. The index league journals its own late-session cutoff with a
+        reason `/journal/gate-tally` can rank. The MCX equivalents ranked
+        nowhere, so "why did the commodity arena do nothing today" had no
+        answer in the record — and a chest at zero standing the whole arena
+        down all day read exactly like a quiet market.
+
+        ONCE A DAY PER REASON, NOT ONCE A CYCLE. The scan runs every 15
+        minutes, so a row per cycle would be ~38 window-shut rows a day: the
+        defect this file has already fixed twice (parked assets, unscoped
+        modules), where a record restating a settled fact buries the entries
+        that carry information. Worse than noise here —
+        `tools/ops/session_coverage.py` counts rows in `no_trade_decisions`
+        and calls any day with 20 of them a session ATTENDED, so padding would
+        manufacture coverage out of a shut market and push the uptime number
+        in the flattering direction. THIS DOES NOT MAKE THE LAST HOUR
+        OBSERVABLE; only a heartbeat can do that.
+
+        THE TWO HALVES OF THE WINDOW NEED THEIR OWN KEYS. Before 09:30 and
+        after 22:30 are one branch, and under a single key the morning tick
+        would claim the day every time — so the 22:30 stand-down, the one
+        worth having, would never be written.
+
+        Kept in memory, so a restart may write a second row for the same day.
+        That is honest: it happened in two different processes.
+
+        Never fatal. A journal write must not be able to stop a scan.
+        """
+        try:
+            from bots.strategy.mcx_portfolio import MCX_UNIVERSE
+
+            today = self._now_ist().date().isoformat()
+            seen = getattr(self, "_standdown_journaled", None)
+            if seen is None or seen.get("day") != today:
+                seen = {"day": today, "keys": set()}
+                self._standdown_journaled = seen
+            if key in seen["keys"]:
+                return
+            seen["keys"].add(key)
+
+            # A parked asset is a standing decision announced at boot. Naming
+            # it again is the noise removed on 2026-10-13.
+            for symbol in MCX_UNIVERSE:
+                if self.is_parked(symbol):
+                    continue
+                self._journal_no_trade(symbol, [reason])
+        except Exception as exc:
+            logger.debug(f"Could not journal the MCX stand-down {key}: {exc}")
+
     def _entry_cluster_gate(
         self,
         symbol: str,
@@ -6332,6 +6387,10 @@ class AutonomousTradingBot:
         # returned before the entry window was even looked at.
         special_window = self._special_window_today("MCX")
         if now_ist.weekday() >= 5 and special_window is None:
+            # DELIBERATELY NOT JOURNALED. A weekend is not a stand-down, it is
+            # the absence of a session. Which days traded is already defined
+            # by the candle archive, and a Saturday of refusal rows would
+            # answer a question nobody asked.
             return
         hm = (now_ist.hour, now_ist.minute)
         if special_window is not None:
@@ -6340,20 +6399,58 @@ class AutonomousTradingBot:
             # open five hours early and stay open seven hours after the close.
             start, end = special_window
             if not ((start.hour, start.minute) <= hm < (end.hour, end.minute)):
+                self._journal_league_standdown(
+                    "mcx-special-window-shut",
+                    f"MCX special session runs "
+                    f"{start.hour:02d}:{start.minute:02d}-"
+                    f"{end.hour:02d}:{end.minute:02d} IST; no new commodity "
+                    f"risk at {hm[0]:02d}:{hm[1]:02d}.",
+                )
                 return
         elif hm < self._MCX_FIRST_ENTRY or hm >= self._MCX_LAST_ENTRY:
+            shut_for_the_day = hm >= self._MCX_LAST_ENTRY
+            first = "%02d:%02d" % self._MCX_FIRST_ENTRY
+            last = "%02d:%02d" % self._MCX_LAST_ENTRY
+            self._journal_league_standdown(
+                "mcx-window-shut-for-the-day" if shut_for_the_day
+                else "mcx-window-not-open-yet",
+                f"MCX entry window is "
+                f"{'shut for the day' if shut_for_the_day else 'not open yet'}: "
+                f"{hm[0]:02d}:{hm[1]:02d} IST is outside {first}-{last}, which "
+                f"takes no new risk after {last} to leave 45 minutes of runway "
+                f"before the 23:15 square-off.",
+            )
             return
 
         venue = getattr(self.orchestrator, "mcx_venue", None)
         if venue is None:
+            self._journal_league_standdown(
+                "mcx-venue-missing",
+                "No MCX venue is attached to the orchestrator, so the "
+                "commodity arena could not scan at all. A wiring fault, not a "
+                "market verdict.",
+            )
             return
 
         try:
             bal = venue.get_account_balance()
             if bal.cash <= 1000.0:
+                self._journal_league_standdown(
+                    "mcx-chest-empty",
+                    f"MCX account cash is Rs {bal.cash:,.0f}, at or below the "
+                    f"Rs 1,000 floor, so the whole arena stood down. A "
+                    f"strategy with no chest still wins its auction and then "
+                    f"cannot fill, which denies the asset silently.",
+                )
                 return
         except Exception as exc:
             logger.error(f"MCX Arena: failed to query account balance: {exc}")
+            self._journal_league_standdown(
+                "mcx-balance-unreadable",
+                f"MCX account balance could not be read "
+                f"({type(exc).__name__}), so no commodity entry could be "
+                f"sized. Not a market verdict.",
+            )
             return
 
         # Skip underlyings that already have an open MCX position (dedup by
