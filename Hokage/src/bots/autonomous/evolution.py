@@ -559,9 +559,17 @@ def summarise(decisions: list[Decision]) -> str:
         # that FIRED. The wording now describes the state that actually exists;
         # it changes back the day an applier lands.
         if AUTONOMOUS_ENABLED:
+            # 2026-11-10: an applier does exist and is reachable, so the old
+            # wording ("no applier exists") was itself the thing it warns
+            # against - a report describing a state that had moved. What is
+            # still true is that NOTHING HERE APPLIES IT: this job runs at
+            # 23:45 while Hokage is up, and he rewrites the portfolio book
+            # from memory, so a write made underneath him vanishes at his next
+            # save with nothing logged. It takes one deliberate command.
             lines.append(
-                "CLEARED TO RETIRE (Tier 1 — reduces risk only; NOT YET APPLIED, "
-                "no applier exists, so the lineup is unchanged):"
+                "CLEARED TO RETIRE (Tier 1 — reduces risk only; NOT APPLIED "
+                "here, so the lineup is unchanged. Apply with "
+                "`hokage improve <proposal_id>`, from `hokage proposals`):"
             )
         else:
             lines.append("WOULD RETIRE (autonomy not yet armed — nothing changed):")

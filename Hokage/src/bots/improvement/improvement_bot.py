@@ -11,7 +11,7 @@ import logging
 import uuid
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Sequence
 
 from hokage.memory.resolver import PathResolver
 from hokage.ledger.prediction_ledger import JsonPredictionLedger
@@ -32,10 +32,29 @@ class ImprovementBot:
         resolver: PathResolver | None = None,
         prediction_ledger: JsonPredictionLedger | None = None,
         trade_store: JsonTradeStore | None = None,
-        autonomous_mode: bool = False
+        autonomous_mode: bool = False,
+        extra_portfolio_managers: "Sequence[StrategyPortfolioManager] | None" = None,
     ) -> None:
-        """Initialize ImprovementBot."""
+        """Initialize ImprovementBot.
+
+        `extra_portfolio_managers` IS THE MCX ARENA, AND LEAVING IT OUT WAS A
+        WHOLE LEAGUE OF DECISIONS THAT COULD NOT LAND. One manager is one
+        league with its own file - that separation is deliberate and keeps two
+        ledgers' capital apart - but this bot was handed only the index book,
+        so `apply_improvement_proposal` could not find any `strat-*-mcx-v1`
+        strategy and returned False. The router reported that as "Failed to
+        apply proposal. Verify it is pending approval", which blames the
+        commander's input for a wiring fault, and the four MCX commodity
+        modules are exactly the ones the retirement policy keeps clearing.
+        """
         self.portfolio_manager = portfolio_manager
+        #: Every book this bot may look in, primary first. Order matters only
+        #: for a strategy id that exists in both, which must not happen: the
+        #: two leagues' ids are distinct by construction.
+        self.portfolio_managers: list[StrategyPortfolioManager] = [portfolio_manager]
+        for extra in (extra_portfolio_managers or ()):
+            if extra is not None and extra is not portfolio_manager:
+                self.portfolio_managers.append(extra)
         self.resolver = resolver or PathResolver()
         self.prediction_ledger = prediction_ledger or JsonPredictionLedger(self.resolver.resolve_predictions_dir())
         self.trade_store = trade_store or JsonTradeStore(self.resolver.resolve_trades_dir())
@@ -51,11 +70,37 @@ class ImprovementBot:
         self._applied_improvements_file = self._journal_dir / "applied_improvements.jsonl"
         self._autopsies_file = self._improvement_dir / "trade_autopsies.jsonl"
 
+    def _find_strategy(
+        self, strategy_id: str
+    ) -> "tuple[StrategyPortfolioManager | None, dict[str, Any] | None]":
+        """The book that holds this strategy, and the record, searching both.
+
+        THE BOOK HAS TO COME BACK WITH THE RECORD. Saving the primary manager
+        after editing a record found in the MCX one would write the index book
+        and leave the change nowhere - a success message over no change, which
+        is the failure this project has paid for most often.
+        """
+        for manager in self.portfolio_managers:
+            strat = (manager.portfolio.get("strategies") or {}).get(strategy_id)
+            if strat is not None:
+                return manager, strat
+        return None, None
+
+    def _known_strategy_ids(self) -> list[str]:
+        """Every strategy id across every book, for an error worth reading."""
+        out: list[str] = []
+        for manager in self.portfolio_managers:
+            out.extend((manager.portfolio.get("strategies") or {}).keys())
+        return sorted(set(out))
+
     def analyze_performance_drift(self, strategy_id: str, asset: str = "DEFAULT") -> dict[str, Any]:
         """Compare backtest parameters vs. actual execution metrics for a strategy and asset."""
-        strat = self.portfolio_manager.portfolio.get("strategies", {}).get(strategy_id)
+        _, strat = self._find_strategy(strategy_id)
         if not strat:
-            raise ValueError(f"Strategy {strategy_id} not found in portfolio.")
+            raise ValueError(
+                f"Strategy {strategy_id} not found in any portfolio book "
+                f"(searched {len(self.portfolio_managers)}). Known: "
+                f"{', '.join(self._known_strategy_ids()) or 'none'}")
 
         asset_upper = asset.upper()
 
@@ -333,9 +378,16 @@ class ImprovementBot:
             return False
 
         strat_id = target_prop["strategy_id"]
-        strat = self.portfolio_manager.portfolio.get("strategies", {}).get(strat_id)
-        if not strat:
-            logger.error(f"Strategy {strat_id} referenced by proposal {proposal_id} not found in portfolio.")
+        # BOTH BOOKS. Until 2026-11-10 this read the index book alone, so every
+        # MCX proposal - which is where the four commodity modules and every
+        # retirement the policy clears live - failed here and was reported to
+        # the commander as if his proposal id were wrong.
+        manager, strat = self._find_strategy(strat_id)
+        if not strat or manager is None:
+            logger.error(
+                f"Strategy {strat_id} referenced by proposal {proposal_id} "
+                f"not found in any portfolio book (searched "
+                f"{len(self.portfolio_managers)}).")
             return False
 
         # Apply the proposed changes to the strategy portfolio
@@ -346,10 +398,45 @@ class ImprovementBot:
 
         now_str = datetime.now(timezone.utc).isoformat()
 
+        # ALREADY DONE IS NOT FAILED, AND IT IS NOT APPLIED-BY-ME EITHER.
+        #
+        # On 2026-11-10 two of three PENDING retirements named modules that
+        # `fund_cells.py` had already archived on 11-09: EventRider and
+        # MeanReversion. Nothing marks a row APPLIED when the outcome arrives
+        # by another route, so they sat PENDING for ever - and a PENDING row
+        # SUPPRESSES the re-proposal of the same change, so the table was both
+        # lying about the state and muting the measurement of it.
+        #
+        # The row is closed because its outcome exists, and the log says the
+        # state already matched rather than claiming this call changed
+        # anything. No new status word: `proposals.py` exists because two
+        # spellings of PENDING made measured proposals invisible for weeks.
+        already = {k: v for k, v in new_vals.items()
+                   if k != "asset" and strat.get(k) == v}
+        if already and len(already) == len({k for k in new_vals if k != "asset"}):
+            target_prop["status"] = _proposals.APPLIED
+            target_prop["approving_commander"] = commander_name
+            target_prop["applied_at"] = now_str
+            target_prop["already_in_target_state"] = True
+            strat.setdefault("history", []).append({
+                "timestamp": now_str,
+                "event": f"Proposal {proposal_id} closed by {commander_name}: "
+                         f"the book already read {already} - recorded, nothing "
+                         f"changed.",
+            })
+            manager.save()
+            self._save_proposals_atomic(proposals)
+            self._log_applied_improvement_immutable(target_prop)
+            logger.info(
+                f"Proposal {proposal_id} needed no change: {strat_id} already "
+                f"reads {already}. Marked APPLIED so it stops suppressing a "
+                f"fresh measurement of the same question.")
+            return True
+
         # Update fields in strategy portfolio
         if "status" in new_vals:
             strat["status"] = new_vals["status"]
-            strat["history"].append({
+            strat.setdefault("history", []).append({
                 "timestamp": now_str,
                 "event": f"Status updated from {prev_vals.get('status')} to {new_vals['status']} via Commander approved proposal {proposal_id}."
             })
@@ -358,7 +445,7 @@ class ImprovementBot:
             # We store risk multipliers per asset under a specialized portfolio dictionary
             multipliers = strat.setdefault("risk_multipliers", {})
             multipliers[asset] = new_vals["risk_multiplier"]
-            strat["history"].append({
+            strat.setdefault("history", []).append({
                 "timestamp": now_str,
                 "event": f"Risk multiplier for {asset} updated to {new_vals['risk_multiplier']}x via proposal {proposal_id}."
             })
@@ -366,7 +453,7 @@ class ImprovementBot:
         if "stop_loss_rule" in new_vals:
             # Update stop loss rule text in the strategy
             strat["stop_loss_rule"] = new_vals["stop_loss_rule"]
-            strat["history"].append({
+            strat.setdefault("history", []).append({
                 "timestamp": now_str,
                 "event": f"Stop loss rule updated via proposal {proposal_id}."
             })
@@ -376,8 +463,8 @@ class ImprovementBot:
         target_prop["approving_commander"] = commander_name
         target_prop["applied_at"] = now_str
 
-        # Persist updated strategy portfolio
-        self.portfolio_manager.save()
+        # Persist updated strategy portfolio - THE BOOK THAT HOLDS IT.
+        manager.save()
 
         # Persist updated proposals ledger
         self._save_proposals_atomic(proposals)

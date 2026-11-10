@@ -316,10 +316,20 @@ def test_the_summary_says_plainly_that_nothing_changed(monkeypatch):
     # the Friday report would have announced a retirement that never occurred.
     # A system that reports an action it did not take is worse than one that
     # takes no action, because the commander stops checking.
+    # 2026-11-10: the wording moved, as this test's sibling said it should the
+    # day an applier landed. `ImprovementBot.apply_improvement_proposal` does
+    # apply a retirement and `hokage improve <id>` reaches it - it had simply
+    # never been able to see the MCX book, so no commodity retirement could
+    # land. What is STILL true, and what this test exists for, is that nothing
+    # in this path applies anything: the audit runs at 23:45 with Hokage up,
+    # and he rewrites the portfolio book from memory, so a write made
+    # underneath him disappears at his next save with nothing logged.
     monkeypatch.setattr(ev, "AUTONOMOUS_ENABLED", True)
     armed = ev.summarise(decisions)
-    assert "NOT YET APPLIED" in armed
+    assert "NOT APPLIED" in armed
     assert "lineup is unchanged" in armed
+    assert "hokage improve" in armed, (
+        "a cleared retirement must name the command that applies it")
 
 
 def test_the_summary_never_claims_an_archive_that_nothing_performs(monkeypatch):

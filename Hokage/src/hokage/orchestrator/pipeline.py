@@ -242,7 +242,12 @@ class HokageOrchestrator:
             portfolio_manager=self.autonomous_bot.strategy_portfolio,
             resolver=self.resolver,
             prediction_ledger=self.prediction_ledger,
-            trade_store=self.trade_store
+            trade_store=self.trade_store,
+            # BOTH LEAGUES. Without the MCX book this bot could not find any
+            # strat-*-mcx-v1 strategy, so `hokage improve <id>` failed on
+            # every commodity proposal - and the MCX Arena is where the four
+            # modules the retirement policy keeps clearing actually live.
+            extra_portfolio_managers=[self.autonomous_bot.mcx_strategy_portfolio],
         )
 
         # Watchdog & Heartbeat System
