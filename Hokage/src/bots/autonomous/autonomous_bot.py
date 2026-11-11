@@ -6067,6 +6067,38 @@ class AutonomousTradingBot:
         # never once reached the ledger.
         self._record_exit_reason(symbol, reason_str)
 
+    def _paper_account_ids(self) -> list[str]:
+        """Every paper account id, resolved in ONE place.
+
+        THE SAME BUG HAS NOW BEEN WRITTEN THREE TIMES. `mcx_venue` is its own
+        attribute on the orchestrator, with its own `account_id="paper_mcx"`,
+        deliberately separate so the commodity league's ledger can never mix
+        with the index Dojo's. It is NOT in `paper_venues`, which holds only
+        the broker-driven venues. So every hand-rolled
+
+            venues = [paper_venue] + list(paper_venues.values())
+
+        silently excludes the entire MCX Arena. 2026-08-17 fixed it in the
+        exit loop, 2026-09 in the mark-to-market write-back, and on
+        2026-11-11 it was still wrong in both the exposure rail and the
+        exit-reason recorder - found when GOLDM26NOV141000PE closed and
+        logged "no ledger position matched that symbol in accounts
+        ['paper']". A list built by hand at each call site is a list that
+        will be wrong again, so the question gets one answer.
+
+        ORDER IS STABLE AND THE INDEX ACCOUNT COMES FIRST, because callers
+        log it and a shuffling list reads as a change.
+        """
+        venues = [getattr(self.orchestrator, "paper_venue", None),
+                  getattr(self.orchestrator, "mcx_venue", None)]
+        venues.extend(getattr(self.orchestrator, "paper_venues", {}).values())
+        account_ids: list[str] = []
+        for venue in venues:
+            account_id = getattr(venue, "_account_id", None)
+            if account_id and account_id not in account_ids:
+                account_ids.append(account_id)
+        return account_ids
+
     def _account_open_premium(self) -> float:
         """Premium open across EVERY paper account, in rupees.
 
@@ -6096,14 +6128,14 @@ class AutonomousTradingBot:
             # trade, which is why the test below now CALLS this method.
             from bots.execution.models import TradeStatus
 
-            venues = [getattr(self.orchestrator, "paper_venue", None)]
-            venues.extend(
-                getattr(self.orchestrator, "paper_venues", {}).values())
-            account_ids: list[str] = []
-            for venue in venues:
-                account_id = getattr(venue, "_account_id", None)
-                if account_id and account_id not in account_ids:
-                    account_ids.append(account_id)
+            # EVERY paper account, MCX included. Until 2026-11-11 this list
+            # was built by hand without `mcx_venue`, so commodity premium
+            # consumed none of the budget: the GOLDM put opened that evening
+            # was 25,125 of the 47,619 ceiling and the rail counted zero.
+            # The budget is ONE pool of the commander's real 1,00,000 - "not
+            # a chest each", his words on 2026-11-09 - so an account-wide
+            # rail that cannot see half the account is not a rail.
+            account_ids = self._paper_account_ids()
             if not account_ids:
                 logger.error("Account exposure: no paper account could be "
                              "identified, so exposure cannot be measured.")
@@ -6150,13 +6182,13 @@ class AutonomousTradingBot:
         if not reason:
             return False
         try:
-            venues = [getattr(self.orchestrator, "paper_venue", None)]
-            venues.extend(getattr(self.orchestrator, "paper_venues", {}).values())
-            account_ids: list[str] = []
-            for venue in venues:
-                account_id = getattr(venue, "_account_id", None)
-                if account_id and account_id not in account_ids:
-                    account_ids.append(account_id)
+            # THE BUG THIS COMMENT WAS WRITTEN FOR. This list left out
+            # `mcx_venue`, so every MCX exit reason failed to land: on
+            # 2026-11-11 GOLDM26NOV141000PE closed and logged "no ledger
+            # position matched that symbol in accounts ['paper']" while the
+            # position sat in `paper_mcx`. The shout was the 2026-11-10 fix
+            # working; the miss was this list.
+            account_ids = self._paper_account_ids()
 
             wanted = str(symbol).upper()
             for account_id in account_ids:

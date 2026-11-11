@@ -121,11 +121,24 @@ class _Venue:
 
 
 class _Orchestrator:
+    """Shaped like the real pipeline, which is the point.
+
+    2026-11-11: this double put every account after the first into
+    `paper_venues`, and the real pipeline does not - `mcx_venue` is its own
+    attribute with `account_id="paper_mcx"`. So the MCX account was reachable
+    here and unreachable in production, and `test_it_searches_every_paper_
+    account` passed for eight months while every live MCX exit reason was
+    being dropped. A double that is shaped differently from the thing it
+    stands in for tests the double.
+    """
+
     def __init__(self, store, account_ids):
         self.portfolio_store = store
         self.paper_venue = _Venue(account_ids[0])
+        self.mcx_venue = (_Venue(account_ids[1])
+                          if len(account_ids) > 1 else None)
         self.paper_venues = {f"b{i}": _Venue(a)
-                             for i, a in enumerate(account_ids[1:], start=1)}
+                             for i, a in enumerate(account_ids[2:], start=1)}
 
 
 def _position(market: str, pid: str, opened: dt.datetime,
@@ -149,6 +162,9 @@ def bot():
 
     class Stub:
         _record_exit_reason = AutonomousTradingBot._record_exit_reason
+        # The account list moved into its own method on 2026-11-11, after
+        # being hand-rolled (and wrong) at three call sites.
+        _paper_account_ids = AutonomousTradingBot._paper_account_ids
 
     return Stub()
 

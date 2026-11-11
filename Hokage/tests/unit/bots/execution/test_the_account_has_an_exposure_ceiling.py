@@ -190,12 +190,43 @@ def test_phantoms_carry_no_risk():
 
 def test_it_searches_every_paper_account():
     """Index and commodity books are separate accounts. Counting only one
-    would under-report exposure by the whole of the other league."""
-    src = (ROOT / "src" / "bots" / "autonomous" / "autonomous_bot.py").read_text(
-        encoding="utf-8")
-    body = src.split("def _account_open_premium")[1].split(
-        "def _record_exit_reason")[0]
-    assert "paper_venues" in body and "paper_venue" in body
+    would under-report exposure by the whole of the other league.
+
+    THIS TEST PASSED FOR EIGHT MONTHS WHILE THE BUG IT DESCRIBES WAS LIVE.
+    It asserted `"paper_venues" in body and "paper_venue" in body` - two
+    names that were both present and neither of which is the MCX venue.
+    `mcx_venue` is its own attribute on the orchestrator, so commodity
+    premium consumed none of the budget: on 2026-11-11 a GOLDM put of 25,125
+    opened against a 47,619 ceiling and this rail measured zero.
+
+    A rail that checks for a NAME is not a rail on the behaviour. So it now
+    MEASURES, with a position in the MCX account and nothing in the index
+    one - which is the exact state that used to read as an empty account.
+    """
+    from types import SimpleNamespace
+
+    from bots.autonomous.autonomous_bot import AutonomousTradingBot
+    from bots.execution.models import TradeStatus
+
+    class Stub:
+        _account_open_premium = AutonomousTradingBot._account_open_premium
+        _paper_account_ids = AutonomousTradingBot._paper_account_ids
+
+    mcx_only = {
+        "paper": SimpleNamespace(positions={}),
+        "paper_mcx": SimpleNamespace(positions={"p": SimpleNamespace(
+            status=TradeStatus.OPEN, entry_price=2512.5, quantity=10.0,
+            failure_reason=None)}),
+    }
+    bot = Stub()
+    bot.orchestrator = SimpleNamespace(
+        paper_venue=SimpleNamespace(_account_id="paper"),
+        mcx_venue=SimpleNamespace(_account_id="paper_mcx"),
+        paper_venues={},
+        portfolio_store=SimpleNamespace(load_account=lambda a: mcx_only[a]))
+
+    assert bot._account_open_premium() == pytest.approx(25_125.0), (
+        "MCX premium must consume the account-wide budget")
 
 
 # ============================================== the per-strategy cap survives
