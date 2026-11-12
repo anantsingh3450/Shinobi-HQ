@@ -3626,13 +3626,20 @@ class AutonomousTradingBot:
             import archive_options
             from hokage.memory import option_archive
 
+            # `get_kite_client`, NOT `get_kite`. I invented the shorter name
+            # and it raised AttributeError on every single capture - caught,
+            # and for twenty minutes logged at DEBUG where nothing could see
+            # it. The WARNING added in the same hour named the cause in one
+            # line on the first tick after the restart, which is the whole
+            # argument for not failing silently.
             kite = None
             try:
-                kite = self.orchestrator.kite_connection.get_kite()
+                kite = self.orchestrator.kite_connection.get_kite_client()
             except Exception as exc:
                 kite = None
                 self._say_chain_capture_blocked(
-                    f"the broker handle could not be read ({exc})")
+                    f"the broker handle could not be read "
+                    f"({type(exc).__name__}: {exc})")
             if kite is None:
                 self._say_chain_capture_blocked("no broker session")
                 return

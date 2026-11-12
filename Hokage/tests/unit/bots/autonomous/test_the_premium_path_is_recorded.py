@@ -150,7 +150,7 @@ def _runner(monkeypatch, *, kite=object(), capture=None, remember=None,
     bot._now_ist = lambda: NOW
     bot._chain_capture_running = True
     bot.orchestrator = SimpleNamespace(
-        kite_connection=SimpleNamespace(get_kite=lambda: kite))
+        kite_connection=SimpleNamespace(get_kite_client=lambda: kite))
 
     fake_ao = types.ModuleType("archive_options")
     fake_ao.UNDERLYINGS = {"NIFTY": ("NFO", "NSE:NIFTY 50"),
@@ -346,3 +346,25 @@ def test_an_hour_later_the_same_reason_speaks_again(caplog):
         bot._now_ist = lambda: now + dt.timedelta(hours=2)
         bot._say_chain_capture_blocked("no broker session")
     assert caplog.text.count("recorded NOTHING") == 2
+
+
+def test_the_broker_handle_method_actually_exists():
+    """I INVENTED `get_kite()`. It does not exist on the manager, so every
+    capture raised AttributeError - caught, and logged at DEBUG where nobody
+    could see it. The real name is `get_kite_client`.
+
+    A rail on the CLASS, not on a mock: a test that stubs the manager would
+    have passed with the wrong name, which is exactly how this shipped.
+    """
+    from integrations.brokers.kite_connection import KiteConnectionManager
+
+    src = textwrap.dedent(inspect.getsource(Bot._run_option_chain_capture))
+    called = {n.func.attr for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.Call)
+              and isinstance(n.func, ast.Attribute)
+              and n.func.attr.startswith("get_kite")}
+    assert called, "the capture no longer asks for a broker handle"
+    for name in called:
+        assert hasattr(KiteConnectionManager, name), (
+            f"KiteConnectionManager has no {name}() - the capture would "
+            f"raise on every tick")
