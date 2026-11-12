@@ -568,8 +568,113 @@ def report(symbol: str, results: dict[str, dict], horizon: int) -> None:
         print(f"    {name:24s} {n:>5d} {acc:>8.1f}% {mean:>+9.3f} {t:>+6.2f}  {verdict}")
 
 
+def _t_of(result: dict) -> tuple[int, float, float]:
+    """(n, mean edge in ATR, t) for one signal's result bucket."""
+    n = result["n"]
+    if n < 2:
+        return n, 0.0, 0.0
+    mean = sum(result["edges"]) / n
+    var = sum((e - mean) ** 2 for e in result["edges"]) / (n - 1)
+    return n, mean, mean / (math.sqrt(var / n) or 1e-9)
+
+
+def holdout_report(symbols: list[str], min_n: int = 30) -> int:
+    """Every signal, on BOTH halves, against the bar the search earned.
+
+    WHY main() IS NOT ENOUGH. It runs one pooled window and verdicts at
+    t >= 2. Two separate things are missing from that, and each one on its own
+    has already fooled this project:
+
+      1. NO HOLD-OUT. `holdout_lab` records the day session_lab found
+         SessionShift +3.52 and TrendRider +2.43 on NATURALGAS, and splitting
+         train from hold-out "destroyed all of it, with the signs flipping".
+      2. NO CORRECTION FOR THE SEARCH. This bench tries every signal at every
+         horizon on every symbol asked for. Judging the best of those as if it
+         were the only one looked at is the mistake `corrected_t` exists for:
+         of 116,360 hypotheses measured on this tape, 2,808 cleared t >= 2 on
+         both halves and NOT ONE cleared the corrected bar.
+
+    So the family here is signals x horizons x symbols, counted honestly, and
+    a signal is only CONFIRMED if it clears that corrected bar on BOTH halves.
+    The vocabulary is `holdout_lab`'s on purpose - one verdict language.
+    """
+    family = len(CANDIDATES) * len(HORIZONS) * max(1, len(symbols))
+    bar = corrected_t(family)
+    print("=" * 78)
+    print("  SIGNAL LAB - HOLD-OUT MODE")
+    print(f"  {len(CANDIDATES)} signals x {len(HORIZONS)} horizons x "
+          f"{len(symbols)} symbol(s) = {family} places looked")
+    print(f"  bar corrected for that search: t >= {bar:.2f}  "
+          f"(uncorrected would be {BASE_SHIP_T:.2f})")
+    print("  CONFIRMED clears it on BOTH halves. FRAGILE clears train only -")
+    print("  that is what noise looks like after a search.")
+    print("=" * 78)
+
+    confirmed: list[str] = []
+    for symbol in symbols:
+        try:
+            (tr_start, tr_end), (ho_start, ho_end) = halves(symbol)
+            train = load_bars(symbol, tr_start, tr_end)
+            hold = load_bars(symbol, ho_start, ho_end)
+        except Exception as exc:
+            print(f"\n  {symbol}: could not load halves ({exc})")
+            continue
+        print(f"\n  {symbol}   train {tr_start[:10]}..{tr_end[:10]}   "
+              f"hold-out {ho_start[:10]}..{ho_end[:10]}")
+        for horizon in HORIZONS:
+            tr = evaluate(train, horizon)
+            ho = evaluate(hold, horizon)
+            print(f"    horizon {horizon} bars ({horizon * 15} min)")
+            print(f"      {'signal':24s} {'n tr':>5s} {'t tr':>6s} "
+                  f"{'n ho':>5s} {'t ho':>6s}  verdict")
+            rows = []
+            for name in CANDIDATES:
+                n_tr, _m_tr, t_tr = _t_of(tr[name])
+                n_ho, m_ho, t_ho = _t_of(ho[name])
+                if n_tr < min_n or n_ho < min_n:
+                    rows.append((-99.0, name, n_tr, t_tr, n_ho, t_ho,
+                                 "too few to judge"))
+                    continue
+                if m_ho < 0:
+                    word = "NEGATIVE"
+                elif t_tr >= bar and t_ho >= bar:
+                    word = "CONFIRMED"
+                    confirmed.append(f"{symbol}/{name}/h{horizon}")
+                elif t_tr >= bar:
+                    word = "FRAGILE"
+                else:
+                    word = "WEAK"
+                rows.append((t_ho, name, n_tr, t_tr, n_ho, t_ho, word))
+            for _key, name, n_tr, t_tr, n_ho, t_ho, word in sorted(
+                    rows, reverse=True):
+                if word == "too few to judge":
+                    print(f"      {name:24s} {n_tr:>5d} {'--':>6s} "
+                          f"{n_ho:>5d} {'--':>6s}  {word}")
+                else:
+                    print(f"      {name:24s} {n_tr:>5d} {t_tr:>+6.2f} "
+                          f"{n_ho:>5d} {t_ho:>+6.2f}  {word}")
+
+    print()
+    if confirmed:
+        print("  CONFIRMED on both halves at the corrected bar:")
+        for line in confirmed:
+            print(f"    {line}")
+    else:
+        print("  NOTHING CONFIRMED. Every signal that looked good on one half")
+        print("  failed the other, failed the corrected bar, or both. That is")
+        print("  the expected outcome of a search this wide, and reporting it")
+        print("  as a null result is the whole point of the bar.")
+    print()
+    return 0
+
+
 def main() -> int:
-    symbols = [s.upper() for s in sys.argv[1:]] or ["NIFTY", "BANKNIFTY"]
+    args = [a for a in sys.argv[1:]]
+    if "--holdout" in args:
+        args.remove("--holdout")
+        return holdout_report([s.upper() for s in args]
+                              or ["NIFTY", "BANKNIFTY"])
+    symbols = [s.upper() for s in args] or ["NIFTY", "BANKNIFTY"]
     start, end = "2026-05-01 09:15:00", "2026-08-05 15:30:00"
     print("=" * 78)
     print("  SIGNAL LAB — does this signal actually predict, or does it just look good?")
