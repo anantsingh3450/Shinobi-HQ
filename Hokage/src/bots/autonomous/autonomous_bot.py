@@ -3479,6 +3479,68 @@ class AutonomousTradingBot:
         except Exception:
             return ()
 
+    def _remember_exit_for_followup(self, *, symbol, pos, fill_price,
+                                    exit_reason, live_pnl, charges) -> None:
+        """Write the exit down so its aftermath can be watched. Never raises.
+
+        THE TARGET AND FLOOR COME FROM THE LIVE TRACKING DICT, which is the
+        only record of what this position was actually aiming at. They are
+        seeded per position (`_seed_target_price`) and ratchet as the trail
+        arms, so reading them anywhere later would get a different number
+        than the exit was judged against - the same "different ruler" problem
+        that reset the audit's retirement clock.
+
+        THE EXCHANGE IS RESOLVED, NOT GUESSED. A post-exit quote needs
+        `EXCHANGE:TRADINGSYMBOL`, and MCX options are not on NFO. The
+        archiver already maps every underlying to its segment, so that map is
+        the single source rather than a second table of my own.
+        """
+        try:
+            from hokage.memory import exit_followup
+
+            tracking = (getattr(self, "_active_positions_tracking", None)
+                        or {}).get(symbol) or {}
+            underlying = None
+            exchange = None
+            try:
+                import sys
+                from pathlib import Path as _P
+
+                root = _P(__file__).resolve().parents[3]
+                ops = str(root / "tools" / "ops")
+                if ops not in sys.path:
+                    sys.path.insert(0, ops)
+                import archive_options
+
+                up = str(symbol).upper()
+                for name, (segment, _spot) in archive_options.UNDERLYINGS.items():
+                    if up.startswith(name):
+                        underlying, exchange = name, segment
+                        break
+            except Exception:
+                pass
+
+            exit_followup.remember_exit(
+                position_id=str(getattr(pos, "position_id", None)
+                                or tracking.get("position_id") or symbol),
+                contract=str(symbol),
+                underlying=underlying,
+                exchange=exchange,
+                strategy_id=tracking.get("strategy_id"),
+                quantity=getattr(pos, "quantity", None),
+                entry_price=getattr(pos, "average_price", None),
+                exit_price=float(fill_price),
+                exit_reason=exit_reason,
+                target_price=tracking.get("target_price"),
+                stop_price=tracking.get("stop_price"),
+                peak_price=tracking.get("_traced_peak"),
+                gross_pnl=live_pnl,
+                charges=charges,
+            )
+        except Exception as exc:
+            logger.debug("Could not record the exit follow-up for %s: %s",
+                         symbol, exc)
+
     #: How often an intraday chain snapshot is worth taking. The trading loop
     #: ticks every 15 minutes, so this is one capture per tick and no faster:
     #: finer would cost broker calls for resolution the exits do not use, and
@@ -3580,6 +3642,13 @@ class AutonomousTradingBot:
                 except Exception as exc:
                     logger.debug("Chain capture: %s skipped (%s)", symbol, exc)
 
+            # PHASE 2: THE CONTRACTS WE JUST SOLD, which the band above does
+            # not reliably contain. `capture` reads strikes around the money;
+            # a held contract drifts out of that band precisely when it
+            # matters, and the whole point is to watch the one we exited.
+            # Quoted directly by tradingsymbol so nothing is inferred.
+            self._observe_exited_contracts(kite, when)
+
             if not rows:
                 return
             added = option_archive.remember(rows, when)
@@ -3589,10 +3658,50 @@ class AutonomousTradingBot:
                     "archived at %s IST. Intraday MARKS, not closes - "
                     "closing_snapshots() excludes them.",
                     len(rows), added, when.strftime("%H:%M"))
+
         except Exception as exc:
             logger.error("Option chain capture aborted: %s", exc)
         finally:
             self._chain_capture_running = False
+
+    def _observe_exited_contracts(self, kite, when) -> None:
+        """Quote every contract still inside its post-exit window.
+
+        ONE QUOTE CALL FOR ALL OF THEM. `kite.quote` takes a list, and the
+        watchlist is small - two hours of exits, and this account closes a
+        handful a day. A call per contract would multiply broker traffic for
+        no resolution.
+
+        Never raises: this is measurement bolted onto a measurement, and the
+        trading loop is two layers above it.
+        """
+        try:
+            from hokage.memory import exit_followup
+
+            watching = exit_followup.watchlist(when)
+            if not watching:
+                return
+            keys: dict[str, str] = {}
+            for row in watching:
+                exchange = row.get("exchange") or "NFO"
+                keys[f"{exchange}:{row['contract']}"] = row["position_id"]
+            quotes = kite.quote(list(keys)) or {}
+            stored = 0
+            for key, position_id in keys.items():
+                q = quotes.get(key) or {}
+                last = q.get("last_price")
+                depth = (q.get("depth") or {})
+                bid = (depth.get("buy") or [{}])[0].get("price")
+                ask = (depth.get("sell") or [{}])[0].get("price")
+                if exit_followup.observe(position_id, last, bid, ask, when):
+                    stored += 1
+            if stored:
+                logger.info(
+                    "Post-exit watch: %d contract(s) marked at %s IST. This "
+                    "is what the option did AFTER Hokage sold it.",
+                    stored, when.strftime("%H:%M"))
+        except Exception as exc:
+            logger.debug("Post-exit watch skipped: %s", exc)
 
     def _catch_up_candle_archive(self) -> None:
         """Once a day, repair any session the nightly sync could not write.
@@ -5865,6 +5974,24 @@ class AutonomousTradingBot:
                         "timestamp":  datetime.now(timezone.utc).isoformat(),
                     }
                     self._exits_executed_today.append(exit_record)
+
+                    # WHAT HAPPENS TO THIS CONTRACT NEXT. Commander-approved
+                    # 2026-11-12. Hokage has never known: `position_review`
+                    # grades an exit from the REASON he gave it and never
+                    # from what the price did afterwards. Two GOLDM puts on
+                    # consecutive days both peaked above +6%, both armed the
+                    # trail, both fell back to the break-even floor and both
+                    # lost - and whether holding either would have reached
+                    # target or collapsed further is unanswerable.
+                    #
+                    # Recorded here rather than in the review step because
+                    # this is the only place that holds the FILL price and
+                    # the ladder's target and floor at the same moment. It
+                    # never raises and never blocks the exit.
+                    self._remember_exit_for_followup(
+                        symbol=symbol, pos=pos, fill_price=fill_price,
+                        exit_reason=exit_reason, live_pnl=live_pnl,
+                        charges=round_trip_charges)
 
                     # Notify immediately, isolated from every downstream
                     # analytics/journal step below: those can throw (and did

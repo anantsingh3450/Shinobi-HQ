@@ -1364,6 +1364,47 @@ def main() -> int:
         # A cell that has NEWLY stopped delivering its measured edge is news
         # in a week where nothing else moved: it is the first sign that the
         # number this audit ships against has come loose from the account.
+        # PHASE 5: SOMEBODY HAS TO READ IT. The mirror experiment recorded
+        # faithfully for 11 days and nothing in the repo ever opened the
+        # archive, so the result was never a result. A corpus with no reader
+        # is wasted work, which is why this line is part of the feature
+        # rather than a nice-to-have.
+        try:
+            import post_exit_lab
+            from hokage.memory import exit_followup
+
+            cover = exit_followup.coverage()
+            if cover["exits"]:
+                judged = [post_exit_lab.judge(r)
+                          for r in exit_followup.followups()]
+                watched = [j for j in judged
+                           if j["verdict"] != post_exit_lab.Verdict.UNWATCHED]
+                if watched:
+                    cost = sum(1 for j in watched
+                               if j["verdict"] == post_exit_lab.Verdict.COST)
+                    saved = sum(1 for j in watched
+                                if j["verdict"] == post_exit_lab.Verdict.SAVED)
+                    same = len(watched) - cost - saved
+                    text += (
+                        "\n\n" + "-" * 60
+                        + "\nPOST-EXIT WATCH\n"
+                        + f"  {len(watched)} exits judged on what happened next: "
+                        + f"{cost} cost us, {saved} saved us, {same} made no "
+                        + "difference.\n"
+                        + f"  {cover['without_observations']} exit(s) had no "
+                        + "aftermath recorded and are excluded - not looking "
+                        + "is not a verdict.\n"
+                        + "  Full detail: tools/research/post_exit_lab.py\n")
+                else:
+                    text += (
+                        "\n\n" + "-" * 60
+                        + "\nPOST-EXIT WATCH\n"
+                        + f"  {cover['exits']} exit(s) recorded, none with an "
+                        + "aftermath yet. That is a measurement gap, not a "
+                        + "clean bill of health for the exits.\n")
+        except Exception as exc:
+            text += f"\n\n(post-exit watch failed to run: {exc})"
+
         fresh_gaps = capture_news(current.get("capture") or {}, history)
         worth_sending = bool(report["demotions"] or report["revivals"]
                              or report["moves"] or swept or fresh_gaps)

@@ -167,6 +167,61 @@ def build_plain_report(
                 f"only — the costs were real, they were just never recorded.)"
             )
 
+    # ---- what the options did after he sold ---------------------------
+    # PHASE 5, the daily half. Written in plain words because this report is
+    # the one the commander actually reads, and the whole point of the
+    # post-exit corpus is that somebody reads it - the mirror experiment ran
+    # 11 days and nothing ever opened its archive.
+    #
+    # ALL THREE OUTCOMES OR NONE. Printing only "sold too early" would turn
+    # the report into a regret machine: you notice the ones that recovered
+    # and forget the ones that collapsed.
+    try:
+        from hokage.memory import exit_followup
+
+        _cover = exit_followup.coverage()
+        if _cover["exits"]:
+            import sys as _sys
+            from pathlib import Path as _P
+
+            _tools = str(_P(__file__).resolve().parents[3]
+                         / "tools" / "research")
+            if _tools not in _sys.path:
+                _sys.path.insert(0, _tools)
+            import post_exit_lab as _pel
+
+            _judged = [_pel.judge(r) for r in exit_followup.followups(limit=40)]
+            _watched = [j for j in _judged
+                        if j["verdict"] != _pel.Verdict.UNWATCHED]
+            if _watched:
+                _cost = sum(1 for j in _watched
+                            if j["verdict"] == _pel.Verdict.COST)
+                _saved = sum(1 for j in _watched
+                             if j["verdict"] == _pel.Verdict.SAVED)
+                _same = len(_watched) - _cost - _saved
+                lines.append("")
+                lines.append("After he sold — what the option did next:")
+                lines.append(
+                    f"Of the last {len(_watched)} trades he closed, the price "
+                    f"later went higher on {_cost} (he sold too early), fell "
+                    f"further on {_saved} (selling saved money), and barely "
+                    f"moved on {_same}."
+                )
+                _reached = sum(1 for j in _watched if j["reached_target"])
+                if _reached:
+                    lines.append(
+                        f"{_reached} of them went on to reach the price target "
+                        f"he had been aiming for."
+                    )
+                lines.append(
+                    "This judges the SELL decision, not the buy. It also "
+                    "ignores that an option loses value just by time passing, "
+                    "so holding on is not as free as it looks."
+                )
+    except Exception:
+        # A measurement must never cost the commander his daily report.
+        pass
+
     # ---- still-open trades --------------------------------------------
     if open_trades:
         lines.append("")
