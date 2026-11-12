@@ -2532,15 +2532,40 @@ class AutonomousTradingBot:
 
     @staticmethod
     def _chest_of(strat: dict[str, Any]) -> float:
-        """What this strategy can actually put at risk: seed plus realized P&L.
+        """What this strategy can actually put at risk, NET OF THE BROKER.
 
         One definition, shared by the chest audit and the coverage audit. They
         disagreeing about what "can afford to trade" means is how an asset ends
         up reported as covered by a strategy that cannot fill.
+
+        IT WAS GROSS, AND THAT CLAIM OF ONE DEFINITION WAS FALSE. The stored
+        `capital.realized_pnl` key deliberately "STAYS GROSS" (see
+        `StrategyPortfolio.book_fill`) with the broker's cut kept beside it in
+        `charges_paid`, and `get_capital_report` subtracts it to report a net
+        figure. This read the stored key straight, so the two definitions
+        disagreed by exactly the charges paid - the chest audit believing more
+        than the account held, which is the 2026-11-10 `available` bug one
+        layer up, in the function whose docstring promised it could not happen.
+        Found 2026-11-12.
+
+        TODAY THE GAP IS 85 RUPEES, which is the reason to fix it now rather
+        than later: fill-time charge accounting only started 2026-11-09, so
+        exactly one booked trade carries a charge. Across the 126 closed
+        positions on record the same arithmetic comes to 10,471 - 3.39x the
+        entire gross profit - so this leak does not stay small, it just
+        started small.
+
+        `trades_without_charges` is NOT treated as zero charges. Those fills
+        have no charge accounting at all, so their cost is unknown rather than
+        absent; the chest is simply the best figure available and the capital
+        report carries the count so the gap stays visible.
         """
         capital = strat.get("capital") or {}
         try:
-            return float(capital.get("starting", 0.0)) + float(capital.get("realized_pnl", 0.0))
+            starting = float(capital.get("starting", 0.0) or 0.0)
+            gross = float(capital.get("realized_pnl", 0.0) or 0.0)
+            charges = float(capital.get("charges_paid", 0.0) or 0.0)
+            return starting + gross - charges
         except (TypeError, ValueError):
             return 0.0
 
