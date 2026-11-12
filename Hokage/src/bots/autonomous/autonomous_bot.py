@@ -1171,6 +1171,29 @@ class AutonomousTradingBot:
                 except Exception as exc:
                     logger.error(f"Candle archive catch-up failed: {exc}")
 
+                # 0b2. THE PREMIUM PATH, WHICH ONLY EXISTS IF WE RECORD IT.
+                # The option chain was archived once a day, at 23:40, by
+                # Sync-Candles.ps1. That is enough to price a spread at a
+                # close and useless for anything intraday - and intraday is
+                # where the money goes. Measured 2026-11-12: the premium
+                # backstop is 16 exits and -44,724, the worst per trade in
+                # the book, 11 of them GOLDM; those positions are held 11 to
+                # 77 minutes and enter looking exactly like winners
+                # (+3.66 ATR of prior move against the winners' +3.70). What
+                # separates them has to be on the premium side - IV, theta,
+                # spread - and NOT ONE of those questions is answerable from
+                # a single daily snapshot.
+                #
+                # Option premium history dies with the contract, so this is
+                # not a gap that can be back-filled later. The corpus either
+                # starts accumulating now or the question stays unanswerable
+                # for ever. That is the same argument that built the candle
+                # archive after a futures roll ate three months of tape.
+                try:
+                    self._capture_option_chain_intraday()
+                except Exception as exc:
+                    logger.error(f"Option chain capture failed: {exc}")
+
                 # 0c. What can this account size actually TRADE? Runs after the
                 # feed check on purpose — it needs real quotes, and it stays
                 # silent until it gets them. Announcing "you can trade nothing"
@@ -3430,6 +3453,121 @@ class AutonomousTradingBot:
             return tuple(ASSETS)
         except Exception:
             return ()
+
+    #: How often an intraday chain snapshot is worth taking. The trading loop
+    #: ticks every 15 minutes, so this is one capture per tick and no faster:
+    #: finer would cost broker calls for resolution the exits do not use, and
+    #: the exit ladder itself polls on the same cadence.
+    _CHAIN_CAPTURE_MINUTES = 15
+
+    def _capture_option_chain_intraday(self) -> None:
+        """Record the option chain through the session, not just at the close.
+
+        WHY. The premium backstop is the worst mechanism in the book per trade
+        (-2,795 average over 16 exits) and the only one no measurement can
+        reach, because `archive_options.py` runs once a day at 23:40 and these
+        positions live 11 to 77 minutes. They enter indistinguishably from
+        winners, so whatever kills them is on the premium side - and premium
+        history dies with the contract, so it is recorded now or never.
+
+        NOTHING HERE IS NEW MACHINERY. `archive_options.capture` already
+        stamps every row with `captured_at`, and `option_archive.
+        closing_snapshots` already excludes rows taken before the close, so
+        intraday marks cannot contaminate the close-based spread work that
+        corpus was built for. This only calls it more often.
+
+        ON ITS OWN THREAD, ALWAYS, and never fatal. A chain fetch is six quote
+        calls and can hang on a slow broker; the trading loop manages exits
+        and must never wait for a measurement. An archive that fails is a
+        measurement problem for later, not a reason to stop trading.
+
+        IT DOES NOT RUN WITHOUT A FEED. Same guard as the candle catch-up: no
+        token means no point and no false alarm.
+        """
+        if getattr(self, "_chain_capture_running", False):
+            return
+        if not getattr(self, "_feed_probe_ok", False):
+            return
+
+        now_ist = self._now_ist()
+        last = getattr(self, "_chain_capture_at", None)
+        if last is not None:
+            elapsed = (now_ist - last).total_seconds() / 60.0
+            if elapsed < self._CHAIN_CAPTURE_MINUTES:
+                return
+
+        # Only while something is actually trading. On a shut day the broker
+        # still answers with the PREVIOUS session's prints, and those rows
+        # would be indistinguishable from today's - which is the reasoning
+        # archive_options.main already applies before spending quota.
+        if self._nothing_trades_today():
+            return
+
+        self._chain_capture_at = now_ist
+        self._chain_capture_running = True
+        threading.Thread(
+            target=self._run_option_chain_capture,
+            name="HokageChainCapture", daemon=True,
+        ).start()
+
+    def _run_option_chain_capture(self) -> None:
+        """The fetch itself, off the trading thread. Never raises."""
+        try:
+            import sys
+            from pathlib import Path as _P
+
+            root = _P(__file__).resolve().parents[3]
+            for extra in (str(root / "tools" / "ops"),
+                          str(root / "tools" / "research")):
+                if extra not in sys.path:
+                    sys.path.insert(0, extra)
+            import archive_options
+            from hokage.memory import option_archive
+
+            kite = None
+            try:
+                kite = self.orchestrator.kite_connection.get_kite()
+            except Exception:
+                kite = None
+            if kite is None:
+                logger.debug("Chain capture: no broker session; skipped.")
+                return
+
+            # ONE `when` FOR THE WHOLE SWEEP, which is what `capture` takes
+            # and what `remember` stamps. Letting each symbol read its own
+            # clock would spread one snapshot across several minutes and make
+            # the rows look like different captures.
+            when = option_archive.now_ist()
+
+            rows: list[dict] = []
+            for symbol, (segment, spot_key) in archive_options.UNDERLYINGS.items():
+                # PER SYMBOL, so one unlisted contract or one shut segment
+                # cannot cost the whole sweep. MCX trades while NSE is closed,
+                # and the reverse on a holiday evening.
+                try:
+                    if option_archive.market_was_open(symbol, when.date()) is False:
+                        continue
+                except Exception:
+                    pass
+                try:
+                    rows.extend(archive_options.capture(
+                        kite, symbol, segment, spot_key, when))
+                except Exception as exc:
+                    logger.debug("Chain capture: %s skipped (%s)", symbol, exc)
+
+            if not rows:
+                return
+            added = option_archive.remember(rows, when)
+            if added:
+                logger.info(
+                    "Option chain: %d contract(s) read, %d new row(s) "
+                    "archived at %s IST. Intraday MARKS, not closes - "
+                    "closing_snapshots() excludes them.",
+                    len(rows), added, when.strftime("%H:%M"))
+        except Exception as exc:
+            logger.error("Option chain capture aborted: %s", exc)
+        finally:
+            self._chain_capture_running = False
 
     def _catch_up_candle_archive(self) -> None:
         """Once a day, repair any session the nightly sync could not write.
