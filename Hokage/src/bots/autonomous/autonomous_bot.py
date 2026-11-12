@@ -793,41 +793,125 @@ class AutonomousTradingBot:
             logger.debug("Could not describe today's session: %s", exc)
 
     def _cleanup_stale_paper_positions(self) -> None:
-        """On startup, close any open paper positions that are older than today.
-        
-        Stale open positions in the DB will block the MaxPositionsRiskRule and prevent
-        new trades. This cleanup runs at bot start and on midnight reset.
+        """On startup, close any open paper position older than today.
+
+        A stale OPEN row blocks MaxPositionsRiskRule and silently stops new
+        entries, which is why this runs at boot and on the midnight reset.
+
+        IT HAD NEVER CLOSED ONE. Four faults stacked, found 2026-11-12 while
+        fixing the account list:
+
+          1. `pos._replace(status=CLOSED)`. `Position` is a
+             `@dataclass(slots=True)`; `_replace` is a NamedTuple method and
+             raised AttributeError on EVERY position it tried to clean.
+          2. `_dt.fromisoformat(pos.opened_at)` assumed a string, while the
+             model declares `opened_at: datetime` - a TypeError on any store
+             that hydrates it as one.
+          3. A bare `except Exception: pass` inside the loop swallowed both.
+          4. So `cleaned` stayed 0 and it logged "No stale paper positions
+             found. DB is clean." A fabricated all-clear, the same shape as
+             the zero-row UPDATE that hid 417 missing exit reasons and the
+             default review grades that invented verdicts.
+
+        AND IT ONLY EVER LOOKED AT THE INDEX BOOK. `mcx_venue` is its own
+        orchestrator attribute, so a stale commodity position was out of
+        reach twice over. Commander-approved 2026-11-12 to cover both.
+
+        THE DATE COMPARISON IS IN IST, NOT UTC. `opened_at` is stored UTC, so
+        a position opened 00:30 IST reads as YESTERDAY in UTC - and would
+        have been force-closed thirty minutes after it opened, by a cleanup
+        meant for positions from prior sessions.
+
+        A CLEANUP CLOSE RECORDS WHY. A position closed with no stated reason
+        is the defect this project keeps paying for. PHANTOM annotations are
+        the 2026-07-15 audit record and are never overwritten.
         """
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
+
+        from bots.execution.models import TradeStatus
+
         try:
-            account_id = self.orchestrator.paper_venue._account_id
-            account = self.orchestrator.portfolio_store.load_account(account_id)
-            from bots.execution.models import TradeStatus
-            from datetime import date
-            today = date.today()
-            cleaned = 0
-            for pos_id, pos in list(account.positions.items()):
-                if pos.status == TradeStatus.OPEN:
-                    # Check if position was opened before today
+            now_ist = self._now_ist()
+            today = now_ist.date()
+            total_cleaned = 0
+            faults = 0
+
+            for account_id in self._paper_account_ids():
+                try:
+                    account = self.orchestrator.portfolio_store.load_account(
+                        account_id)
+                except Exception as exc:
+                    faults += 1
+                    logger.warning(
+                        "Startup cleanup: could not read account %s, so a "
+                        "stale position there would still block entries: %s",
+                        account_id, exc)
+                    continue
+
+                cleaned = 0
+                for pos in list(account.positions.values()):
+                    if pos.status != TradeStatus.OPEN:
+                        continue
                     try:
-                        from datetime import datetime as _dt
-                        opened_date = _dt.fromisoformat(pos.opened_at).date() if hasattr(pos, "opened_at") and pos.opened_at else None
-                        if opened_date and opened_date < today:
-                            logger.warning(
-                                f"Startup cleanup: Closing stale paper position for {pos.market} "
-                                f"(opened {opened_date}, today is {today}). "
-                                f"This prevents it from blocking new trades via MaxPositionsRiskRule."
-                            )
-                            account.positions[pos_id] = pos._replace(status=TradeStatus.CLOSED)
-                            cleaned += 1
-                    except Exception:
-                        pass
-            if cleaned > 0:
-                self.orchestrator.portfolio_store.save_account(account)
-                logger.info(f"Startup cleanup: Closed {cleaned} stale paper position(s) from prior sessions.")
-            else:
-                logger.info("Startup cleanup: No stale paper positions found. DB is clean.")
+                        opened = getattr(pos, "opened_at", None)
+                        if isinstance(opened, str):
+                            opened = _dt.fromisoformat(opened)
+                        if opened is None:
+                            continue
+                        if opened.tzinfo is None:
+                            opened = opened.replace(tzinfo=_tz.utc)
+                        opened_date = opened.astimezone(now_ist.tzinfo).date()
+                        if opened_date >= today:
+                            continue
+
+                        logger.warning(
+                            "Startup cleanup: closing stale paper position "
+                            "%s in %s (opened %s IST, today is %s). A stale "
+                            "OPEN row blocks new entries via "
+                            "MaxPositionsRiskRule.",
+                            pos.market, account_id, opened_date, today)
+                        pos.status = TradeStatus.CLOSED
+                        existing = str(getattr(pos, "failure_reason", "") or "")
+                        if not existing.startswith("PHANTOM"):
+                            pos.failure_reason = (
+                                f"Startup cleanup: stale OPEN position from "
+                                f"{opened_date}, closed at boot so it cannot "
+                                f"block new entries. Not a market exit.")
+                        cleaned += 1
+                    except Exception as exc:
+                        # NEVER `pass`. Swallowing this is fault 3 above, and
+                        # it is what made four years of no-ops look like a
+                        # clean database.
+                        faults += 1
+                        logger.warning(
+                            "Startup cleanup: could not clean %s in %s, so it "
+                            "may still block entries: %s: %s",
+                            getattr(pos, "market", "<unknown>"), account_id,
+                            type(exc).__name__, exc)
+
+                if cleaned:
+                    self.orchestrator.portfolio_store.save_account(account)
+                    logger.info(
+                        "Startup cleanup: closed %d stale paper position(s) "
+                        "in %s.", cleaned, account_id)
+                total_cleaned += cleaned
+
+            # THE ALL-CLEAR IS CONDITIONAL ON HAVING MANAGED TO LOOK.
+            if faults:
+                logger.error(
+                    "Startup cleanup: finished with %d fault(s) and closed "
+                    "%d position(s). This is NOT a clean bill of health - a "
+                    "stale OPEN row may still be blocking entries.",
+                    faults, total_cleaned)
+            elif total_cleaned == 0:
+                logger.info(
+                    "Startup cleanup: no stale paper positions in %s.",
+                    ", ".join(self._paper_account_ids()) or "<no account>")
         except Exception as e:
-            logger.warning(f"Startup position cleanup skipped (non-critical): {e}")
+            logger.error(
+                "Startup position cleanup could not run at all, so a stale "
+                "OPEN position may be blocking every new entry: %s", e)
 
 
     def _deadman_status(self) -> str:
