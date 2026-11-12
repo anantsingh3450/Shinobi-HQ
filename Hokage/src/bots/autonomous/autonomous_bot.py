@@ -3573,9 +3573,24 @@ class AutonomousTradingBot:
         """
         if getattr(self, "_chain_capture_running", False):
             return
-        if not getattr(self, "_feed_probe_ok", False):
-            return
 
+        # IT USED TO GATE ON `_feed_probe_ok`, COPIED FROM THE CANDLE
+        # CATCH-UP, AND THAT WAS WRONG IN TWO WAYS AT ONCE. Verified broken
+        # 2026-11-12, twenty minutes after shipping it: zero rows captured.
+        #
+        #   1. THE PROBE ASKS ABOUT THE WRONG MARKET. It reads
+        #      `get_price("NIFTY 50")`. NSE closes at 15:30; MCX runs to
+        #      23:30. So the one recorder built FOR the MCX evening - where
+        #      11 of the 16 premium backstops happened - was gated behind an
+        #      index quote that cannot succeed in that window.
+        #   2. IT FLAPS. The probe went DOWN at 16:50 ("Venue is not
+        #      connected") and again at 17:55 on a real DNS failure
+        #      ("Failed to resolve api.kite.trade"). A once-a-day catch-up
+        #      can wait for the next good minute; a 15-minute recorder gated
+        #      on a flapping flag just stops.
+        #
+        # The real precondition is a broker handle, which the thread checks
+        # and reports. Nothing else here needs the probe.
         now_ist = self._now_ist()
         last = getattr(self, "_chain_capture_at", None)
         if last is not None:
@@ -3614,10 +3629,12 @@ class AutonomousTradingBot:
             kite = None
             try:
                 kite = self.orchestrator.kite_connection.get_kite()
-            except Exception:
+            except Exception as exc:
                 kite = None
+                self._say_chain_capture_blocked(
+                    f"the broker handle could not be read ({exc})")
             if kite is None:
-                logger.debug("Chain capture: no broker session; skipped.")
+                self._say_chain_capture_blocked("no broker session")
                 return
 
             # ONE `when` FOR THE WHOLE SWEEP, which is what `capture` takes
@@ -3640,7 +3657,10 @@ class AutonomousTradingBot:
                     rows.extend(archive_options.capture(
                         kite, symbol, segment, spot_key, when))
                 except Exception as exc:
-                    logger.debug("Chain capture: %s skipped (%s)", symbol, exc)
+                    # Per symbol and visible: one unlisted contract must not
+                    # cost the sweep, but it must not vanish either.
+                    self._say_chain_capture_blocked(
+                        f"{symbol} could not be read ({type(exc).__name__})")
 
             # PHASE 2: THE CONTRACTS WE JUST SOLD, which the band above does
             # not reliably contain. `capture` reads strikes around the money;
@@ -3650,6 +3670,8 @@ class AutonomousTradingBot:
             self._observe_exited_contracts(kite, when)
 
             if not rows:
+                self._say_chain_capture_blocked(
+                    "every underlying was skipped or returned no contracts")
                 return
             added = option_archive.remember(rows, when)
             if added:
@@ -3663,6 +3685,38 @@ class AutonomousTradingBot:
             logger.error("Option chain capture aborted: %s", exc)
         finally:
             self._chain_capture_running = False
+
+    def _say_chain_capture_blocked(self, why: str) -> None:
+        """Say, out loud and at most once an hour, that nothing was recorded.
+
+        THE BUG THIS EXISTS FOR WAS MINE, AND IT WAS THE DEFECT FAMILY THIS
+        PROJECT KEEPS PAYING FOR. Every failure path in the capture logged at
+        DEBUG, and `boot.py` runs logging at INFO - so a recorder that
+        captured nothing for twenty minutes after being shipped said exactly
+        nothing. A measurement that fails silently is worse than no
+        measurement: it leaves a corpus that looks merely empty.
+
+        RATE-LIMITED, because the loop ticks once a minute and a reason that
+        holds will hold for hours. Once an hour per distinct reason is loud
+        enough to notice in a log read and quiet enough not to bury the
+        session.
+        """
+        try:
+            now = self._now_ist()
+            seen = getattr(self, "_chain_blocked_said", None)
+            if seen is None:
+                seen = {}
+                self._chain_blocked_said = seen
+            last = seen.get(why)
+            if last is not None and (now - last).total_seconds() < 3600:
+                return
+            seen[why] = now
+            logger.warning(
+                "Option chain capture recorded NOTHING: %s. The premium path "
+                "for any position open now will not exist later - option "
+                "history dies with the contract.", why)
+        except Exception:
+            pass
 
     def _observe_exited_contracts(self, kite, when) -> None:
         """Quote every contract still inside its post-exit window.
@@ -3701,7 +3755,8 @@ class AutonomousTradingBot:
                     "is what the option did AFTER Hokage sold it.",
                     stored, when.strftime("%H:%M"))
         except Exception as exc:
-            logger.debug("Post-exit watch skipped: %s", exc)
+            self._say_chain_capture_blocked(
+                f"the post-exit watch failed ({type(exc).__name__}: {exc})")
 
     def _catch_up_candle_archive(self) -> None:
         """Once a day, repair any session the nightly sync could not write.

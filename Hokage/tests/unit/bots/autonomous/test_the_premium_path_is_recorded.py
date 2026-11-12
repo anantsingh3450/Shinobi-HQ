@@ -95,12 +95,24 @@ def test_a_shut_market_is_not_captured(monkeypatch):
     assert bot._started == []
 
 
-def test_no_feed_means_no_capture(monkeypatch):
-    """Same guard as the candle catch-up: no token, no point."""
+def test_a_down_nse_feed_probe_does_NOT_stop_the_capture(monkeypatch):
+    """THIS TEST USED TO ASSERT THE BUG.
+
+    It read "Same guard as the candle catch-up: no token, no point" and
+    required NO capture when `_feed_probe_ok` was false. That guard is what
+    made the recorder capture nothing: the probe reads `get_price("NIFTY 50")`
+    and NSE shuts at 15:30, so during the MCX evening - the window the
+    recorder exists for - it is reliably false. It also flaps on real DNS
+    failures.
+
+    Inverted rather than deleted, because the old assertion is exactly the
+    mistake and the inversion is the fix.
+    """
     bot = _bot(feed_ok=False)
     _spy(bot, monkeypatch)
     bot._capture_option_chain_intraday()
-    assert bot._started == []
+    assert len(bot._started) == 1, (
+        "the broker handle is the real precondition, and the thread checks it")
 
 
 def test_a_capture_already_running_is_not_started_again(monkeypatch):
@@ -245,3 +257,92 @@ def test_the_loop_calls_it_without_letting_it_break_the_cycle():
     block = src.split("_capture_option_chain_intraday()")[1][:400]
     assert "except Exception" in block
     assert "logger.error" in block
+
+
+# ================== the gate that stopped it recording anything at all
+def test_it_does_not_gate_on_the_nse_feed_probe():
+    """THE BUG, VERIFIED BROKEN 20 MINUTES AFTER SHIPPING: zero rows.
+
+    The guard was copied from the candle catch-up and gated on
+    `_feed_probe_ok`, which is set from `get_price("NIFTY 50")`. NSE closes
+    at 15:30 and MCX runs to 23:30, so the one recorder built FOR the MCX
+    evening - where 11 of 16 premium backstops happened - could never run in
+    that window. It also flaps: DOWN at 16:50 ("Venue is not connected") and
+    again at 17:55 on a real DNS failure. A once-a-day catch-up can wait for
+    the next good minute; a 15-minute recorder cannot.
+    """
+    src = textwrap.dedent(inspect.getsource(Bot._capture_option_chain_intraday))
+    tree = ast.parse(src)
+    reads = {n.args[1].value for n in ast.walk(tree)
+             if isinstance(n, ast.Call)
+             and getattr(n.func, "id", None) == "getattr"
+             and len(n.args) > 1 and isinstance(n.args[1], ast.Constant)}
+    assert "_feed_probe_ok" not in reads, (
+        "an MCX-evening recorder must not wait on an NSE index quote")
+
+
+def test_the_capture_runs_after_the_nse_close(monkeypatch):
+    """The window it exists for. 18:45 IST: NSE shut, MCX trading."""
+    evening = dt.datetime(2026, 11, 12, 18, 45, tzinfo=IST)
+    bot = object.__new__(Bot)
+    bot._now_ist = lambda: evening
+    bot._nothing_trades_today = lambda: False
+    bot._chain_capture_running = False
+    bot._started = []
+    _spy(bot, monkeypatch)
+    bot._capture_option_chain_intraday()
+    assert len(bot._started) == 1, "the MCX evening is the whole point"
+
+
+# ============================= a silent recorder is worse than none
+def test_every_failure_path_is_visible_not_debug():
+    """boot.py runs logging at INFO, so a `logger.debug` failure path is
+    invisible. That is how this shipped broken and said nothing."""
+    for name in ("_capture_option_chain_intraday", "_run_option_chain_capture",
+                 "_observe_exited_contracts"):
+        src = textwrap.dedent(inspect.getsource(getattr(Bot, name)))
+        assert "logger.debug" not in src, (
+            f"{name} still has a silent failure path")
+
+
+def test_a_blocked_capture_says_so(caplog):
+    import logging
+
+    bot = object.__new__(Bot)
+    bot._now_ist = lambda: dt.datetime(2026, 11, 12, 18, 45, tzinfo=IST)
+    with caplog.at_level(logging.WARNING):
+        bot._say_chain_capture_blocked("no broker session")
+    assert "recorded NOTHING" in caplog.text
+    assert "no broker session" in caplog.text
+    assert "dies with the contract" in caplog.text
+
+
+def test_the_same_reason_is_not_repeated_every_minute(caplog):
+    """The loop ticks once a minute and a reason that holds holds for hours."""
+    import logging
+
+    bot = object.__new__(Bot)
+    now = dt.datetime(2026, 11, 12, 18, 45, tzinfo=IST)
+    bot._now_ist = lambda: now
+    with caplog.at_level(logging.WARNING):
+        for _ in range(20):
+            bot._say_chain_capture_blocked("no broker session")
+    assert caplog.text.count("recorded NOTHING") == 1
+
+    # a different reason is its own alarm
+    with caplog.at_level(logging.WARNING):
+        bot._say_chain_capture_blocked("GOLDM could not be read")
+    assert caplog.text.count("recorded NOTHING") == 2
+
+
+def test_an_hour_later_the_same_reason_speaks_again(caplog):
+    import logging
+
+    bot = object.__new__(Bot)
+    now = dt.datetime(2026, 11, 12, 18, 45, tzinfo=IST)
+    bot._now_ist = lambda: now
+    with caplog.at_level(logging.WARNING):
+        bot._say_chain_capture_blocked("no broker session")
+        bot._now_ist = lambda: now + dt.timedelta(hours=2)
+        bot._say_chain_capture_blocked("no broker session")
+    assert caplog.text.count("recorded NOTHING") == 2
