@@ -424,3 +424,42 @@ def test_the_capture_consults_the_open_not_only_the_day():
     src = textwrap.dedent(inspect.getsource(Bot._run_option_chain_capture))
     assert "is_before_open(" in src
     assert "market_was_open(" in src, "the day guard must stay too"
+
+
+# ================ an alarm that fires for correct behaviour is noise
+def test_a_premarket_tick_is_quiet_not_an_alarm(monkeypatch, caplog):
+    """OBSERVED ON THE FIRST BOOT AFTER THE PRE-MARKET GUARD SHIPPED:
+
+        08:17:57 WARNING Option chain capture recorded NOTHING: every
+        underlying was skipped ... The premium path will not exist later
+
+    At 08:17 that skip is CORRECT. An alarm worded as a failure, firing
+    every morning for right behaviour, is how a real alarm gets ignored -
+    the parked-asset noise of 2026-10-13 in a new costume.
+    """
+    import logging
+
+    bot = _runner(monkeypatch, capture=lambda *a, **k: [])
+    import hokage.memory.option_archive as oa
+    monkeypatch.setattr(oa, "is_before_open", lambda when, sym: True)
+
+    with caplog.at_level(logging.DEBUG):
+        bot._run_option_chain_capture()
+    assert "recorded NOTHING" not in caplog.text, (
+        "a shut market is not a fault")
+    assert "Not a fault" in caplog.text
+
+
+def test_an_open_market_returning_nothing_IS_an_alarm(monkeypatch, caplog):
+    """The inverse. If a segment is open and still yields no contracts,
+    something is broken and silence would hide it."""
+    import logging
+
+    bot = _runner(monkeypatch, capture=lambda *a, **k: [])
+    import hokage.memory.option_archive as oa
+    monkeypatch.setattr(oa, "is_before_open", lambda when, sym: False)
+
+    with caplog.at_level(logging.WARNING):
+        bot._run_option_chain_capture()
+    assert "recorded NOTHING" in caplog.text
+    assert "returned no contracts" in caplog.text

@@ -3650,6 +3650,14 @@ class AutonomousTradingBot:
             # the rows look like different captures.
             when = option_archive.now_ist()
 
+            # WHY a symbol was skipped, not just that it was. A skip because
+            # the market has not opened is CORRECT and must be quiet; a skip
+            # because something broke is an alarm. Counting them together is
+            # how an alarm that fires at 08:00 every morning for correct
+            # behaviour teaches the commander to ignore it - which is the
+            # parked-asset noise of 2026-10-13 in a new costume. Observed
+            # firing on the very first boot after the guard shipped.
+            asleep = 0
             rows: list[dict] = []
             for symbol, (segment, spot_key) in archive_options.UNDERLYINGS.items():
                 # PER SYMBOL, so one unlisted contract or one shut segment
@@ -3657,6 +3665,7 @@ class AutonomousTradingBot:
                 # and the reverse on a holiday evening.
                 try:
                     if option_archive.market_was_open(symbol, when.date()) is False:
+                        asleep += 1
                         continue
                     # ...AND NOT BEFORE THAT SESSION HAS OPENED.
                     # `market_was_open` answers about the DAY, not the
@@ -3666,6 +3675,7 @@ class AutonomousTradingBot:
                     # intraday marks. MCX opens 09:00 and NSE 09:15, so the
                     # two cannot share one guard.
                     if option_archive.is_before_open(when, symbol):
+                        asleep += 1
                         continue
                 except Exception:
                     pass
@@ -3686,8 +3696,18 @@ class AutonomousTradingBot:
             self._observe_exited_contracts(kite, when)
 
             if not rows:
-                self._say_chain_capture_blocked(
-                    "every underlying was skipped or returned no contracts")
+                if asleep >= len(archive_options.UNDERLYINGS):
+                    # Every market is shut or has not opened. Nothing to
+                    # record, nothing wrong, and no alarm - at 08:00 this is
+                    # simply the truth.
+                    logger.info(
+                        "Option chain: nothing captured at %s IST - no "
+                        "segment has opened yet. Not a fault.",
+                        when.strftime("%H:%M"))
+                else:
+                    self._say_chain_capture_blocked(
+                        f"{len(archive_options.UNDERLYINGS) - asleep} open "
+                        f"underlying(s) returned no contracts")
                 return
             added = option_archive.remember(rows, when)
             if added:
