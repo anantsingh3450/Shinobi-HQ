@@ -34,6 +34,18 @@ test_no_premium_is_modelled_anywhere already pins.
 NOTHING IS EVER OVERWRITTEN. INSERT OR IGNORE, like the candles and the VIX:
 what a contract cost on a day is the record of that day.
 
+ONE EXCEPTION, ADDED 2026-11-13, AND IT MOVES A ROW RATHER THAN LOSING ONE.
+A genuine close may take a key that a PRE-close mark is sitting on, and the
+evicted mark is written into `option_marks` on the way out. The need was
+real: the intraday recorder shipped the day before wrote through `remember`,
+so the 09:03 mark owned the key and that day's close could not be stored at
+all. A close no longer yields to a mark. A close never yields to a close.
+
+TWO TABLES, TWO GRAINS. `option_chain` is the daily book - one row per
+contract per day, which is what `theta_lab`'s self-join across days assumes.
+`option_marks` is the intraday path, keyed by the capture time, nearest
+expiry only. Writers: `remember` and `mark`. They are not interchangeable.
+
 THE CAPTURE TIME IS STORED WITH EVERY ROW, because a snapshot taken at 11:00
 is not a close and must never be read as one. The archive does not decide
 what a row means; it records when the row was taken and lets the reader
@@ -200,6 +212,46 @@ CREATE TABLE IF NOT EXISTS option_chain (
 );
 CREATE INDEX IF NOT EXISTS idx_option_chain_lookup
     ON option_chain(symbol, expiry, strike, option_type, day);
+
+-- THE INTRADAY PATH, AND WHY IT IS NOT IN THE TABLE ABOVE.
+--
+-- `option_chain` is keyed by the DAY. That was right while the archive ran
+-- once, after the close: one row per contract per day IS a day's closing
+-- premium, and `theta_lab` joins the table to itself across days on exactly
+-- that assumption - a second row for the same contract on the same day would
+-- multiply its day-pairs and inflate every decay estimate it reports.
+--
+-- So when the 15-minute intraday capture shipped on 2026-11-12 and wrote
+-- through `remember`, the day key did two silent kinds of damage, both
+-- visible in the tape by the next morning:
+--
+--   1. IT THREW THE PATH AWAY. 09:03 archived 336 rows; 11:20 archived 16 -
+--      the only new strikes. Every mark after the first was IGNOREd, so the
+--      recorder built one snapshot a day, which is what it already had.
+--   2. IT BLOCKED THE CLOSE. The 09:03 row holds the key, so the 23:40
+--      close could not land, and `closing_snapshots` would have found NO
+--      usable close for 2026-11-13 - the first day of a corpus that cannot
+--      be backfilled, lost to the thing meant to enrich it.
+--
+-- Marks therefore live in their own table, keyed by the capture time, and
+-- the daily book above keeps the grain every existing measurement reads.
+CREATE TABLE IF NOT EXISTS option_marks (
+    symbol      TEXT NOT NULL,
+    day         TEXT NOT NULL,
+    expiry      TEXT NOT NULL,
+    strike      REAL NOT NULL,
+    option_type TEXT NOT NULL,
+    captured_at TEXT NOT NULL,
+    last_price  REAL NOT NULL,
+    oi          REAL,
+    volume      REAL,
+    spot        REAL,
+    bid         REAL,
+    ask         REAL,
+    PRIMARY KEY (symbol, day, expiry, strike, option_type, captured_at)
+);
+CREATE INDEX IF NOT EXISTS idx_option_marks_contract
+    ON option_marks(symbol, expiry, strike, option_type, captured_at);
 """
 
 
@@ -272,6 +324,154 @@ def remember(rows, when: dt.datetime | None = None) -> int:
     Monday's last print and 168 rows went in looking like Tuesday closes.
     A quote coming back is not evidence the market was open.
     """
+    out = _normalise(rows, when)
+    if not out:
+        return 0
+    with connect() as conn:
+        _evict_marks_blocking_the_close(conn, out)
+        before = conn.total_changes
+        conn.executemany(
+            "INSERT OR IGNORE INTO option_chain (symbol, day, expiry, strike, "
+            "option_type, captured_at, last_price, oi, volume, spot, bid, ask) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", out)
+        return conn.total_changes - before
+
+
+#: Position of each field in a normalised row.
+_SYMBOL, _DAY, _EXPIRY, _STRIKE, _TYPE, _STAMP = 0, 1, 2, 3, 4, 5
+
+
+def _evict_marks_blocking_the_close(conn, out) -> None:
+    """Let a genuine close take a key an intraday mark is sitting on.
+
+    SELF-HEALING, AND DELIBERATELY SO. The broken intraday writer ran for one
+    session before it was caught, and a Hokage carrying that build keeps
+    running until the commander restarts him - which is his call, not mine.
+    Without this, every such day loses its close permanently, and an option's
+    premium on a day that passed cannot be fetched back.
+
+    The evicted row is not discarded. It is written into `option_marks`
+    first, which is where it belonged, so the eviction moves a row rather
+    than deleting one.
+    """
+    for row in out:
+        if not _captured_after_close(row[_STAMP], row[_SYMBOL]):
+            continue                      # not a close; it may not evict
+        key = (row[_SYMBOL], row[_DAY], row[_EXPIRY], row[_STRIKE], row[_TYPE])
+        existing = conn.execute(
+            "SELECT symbol, day, expiry, strike, option_type, captured_at, "
+            "last_price, oi, volume, spot, bid, ask FROM option_chain "
+            "WHERE symbol=? AND day=? AND expiry=? AND strike=? "
+            "AND option_type=?", key).fetchone()
+        if existing is None:
+            continue
+        if _captured_after_close(existing[_STAMP], existing[_SYMBOL]):
+            continue                      # already a close; never overwrite
+        conn.execute(
+            "INSERT OR IGNORE INTO option_marks (symbol, day, expiry, strike, "
+            "option_type, captured_at, last_price, oi, volume, spot, bid, ask)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", tuple(existing))
+        conn.execute(
+            "DELETE FROM option_chain WHERE symbol=? AND day=? AND expiry=? "
+            "AND strike=? AND option_type=?", key)
+
+
+def mark(rows, when: dt.datetime | None = None) -> int:
+    """Write an INTRADAY snapshot. Every capture is kept, not just the first.
+
+    Same validation as `remember` - a shut day is refused, a missing or
+    non-positive premium is dropped - and a different table, because the
+    daily book may hold exactly one row per contract per day.
+
+    ONLY THE NEAREST EXPIRY. A full sweep is around 500 contracts; at one
+    capture per 15-minute tick across the MCX evening that is roughly 29,000
+    rows a day, and this database has to last years. Production enters the
+    near expiry, the positions this exists to explain were in the near
+    expiry, and the daily close above still records every expiry - so the
+    far month's intraday path is the part that can be given up. Measured
+    cost after the cut: about 6,000 rows a day.
+    """
+    out = _normalise(rows, when)
+    out = _nearest_expiry_only(out)
+    if not out:
+        return 0
+    with connect() as conn:
+        before = conn.total_changes
+        conn.executemany(
+            "INSERT OR IGNORE INTO option_marks (symbol, day, expiry, strike, "
+            "option_type, captured_at, last_price, oi, volume, spot, bid, ask) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", out)
+        return conn.total_changes - before
+
+
+def _nearest_expiry_only(out: list[tuple]) -> list[tuple]:
+    """Per symbol, keep the soonest expiry present in this sweep."""
+    nearest: dict[str, str] = {}
+    for row in out:
+        got = nearest.get(row[_SYMBOL])
+        if got is None or row[_EXPIRY] < got:
+            nearest[row[_SYMBOL]] = row[_EXPIRY]
+    return [r for r in out if r[_EXPIRY] == nearest.get(r[_SYMBOL])]
+
+
+def marks(symbol: str | None = None, day: str | None = None,
+          strike: float | None = None, option_type: str | None = None,
+          ) -> list[dict]:
+    """The intraday path, oldest first. Empty is empty, never zero."""
+    path = db_path()
+    if not path.exists():
+        return []
+    conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+    try:
+        conn.execute("SELECT 1 FROM option_marks LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.close()
+        return []
+    try:
+        conn.row_factory = sqlite3.Row
+        sql = "SELECT * FROM option_marks WHERE 1=1"
+        params: list = []
+        for column, value in (("symbol", symbol and symbol.upper()),
+                              ("day", day),
+                              ("strike", strike),
+                              ("option_type",
+                               option_type and option_type.upper())):
+            if value is not None:
+                sql += f" AND {column} = ?"
+                params.append(value)
+        sql += " ORDER BY captured_at, strike"
+        return [dict(r) for r in conn.execute(sql, params)]
+    finally:
+        conn.close()
+
+
+def marks_coverage() -> dict:
+    """Rows, days, captures and megabytes - the last one because an intraday
+    corpus is the shape of thing that reached 1.5 GB here once before."""
+    path = db_path()
+    empty = {"rows": 0, "days": 0, "captures": 0, "first": None, "last": None,
+             "db_mb": round(path.stat().st_size / 1e6, 1)
+             if path.exists() else 0.0}
+    if not path.exists():
+        return empty
+    conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+    try:
+        conn.execute("SELECT 1 FROM option_marks LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.close()
+        return empty
+    try:
+        rows, days, captures, first, last = conn.execute(
+            "SELECT COUNT(*), COUNT(DISTINCT day), COUNT(DISTINCT captured_at),"
+            " MIN(day), MAX(day) FROM option_marks").fetchone()
+    finally:
+        conn.close()
+    return {"rows": rows, "days": days, "captures": captures,
+            "first": first, "last": last, "db_mb": empty["db_mb"]}
+
+
+def _normalise(rows, when: dt.datetime | None = None) -> list[tuple]:
+    """Shared validation for both tables. See `remember` for the rules."""
     when = when or now_ist()
     day = when.date().isoformat()
     stamp = when.isoformat()
@@ -308,15 +508,7 @@ def remember(rows, when: dt.datetime | None = None) -> int:
             _opt(r.get("spot")), _opt(r.get("bid")), _opt(r.get("ask")),
         ))
 
-    if not out:
-        return 0
-    with connect() as conn:
-        before = conn.total_changes
-        conn.executemany(
-            "INSERT OR IGNORE INTO option_chain (symbol, day, expiry, strike, "
-            "option_type, captured_at, last_price, oi, volume, spot, bid, ask) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", out)
-        return conn.total_changes - before
+    return out
 
 
 def _opt(value) -> float | None:

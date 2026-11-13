@@ -232,6 +232,9 @@ def main() -> int:
     for symbol in missing:
         print(f"  {symbol:11} NONE — premium cannot be reconstructed at all.")
 
+    print("\n  `option_marks` began recording the near-expiry chain every 15")
+    print("  minutes on 2026-11-13, which is the series this needs - but it")
+    print("  starts there, so it cannot reach a pair fired before that date.")
     print("\n  One snapshot a day is a CLOSE, and these pairs fire intraday, so")
     print("  the chain cannot price the entry and the exit of a signal taken at")
     print("  19:30 and closed at 21:00. What it DOES unlock is the close-to-close")

@@ -15,6 +15,10 @@ blocked trade is never bought, so NOTHING HAS EVER PRICED ONE. The inventory on
 
   * `option_chain` holds ONE SNAPSHOT PER DAY over 13 days - no intraday series
     exists at any horizon Hokage trades;
+    [2026-11-13: `option_marks` now records the near-expiry chain every 15
+    minutes. It does not change the sentence above - it starts the series
+    that sentence says is missing, from today forward and never backwards,
+    and it still holds nothing for a contract the gate BLOCKED.]
   * `auction_signals` stores the blocked contract's premium at the instant it
     was proposed, which is ONE number, and seven contract-days in the whole
     brain have a second;

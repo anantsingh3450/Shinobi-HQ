@@ -227,11 +227,19 @@ def test_one_timestamp_for_the_whole_sweep(monkeypatch):
 
 # ============================= the close corpus must stay uncontaminated
 def test_it_reuses_the_existing_archiver_and_writer():
-    """No second archiver, no second schema. `closing_snapshots` already
-    excludes pre-close rows, and that is what keeps the spread corpus clean."""
+    """One archiver, and the writer for the grain being written.
+
+    THIS RAIL USED TO ASSERT `option_archive.remember`, AND THAT WAS THE BUG
+    ITSELF PINNED IN PLACE. Reusing the fetcher was right; reusing the daily
+    book's writer was not. That table is keyed by the day, so every mark
+    after a contract's first was discarded and the 23:40 close could not get
+    in at all. Marks go to `mark`, which is keyed by the capture time.
+    Measured on the 2026-11-13 tape: 09:03 archived 336 rows, 11:20 archived
+    16, and the close would have been lost.
+    """
     src = textwrap.dedent(inspect.getsource(Bot._run_option_chain_capture))
     assert "import archive_options" in src
-    assert "option_archive.remember" in src
+    assert "option_archive.mark" in src
     tree = ast.parse(src)
     writes = [n for n in ast.walk(tree)
               if isinstance(n, ast.Call)
@@ -243,8 +251,8 @@ def test_it_reuses_the_existing_archiver_and_writer():
 def test_the_log_line_says_these_are_marks_not_closes():
     """A row that looks like a close and is not is how a corpus rots."""
     src = textwrap.dedent(inspect.getsource(Bot._run_option_chain_capture))
-    assert "MARKS, not closes" in src
-    assert "closing_snapshots" in src
+    assert "intraday mark(s)" in src
+    assert "NOT the daily close" in src
 
 
 def test_the_loop_calls_it_without_letting_it_break_the_cycle():

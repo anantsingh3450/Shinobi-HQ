@@ -3709,12 +3709,16 @@ class AutonomousTradingBot:
                         f"{len(archive_options.UNDERLYINGS) - asleep} open "
                         f"underlying(s) returned no contracts")
                 return
-            added = option_archive.remember(rows, when)
+            # `mark`, NOT `remember`. The daily book is keyed by the DAY, so
+            # writing marks into it discarded every capture after the first
+            # AND squatted on the key the 23:40 close needed - proved by the
+            # tape on 2026-11-13, where 09:03 archived 336 rows and 11:20
+            # archived 16. Marks have their own table; see option_archive.
+            added = option_archive.mark(rows, when)
             if added:
                 logger.info(
-                    "Option chain: %d contract(s) read, %d new row(s) "
-                    "archived at %s IST. Intraday MARKS, not closes - "
-                    "closing_snapshots() excludes them.",
+                    "Option chain: %d contract(s) read, %d intraday mark(s) "
+                    "archived at %s IST. option_marks, NOT the daily close.",
                     len(rows), added, when.strftime("%H:%M"))
 
         except Exception as exc:
