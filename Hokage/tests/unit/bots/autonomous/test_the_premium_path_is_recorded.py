@@ -368,3 +368,59 @@ def test_the_broker_handle_method_actually_exists():
         assert hasattr(KiteConnectionManager, name), (
             f"KiteConnectionManager has no {name}() - the capture would "
             f"raise on every tick")
+
+
+# ============ pre-market: the broker answers with yesterday's prints
+def test_a_premarket_capture_is_skipped_per_segment():
+    """`market_was_open` answers about the DAY, not the moment. At 08:00 on
+    an ordinary Friday it says True and the broker returns YESTERDAY's
+    closes, which would enter the corpus stamped as today's intraday marks -
+    the same error archive_options already refuses on a shut day.
+
+    MCX opens 09:00 and NSE 09:15, so one guard cannot serve both.
+    """
+    from hokage.memory import option_archive as oa
+
+    friday = dt.date(2026, 11, 13)
+
+    def at(h, m):
+        return dt.datetime.combine(friday, dt.time(h, m), tzinfo=IST)
+
+    assert oa.is_before_open(at(8, 0), "GOLDM") is True
+    assert oa.is_before_open(at(8, 0), "NIFTY") is True
+    # MCX is trading while NSE is not
+    assert oa.is_before_open(at(9, 5), "GOLDM") is False
+    assert oa.is_before_open(at(9, 5), "NIFTY") is True
+    # both open
+    assert oa.is_before_open(at(9, 20), "GOLDM") is False
+    assert oa.is_before_open(at(9, 20), "NIFTY") is False
+
+
+def test_a_special_session_open_is_consulted_first():
+    """Muhurat opens at 14:20. The ordinary 09:15 would call the whole
+    morning open on a day the exchange is shut until the afternoon."""
+    from hokage.memory import option_archive as oa
+
+    muhurat = dt.date(2026, 11, 8)
+
+    def at(h, m):
+        return dt.datetime.combine(muhurat, dt.time(h, m), tzinfo=IST)
+
+    assert oa.is_before_open(at(10, 0), "NIFTY") is True
+    assert oa.is_before_open(at(14, 30), "NIFTY") is False
+
+
+def test_an_unknown_symbol_is_held_back_rather_than_recorded_stale():
+    """The conservative direction here is the LATER open - the opposite of
+    session_end_for, where permissive is the earlier close. Both choices are
+    the one that cannot put a stale price in the corpus."""
+    from hokage.memory import option_archive as oa
+
+    assert oa.session_start_for("SOMETHING_NEW") == oa.SESSION_START_BY_SEGMENT["NSE"]
+    assert oa.session_start_for("GOLDM") == dt.time(9, 0)
+
+
+def test_the_capture_consults_the_open_not_only_the_day():
+    src = textwrap.dedent(inspect.getsource(Bot._run_option_chain_capture))
+    assert "is_before_open(" in src
+    assert "market_was_open(" in src, "the day guard must stay too"

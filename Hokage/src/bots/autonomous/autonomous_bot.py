@@ -3658,6 +3658,15 @@ class AutonomousTradingBot:
                 try:
                     if option_archive.market_was_open(symbol, when.date()) is False:
                         continue
+                    # ...AND NOT BEFORE THAT SESSION HAS OPENED.
+                    # `market_was_open` answers about the DAY, not the
+                    # moment: at 08:00 on an ordinary Friday it says True and
+                    # the broker answers with YESTERDAY's closing prints,
+                    # which would enter the corpus stamped as today's
+                    # intraday marks. MCX opens 09:00 and NSE 09:15, so the
+                    # two cannot share one guard.
+                    if option_archive.is_before_open(when, symbol):
+                        continue
                 except Exception:
                     pass
                 try:

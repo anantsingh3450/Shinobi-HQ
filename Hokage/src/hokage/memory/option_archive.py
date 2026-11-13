@@ -67,6 +67,67 @@ SESSION_END_BY_SEGMENT = {
 }
 
 
+#: When each segment's session BEGINS. The mirror of SESSION_END_BY_SEGMENT,
+#: and it was missing - this module knew when a session ends and had no
+#: opinion about when it starts.
+#:
+#: THAT GAP MATTERS NOW THE CHAIN IS CAPTURED INTRADAY. `market_was_open`
+#: answers about the DAY, not the moment, so at 08:00 on an ordinary Friday
+#: it says True and the broker answers with YESTERDAY's closing prints. Those
+#: rows would enter the corpus stamped as today's intraday marks, which is
+#: the same error `archive_options.main` already refuses to make on a shut
+#: day - "the broker would still answer with the previous session's prints,
+#: and those rows would be indistinguishable from today's closes".
+#:
+#: Found 2026-11-13 at 07:51, before the restart that would have recorded
+#: them, which is the only reason it was cheap.
+SESSION_START_BY_SEGMENT = {
+    "NSE": dt.time(9, 15),
+    "MCX": dt.time(9, 0),
+}
+
+
+def session_start_for(symbol: str | None) -> dt.time:
+    """When this underlying's session begins.
+
+    Unknown symbols get the index open, which is the LATER of the two and
+    therefore the conservative answer here: a new symbol is held back a
+    quarter of an hour rather than having stale prints recorded against it.
+    Note that this is the opposite direction from `session_end_for`, where
+    permissive means the earlier time - in both cases the choice is the one
+    that cannot put a stale price in the corpus.
+    """
+    segment = CALENDAR_SEGMENT.get(str(symbol or "").upper(), "NSE")
+    return SESSION_START_BY_SEGMENT.get(segment, SESSION_START_BY_SEGMENT["NSE"])
+
+
+def is_before_open(when: dt.datetime | None = None,
+                   symbol: str | None = None) -> bool:
+    """Is this snapshot earlier than the session it would be stamped with?
+
+    A SPECIAL SESSION IS CONSULTED FIRST, because Muhurat opens at 14:20 and
+    the ordinary 09:15 would call the whole morning "open" on a day the
+    exchange is shut until the afternoon. Same ordering as
+    `trading_calendar.session_kind`, for the same reason.
+
+    An unreadable calendar answers False - not before the open - because the
+    fallback must not silently stop the archive from recording anything at
+    all. A stale row is a smaller harm than an empty corpus, and the
+    `captured_at` stamp makes it identifiable either way.
+    """
+    when = when or now_ist()
+    try:
+        from hokage.memory import trading_calendar
+
+        segment = CALENDAR_SEGMENT.get(str(symbol or "").upper(), "NSE")
+        window = trading_calendar.session_window(when.date(), segment)
+        if window:
+            return when.time() < window[0]
+    except Exception:
+        pass
+    return when.time() < session_start_for(symbol)
+
+
 def session_end_for(symbol: str | None) -> dt.time:
     """When this underlying's session ends. Unknown symbols get the index
     close, which is the EARLIER of the two and therefore the permissive
